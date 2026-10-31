@@ -3800,7 +3800,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     }
 
     /// The wallpapers System Settings has that macOS draws as they're shown, from 3D models and little
-    /// programs, so there's no picture of them on the Mac to put in a wallpaper of Safelight's
+    /// programs, so there's no picture of them on the Mac to put in a wallpaper of Safelight's, only
+    /// System Settings' small thumbnails of them
     enum DrawnWallpaper: String {
         case sequoia = "drawn:sequoia"
         case macintosh = "drawn:macintosh"
@@ -3950,8 +3951,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// does. The other appearance keeps the picture the desktop shows in it, fetched as one of System
     /// Settings' own is when it's one of those. While the desktop has one of System Settings' shuffles,
     /// it takes one of the shuffle's pictures instead, and Safelight's own shuffle of them carries on
-    /// for it. While the desktop has a wallpaper with no picture Safelight can take, like Sequoia's, it
-    /// takes the one `picture` gives for it, when there's `hasPictureForEach`, or the same one. `picture`
+    /// for it. While the desktop has one macOS draws, like Sequoia, it takes System Settings' thumbnail
+    /// of it, stretched to fill the screen. While it has a wallpaper whose pictures Safelight can't tell,
+    /// it takes the one `picture` gives for it, when there's `hasPictureForEach`, or the same one. `picture`
     /// fetches it into the folder it's given, which is taken away once the wallpaper is made. `choice` is
     /// remembered as the appearance's choice, and `item` is the wallpaper of System Settings' the
     /// picture is from. It beeps when it can't be made, unless `isQuiet`.
@@ -4038,7 +4040,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         YourPhotos.shared.reloadAfterSettingWallpaper()
         // The other appearance kept the desktop's picture, which from a wallpaper of System Settings'
         // is that wallpaper's, and from one of its shuffles, the shuffle's, which carries on here. From
-        // one with no picture to take, it took its picture from the same wallpaper, but doesn't shuffle.
+        // one Safelight can't tell, or a shuffle with no pictures, it took its picture from the same
+        // wallpaper, but doesn't shuffle.
         var choices: Choices
         switch current {
         case .file(let made)? where isMadeHere(made):
@@ -4048,7 +4051,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         case .shuffle(let shuffle, let interval)? where shuffled != nil:
             choices = Choices(light: shuffle.id, dark: shuffle.id)
             WallpaperShuffler.shared.carryOn(shuffle.id, interval: interval, from: shuffled, isDark: !isDark)
-        case nil, .shuffle?, .drawn?:
+        case .drawn(let drawn, _, _)?:
+            choices = Choices(light: drawn.rawValue, dark: drawn.rawValue)
+        case nil, .shuffle?:
             choices = Choices(light: item, dark: item)
         default:
             choices = Choices()
@@ -4359,8 +4364,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     }
 
     /// The file with the picture `desktop` shows in an appearance, fetched into `folder` when it isn't
-    /// one already, and whether it's that file's picture for Dark, for one with a picture for each. Nil
-    /// for a shuffle, which hasn't one picture, and a wallpaper macOS draws, which has none to take.
+    /// one already, and whether it's that file's picture for Dark, for one with a picture for each. For
+    /// a wallpaper macOS draws, which has no picture to take, it's System Settings' thumbnail of it,
+    /// stretched to fill the screen. Nil for a shuffle, which hasn't one picture.
     private func picture(_ desktop: Desktop, shows isDark: Bool, in folder: URL, screenSize: CGSize) async throws -> (file: URL, isDark: Bool)? {
         switch desktop {
         case .file(let file):
@@ -4373,7 +4379,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             return (try Self.colorPicture(color, size: screenSize, named: "Desktop Colour", into: folder), isDark)
         case .gradient(let color):
             return (try Self.gradientPicture(color, size: screenSize, into: folder), isDark)
-        case .shuffle, .drawn:
+        case .drawn(let drawn, let lightShowsDark, let darkShowsDark):
+            return (try Self.drawnPicture(drawn, isDark: isDark ? darkShowsDark : lightShowsDark, size: screenSize, into: folder), isDark)
+        case .shuffle:
             return nil
         }
     }
@@ -4530,6 +4538,25 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             let half = both.width / 2
             return both.cropping(to: CGRect(x: isDark ? both.width - half : 0, y: 0, width: half, height: both.height))
         }
+    }
+
+    /// System Settings' thumbnail of a wallpaper macOS draws, as it looks in an appearance, stretched to
+    /// fill a picture of `size`, in pixels, which is all there is of it to put in a wallpaper
+    private static func drawnPicture(_ drawn: DrawnWallpaper, isDark: Bool, size: CGSize, into folder: URL) throws -> URL {
+        guard let thumbnail = thumbnail(of: drawn, isDark: isDark),
+              let colorSpace = thumbnail.colorSpace.flatMap({ $0.model == .rgb ? $0 : nil }) ?? CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: max(Int(size.width), 1), height: max(Int(size.height), 1), bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: colorSpace, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { throw CocoaError(.fileReadCorruptFile) }
+        let scale = max(CGFloat(context.width) / CGFloat(thumbnail.width), CGFloat(context.height) / CGFloat(thumbnail.height))
+        let filled = CGSize(width: CGFloat(thumbnail.width) * scale, height: CGFloat(thumbnail.height) * scale)
+        context.interpolationQuality = .high
+        context.draw(thumbnail, in: CGRect(x: (CGFloat(context.width) - filled.width) / 2, y: (CGFloat(context.height) - filled.height) / 2, width: filled.width, height: filled.height))
+        let file = folder.appendingPathComponent("Desktop \(drawn.name).png")
+        guard let picture = context.makeImage(),
+              let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.png.identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
+        CGImageDestinationAddImage(destination, picture, nil)
+        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+        return file
     }
 
     /// Which of `source`'s pictures is for an appearance: as its metadata says, or with none, its main one
