@@ -1442,9 +1442,10 @@ struct WallpaperGallery: View {
 
     /// A wallpaper's thumbnail, with its name under it, and badges as System Settings has: at the bottom
     /// left, whether it's dynamic or a video, and at the bottom right, whether it's yet to be downloaded,
-    /// or how much of it has been
+    /// or how much of it has been. Once macOS has downloaded it, it can be taken off the Mac again.
     private func thumbnail(_ item: WallpaperItem, showsName: Bool) -> some View {
-        tile(id: item.id, name: item.name, showsName: showsName, badge: item.badge, isOnMac: item.isOnMac, isMissing: isMissing(item)) {
+        let removeDownload = wallpaper.canRemoveDownloads(of: item) ? { wallpaper.removeDownloads(of: item) } : nil
+        return tile(id: item.id, name: item.name, showsName: showsName, badge: item.badge, isOnMac: item.isOnMac, isMissing: isMissing(item), removeDownload: removeDownload) {
             wallpaper.choose(item, isDark: window.isDark)
         } thumbnail: {
             if isMissing(item) {
@@ -1470,47 +1471,73 @@ struct WallpaperGallery: View {
         }
     }
 
-    /// A thumbnail as System Settings draws one, with its badges, and its name under it
+    /// A thumbnail as System Settings draws one, with its badges, and its name under it. One macOS has
+    /// downloaded has Remove Download in its context menu, and in a … menu in the download badge's place
+    /// while the pointer is over it, as System Settings has; while it's the one chosen, there's no …
+    /// and the context menu's is dimmed.
     private func tile(id: String, name: String, showsName: Bool, badge: WallpaperItem.Badge?, isOnMac: Bool = true, isMissing: Bool = false,
-                      action: @escaping () -> Void, @ViewBuilder thumbnail: () -> some View) -> some View {
+                      removeDownload: (() -> Void)? = nil, action: @escaping () -> Void, @ViewBuilder thumbnail: () -> some View) -> some View {
         let isSelected = wallpaper.choice(isDark: window.isDark) == id
-        return Button(action: action) {
-            VStack(spacing: 3) {
-                thumbnail()
-                    .overlay(alignment: .bottomLeading) {
-                        if let badge {
-                            ThumbnailBadge(image: badge == .dynamic ? ThumbnailBadge.dynamic : Image(systemName: "play.rectangle.fill"))
-                                .padding([.bottom, .leading], 5)
-                        }
-                    }
-                    .overlay(alignment: .bottomTrailing) {
-                        Group {
-                            if wallpaper.changingChoice == id {
-                                progress
-                                    .frame(width: 13, height: 13)
-                            } else if !isOnMac {
-                                ThumbnailBadge(image: Image(systemName: "arrow.down.circle"))
+        let thumbnail = thumbnail()
+        return HoverReader { isHovering in
+            Button(action: action) {
+                VStack(spacing: 3) {
+                    thumbnail
+                        .overlay(alignment: .bottomLeading) {
+                            if let badge {
+                                ThumbnailBadge(image: badge == .dynamic ? ThumbnailBadge.dynamic : Image(systemName: "play.rectangle.fill"))
+                                    .padding([.bottom, .leading], 5)
                             }
                         }
-                        .padding([.bottom, .trailing], 5)
+                        .overlay(alignment: .bottomTrailing) {
+                            Group {
+                                if wallpaper.changingChoice == id {
+                                    progress
+                                        .frame(width: 13, height: 13)
+                                } else if !isOnMac {
+                                    ThumbnailBadge(image: Image(systemName: "arrow.down.circle"))
+                                } else if let removeDownload, isHovering, !isSelected {
+                                    removeDownloadMenu(removeDownload)
+                                }
+                            }
+                            .padding([.bottom, .trailing], 5)
+                        }
+                        .modifier(ThumbnailFrame(size: Self.thumbnailSize, cornerRadius: Self.thumbnailCornerRadius, isSelected: isSelected))
+                    if showsName {
+                        Text(name)
+                            .font(.caption)
+                            .lineLimit(2, reservesSpace: true)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .modifier(ThumbnailFrame(size: Self.thumbnailSize, cornerRadius: Self.thumbnailCornerRadius, isSelected: isSelected))
-                if showsName {
-                    Text(name)
-                        .font(.caption)
-                        .lineLimit(2, reservesSpace: true)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
+                .frame(width: Self.thumbnailSize.width)
+                .contentShape(Rectangle())
             }
-            .frame(width: Self.thumbnailSize.width)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .disabled(isMissing)
         }
-        .buttonStyle(.plain)
-        .disabled(isMissing)
+        .contextMenu {
+            if let removeDownload {
+                Button(SystemStrings.removeDownload, action: removeDownload)
+                    .disabled(isSelected)
+            }
+        }
         .help(name)
         .accessibilityLabel(name)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    /// System Settings' … over a downloaded wallpaper, drawn as its badges are, with its one item
+    private func removeDownloadMenu(_ removeDownload: @escaping () -> Void) -> some View {
+        Menu {
+            Button(SystemStrings.removeDownload, action: removeDownload)
+        } label: {
+            ThumbnailBadge(image: Image(systemName: "ellipsis"))
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
     }
 
     /// Whether a photo of the user's is gone, with no copy of it left: Your Photos' are the only
@@ -1646,6 +1673,17 @@ struct ThumbnailFrame: ViewModifier {
                         .stroke(controlActiveState == .key ? Color.accentColor : Color(nsColor: .unemphasizedSelectedContentBackgroundColor), lineWidth: Self.ringWidth)
                 }
             }
+    }
+}
+
+/// Its content, told whether the pointer is over it
+struct HoverReader<Content: View>: View {
+    @ViewBuilder let content: (_ isHovering: Bool) -> Content
+    @State private var isHovering = false
+
+    var body: some View {
+        content(isHovering)
+            .onHover { isHovering = $0 }
     }
 }
 
@@ -3826,6 +3864,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
 
     /// What the desktop has, which `thumbnails` are of
     private var shown: Desktop?
+    /// The files macOS has downloaded that it's showing, as the desktop or the screen saver
+    @Published private var downloadsInUse: Set<URL> = []
 
     /// Where each wallpaper is made, in a folder of its own, so the file on the desktop is never
     /// written over, and the one before can be taken away
@@ -3849,6 +3889,10 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
 
     /// Looks at the desktop's wallpaper again, as it can be changed in System Settings › Wallpaper
     func refresh() {
+        let downloadsInUse = Self.downloadsInUse()
+        if downloadsInUse != self.downloadsInUse {
+            self.downloadsInUse = downloadsInUse
+        }
         guard let screen = NSScreen.screens.first else { return show(nil) }
         let wallpaper = NSWorkspace.shared.desktopImageURL(for: screen)
         if let wallpaper, isMadeHere(wallpaper) {
@@ -3904,6 +3948,29 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     var hasOwnWallpaper: Bool {
         guard case .file(let wallpaper)? = shown else { return false }
         return isMadeHere(wallpaper)
+    }
+
+    /// Whether one of System Settings' wallpapers can be taken off the Mac, as System Settings' Remove
+    /// Download offers: once macOS has downloaded any of it, while macOS isn't showing it
+    func canRemoveDownloads(of item: WallpaperItem) -> Bool {
+        let downloaded = item.downloaded
+        return !downloaded.isEmpty && downloadsInUse.isDisjoint(with: downloaded)
+    }
+
+    /// Takes the files macOS downloaded one of System Settings' wallpapers into off the Mac, without
+    /// asking, as System Settings' Remove Download does, so it's downloaded again when it's next chosen.
+    /// Whether it's on the Mac is read from those files, so what shows that is told it changed.
+    func removeDownloads(of item: WallpaperItem) {
+        refresh()
+        guard canRemoveDownloads(of: item) else { return }
+        objectWillChange.send()
+        for file in item.downloaded {
+            do {
+                try FileManager.default.removeItem(at: file)
+            } catch {
+                NSLog("Safelight: couldn't remove \(file.path): \(error)")
+            }
+        }
     }
 
     /// Makes a wallpaper with `item`'s picture for one appearance, as `setPicture(_:isDark:)` does,
@@ -4081,8 +4148,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         switch picture {
         case .file(let file):
             return file
-        case .download(let id):
-            return try await download(id, into: folder)
+        case .download(let id, let file):
+            return FileManager.default.isReadableFile(atPath: file.path) ? file : try await download(id, into: folder)
         case .aerial(let id, let video):
             return try await Self.frame(ofAerial: id, video: video, into: folder)
         case .color(let swatch):
@@ -4136,7 +4203,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// The first frame of an aerial's video, as the desktop shows it: from the copy macOS keeps once
     /// it's downloaded, or else from Apple's, which AVFoundation reads only as much of as it needs
     private static func frame(ofAerial id: String, video: URL, into folder: URL) async throws -> URL {
-        let downloaded = WallpaperLibrary.aerials.appendingPathComponent("videos/\(id).mov")
+        let downloaded = WallpaperLibrary.downloadedVideo(ofAerial: id)
         let videos = FileManager.default.isReadableFile(atPath: downloaded.path) ? [downloaded, video] : [video]
         var frame: CGImage?
         var failure: Error?
@@ -4283,6 +4350,38 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             add(space, ofDisplay: true)
         }
         return desktops
+    }
+
+    /// The files macOS has downloaded that it's showing, as the desktop or the screen saver, of any
+    /// display or Space: the videos of the aerials chosen in macOS's wallpaper service, which System
+    /// Settings never takes off the Mac. An aerials' shuffle has none, as for System Settings.
+    private static func downloadsInUse() -> Set<URL> {
+        guard let data = try? Data(contentsOf: store),
+              let index = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return [] }
+        var files: Set<URL> = []
+        func add(_ owner: Any?) {
+            let owner = owner as? [String: Any]
+            for content in ["Desktop", "Idle"] {
+                guard let stored = (owner?[content] as? [String: Any]).flatMap(StoredDesktop.init),
+                      stored.provider == "com.apple.wallpaper.choice.aerials", let id = stored.configuration["assetID"] as? String else { continue }
+                // An aerial's own ID, or for macOS's own, with a video for each appearance, its subcategory's.
+                // A shuffle has its category's, or "shuffle-all-aerials", which isn't any aerial's.
+                files.formUnion(WallpaperLibrary.shared.item(ofAerial: id)?.downloads ?? [])
+            }
+        }
+        add(index["AllSpacesAndDisplays"])
+        add(index["SystemDefault"])
+        for display in (index["Displays"] as? [String: Any] ?? [:]).values {
+            add(display)
+        }
+        for space in (index["Spaces"] as? [String: Any] ?? [:]).values {
+            let space = space as? [String: Any]
+            add(space?["Default"])
+            for display in (space?["Displays"] as? [String: Any] ?? [:]).values {
+                add(display)
+            }
+        }
+        return files
     }
 
     /// Macintosh's colours as System Settings would show it chosen now: its colorScheme option as the
@@ -5429,8 +5528,9 @@ struct WallpaperItem: Identifiable, Hashable {
     enum Picture: Hashable {
         /// A file on the Mac, with one picture in it, or one for Light and one for Dark
         case file(URL)
-        /// One of the pictures macOS downloads from Apple once it's chosen, by its ID in macOS's list
-        case download(String)
+        /// One of the pictures macOS downloads from Apple once it's chosen, by its ID in macOS's list,
+        /// and the file macOS keeps it in once it has
+        case download(id: String, file: URL)
         /// An aerial, by its ID, as the desktop shows it, from its video on Apple's server
         case aerial(id: String, video: URL)
         /// A colour, as its swatch
@@ -5452,6 +5552,10 @@ struct WallpaperItem: Identifiable, Hashable {
     let lightThumbnail: URL?
     let darkThumbnail: URL?
     var badge: Badge?
+    /// The files macOS downloads it into once it's chosen in System Settings, which System Settings'
+    /// Remove Download takes off the Mac again: an aerial's video (for macOS's own, one for each
+    /// appearance and each way up a display can be), or one of macOS's pictures
+    var downloads: [URL] = []
 
     /// Whether its pictures are on the Mac, or have to be downloaded first. An aerial's is when macOS
     /// has downloaded its video.
@@ -5460,12 +5564,17 @@ struct WallpaperItem: Identifiable, Hashable {
             switch picture {
             case .file, .color, .drawn:
                 return true
-            case .download:
-                return false
+            case .download(_, let file):
+                return FileManager.default.fileExists(atPath: file.path)
             case .aerial(let id, _):
-                return FileManager.default.fileExists(atPath: WallpaperLibrary.aerials.appendingPathComponent("videos/\(id).mov").path)
+                return FileManager.default.fileExists(atPath: WallpaperLibrary.downloadedVideo(ofAerial: id).path)
             }
         }
+    }
+
+    /// Those of its downloads that are on the Mac
+    var downloaded: [URL] {
+        downloads.filter { FileManager.default.fileExists(atPath: $0.path) }
     }
 }
 
@@ -5697,7 +5806,8 @@ final class WallpaperLibrary {
                     let name = subcategory.localizedNameKey.map { SystemStrings.aerialName($0, english: light.accessibilityLabel ?? $0) } ?? light.accessibilityLabel ?? ""
                     let item = WallpaperItem(id: "aerial:\(light.id)", name: name,
                                              light: .aerial(id: light.id, video: lightVideo), dark: .aerial(id: dark.id, video: darkVideo),
-                                             lightThumbnail: Self.thumbnail(ofAerial: light.id), darkThumbnail: Self.thumbnail(ofAerial: dark.id), badge: .dynamic)
+                                             lightThumbnail: Self.thumbnail(ofAerial: light.id), darkThumbnail: Self.thumbnail(ofAerial: dark.id), badge: .dynamic,
+                                             downloads: aerials.map { Self.downloadedVideo(ofAerial: $0.id) })
                     placed.append(Placed(order: subcategory.preferredOrder ?? 0, subcategory: subcategory.id, item: item))
                     aerialItems[subcategory.id] = item.id
                 } else {
@@ -5791,11 +5901,11 @@ final class WallpaperLibrary {
                 guard let descriptor = NSDictionary(contentsOf: file) else { continue }
                 isDynamic = descriptor["isDynamic"] as? Bool == true
                 let downloaded = Self.downloadedPictures.appendingPathComponent("\(name).heic")
-                if fileManager.fileExists(atPath: downloaded.path) {
-                    picture = .file(downloaded)
+                if let id = descriptor["mobileAssetID"] as? String, downloads[id] != nil {
+                    picture = .download(id: id, file: downloaded)
                 } else {
-                    guard let id = descriptor["mobileAssetID"] as? String, downloads[id] != nil else { continue }
-                    picture = .download(id)
+                    guard fileManager.fileExists(atPath: downloaded.path) else { continue }
+                    picture = .file(downloaded)
                 }
             } else {
                 // The colours are in a folder of their own
@@ -5890,12 +6000,14 @@ final class WallpaperLibrary {
         if let name = aerial.accessibilityLabel, case let file = desktopPictures.appendingPathComponent("\(name).heic"), FileManager.default.fileExists(atPath: file.path) {
             var item = picture(named: name, title: SystemStrings.desktopPictureName(name), picture: .file(file))
             item.badge = .video
+            item.downloads = [downloadedVideo(ofAerial: aerial.id)]
             return item
         }
         guard let video = aerial.video else { return nil }
         let name = aerial.localizedNameKey.map { SystemStrings.aerialName($0, english: aerial.accessibilityLabel ?? $0) } ?? aerial.accessibilityLabel ?? ""
         return WallpaperItem(id: "aerial:\(aerial.id)", name: name, light: .aerial(id: aerial.id, video: video), dark: .aerial(id: aerial.id, video: video),
-                             lightThumbnail: thumbnail(ofAerial: aerial.id), darkThumbnail: thumbnail(ofAerial: aerial.id), badge: .video)
+                             lightThumbnail: thumbnail(ofAerial: aerial.id), darkThumbnail: thumbnail(ofAerial: aerial.id), badge: .video,
+                             downloads: [downloadedVideo(ofAerial: aerial.id)])
     }
 
     /// One of macOS's pictures, with its thumbnail for Light and its thumbnail for Dark when it has a
@@ -5907,8 +6019,10 @@ final class WallpaperLibrary {
             return FileManager.default.fileExists(atPath: thumbnail.path) ? thumbnail : nil
         }
         let file: URL? = if case .file(let file) = picture { file } else { nil }
+        let downloads: [URL] = if case .download(_, let file) = picture { [file] } else { [] }
         return WallpaperItem(id: "picture:\(name)", name: title, light: picture, dark: picture,
-                             lightThumbnail: thumbnail(" Light") ?? thumbnail("") ?? file, darkThumbnail: thumbnail(" Dark") ?? thumbnail("") ?? file, badge: badge)
+                             lightThumbnail: thumbnail(" Light") ?? thumbnail("") ?? file, darkThumbnail: thumbnail(" Dark") ?? thumbnail("") ?? file, badge: badge,
+                             downloads: downloads)
     }
 
     /// Whether a picture has one for Light and one for Dark, or for times of day, as macOS's dynamic
@@ -5917,6 +6031,11 @@ final class WallpaperLibrary {
         guard let source = CGImageSourceCreateWithURL(file as CFURL, nil),
               let metadata = CGImageSourceCopyMetadataAtIndex(source, CGImageSourceGetPrimaryImageIndex(source), nil) else { return false }
         return ["apple_desktop:apr", "apple_desktop:solar", "apple_desktop:h24"].contains { CGImageMetadataCopyTagWithPath(metadata, nil, $0 as CFString) != nil }
+    }
+
+    /// Where macOS keeps an aerial's video once it has downloaded it
+    static func downloadedVideo(ofAerial id: String) -> URL {
+        aerials.appendingPathComponent("videos/\(id).mov")
     }
 
     /// An aerial's thumbnail, from macOS's list, or from System Settings for those it came with
@@ -6092,14 +6211,15 @@ enum SystemStrings {
     static let light = lookup("Light", in: appearanceSettings, english: "Light")
     static let dark = lookup("Dark", in: appearanceSettings, english: "Dark")
 
-    // System Settings › Wallpaper, its buttons for choosing a picture of your own, and its sections'
-    // Show All and Show Less
+    // System Settings › Wallpaper, its buttons for choosing a picture of your own, its sections' Show
+    // All and Show Less, and its menu item for taking a downloaded wallpaper off the Mac
     static let wallpaper = lookup("WALLPAPER", in: wallpaperSettings, english: "Wallpaper")
     static let addPhoto = lookup("ADD_PHOTO", in: wallpaperSettings, english: "Add Photo…")
     static let chooseFromPhotos = lookup("CHOOSE_FROM_PHOTOS", in: wallpaperSettings, english: "Choose from Photos…")
     static let chooseFile = lookup("CHOOSE_FILE", in: wallpaperSettings, english: "Choose File…")
     static let showAll = lookup("SHOW_ALL_%@", in: wallpaperSettings, english: "Show All (%@)")
     static let showLess = lookup("SHOW_LESS", in: wallpaperSettings, english: "Show Less")
+    static let removeDownload = lookup("REMOVE_DOWNLOAD", in: wallpaperSettings, english: "Remove Download")
 
     // System Settings › Wallpaper's sections, besides the aerials' (whose names come with them), and
     // the names of its colours and its aerials
