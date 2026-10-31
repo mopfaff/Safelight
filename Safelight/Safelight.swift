@@ -5,7 +5,9 @@ import Foundation // Required for dynamic library loading
 import ServiceManagement
 import UniformTypeIdentifiers
 import AVFoundation // For the aerials' pictures
-import Metal // For Macintosh's, drawn as macOS draws it
+import Metal // For Macintosh and Sequoia, drawn as macOS draws them
+import MetalKit
+import ModelIO
 import simd
 import PhotosUI
 #if canImport(Sparkle) // Not in scripts/screenshots.sh's copy, which leaves updates out
@@ -3802,8 +3804,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     }
 
     /// The wallpapers System Settings has that macOS draws as they're shown, from 3D models and little
-    /// programs, so there's no picture of them on the Mac to put in a wallpaper of Safelight's. Macintosh
-    /// is drawn here as macOS draws it; of Sequoia there's only System Settings' small thumbnails.
+    /// programs, so there's no picture of them on the Mac to put in a wallpaper of Safelight's. They're
+    /// drawn here as macOS draws them.
     enum DrawnWallpaper: String {
         case sequoia = "drawn:sequoia"
         case macintosh = "drawn:macintosh"
@@ -4543,11 +4545,10 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         case .shuffle(let shuffle, _):
             return Thumbnails(light: .shuffle(shuffle.thumbnails), dark: .shuffle(shuffle.thumbnails))
         case .drawn(let drawn, let lightShowsDark, let darkShowsDark, let colors):
-            // Macintosh as it's drawn here, the shape of the screen, at about a thumbnail's size
+            // As it's drawn here, the shape of the screen, at about a thumbnail's size
             let size = CGSize(width: 400, height: (400 * screenSize.height / max(screenSize.width, 1)).rounded())
             func look(showsDark: Bool, isDark: Bool) -> CGImage? {
-                (drawn == .macintosh ? MacintoshWallpaper.picture(showsDark: showsDark, inDarkAppearance: isDark, scheme: colors, size: size) : nil)
-                    ?? thumbnail(of: drawn, isDark: showsDark)
+                drawnImage(drawn, showsDark: showsDark, inDarkAppearance: isDark, colors: colors, size: size) ?? thumbnail(of: drawn, isDark: showsDark)
             }
             guard let light = look(showsDark: lightShowsDark, isDark: false), let dark = look(showsDark: darkShowsDark, isDark: true) else { return nil }
             return Thumbnails(light: .picture(light), dark: .picture(dark))
@@ -4569,13 +4570,22 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
     }
 
-    /// A wallpaper macOS draws as a picture of `size`, in pixels: Macintosh in its Dark look or its Light
-    /// one, as it's drawn here in an appearance's colours of `colors`, or where it can't be, and for
-    /// Sequoia, System Settings' thumbnail of it in that look, stretched to fill the picture, which is
-    /// all there is of it to put in a wallpaper
+    /// A wallpaper macOS draws as it's drawn here, in its Dark look or its Light one, the size of a picture
+    /// of `size`, in pixels: Macintosh in an appearance's colours of `colors`, and Sequoia. Nil on a macOS
+    /// whose wallpaper isn't drawn as worked out here.
+    private static func drawnImage(_ drawn: DrawnWallpaper, showsDark: Bool, inDarkAppearance isDark: Bool, colors: String?, size: CGSize) -> CGImage? {
+        switch drawn {
+        case .macintosh: MacintoshWallpaper.picture(showsDark: showsDark, inDarkAppearance: isDark, scheme: colors, size: size)
+        case .sequoia: SequoiaWallpaper.picture(showsDark: showsDark, size: size)
+        }
+    }
+
+    /// A wallpaper macOS draws as a picture of `size`, in pixels, in its Dark look or its Light one: as
+    /// it's drawn here, or where it can't be, System Settings' thumbnail of it in that look, stretched to
+    /// fill the picture, which is all there is of it on the Mac to put in a wallpaper
     private static func drawnPicture(_ drawn: DrawnWallpaper, showsDark: Bool, inDarkAppearance isDark: Bool, colors: String?, size: CGSize, into folder: URL) throws -> URL {
         let file = folder.appendingPathComponent("Desktop \(drawn.name).png")
-        if drawn == .macintosh, let picture = MacintoshWallpaper.picture(showsDark: showsDark, inDarkAppearance: isDark, scheme: colors, size: size) {
+        if let picture = drawnImage(drawn, showsDark: showsDark, inDarkAppearance: isDark, colors: colors, size: size) {
             guard let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.png.identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
             CGImageDestinationAddImage(destination, picture, nil)
             guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
@@ -5150,6 +5160,263 @@ enum MacintoshWallpaper {
     }
 }
 
+// MARK: - Sequoia (As macOS Draws It)
+/// System Settings' Sequoia wallpaper as a still picture, drawn as its extension draws it before it starts
+/// to move: a field of streaks, each one of three 3D meshes stood on the ground, turned and scaled, seen
+/// from low down and coloured by height from a gradient of the time of day, solar noon's in the Light
+/// look and solar midnight's in the Dark one. It's drawn with the extension's own shaders, meshes and
+/// gradients, and the streaks stand where the extension's own tables put them. As in the extension, the
+/// streaks without a turn of their own get a random one, so no two pictures (and no two times macOS
+/// starts drawing it) are quite the same. Drawn so, with the extension's streaks turned as it had turned
+/// them, it's within a level of each colour of what the extension draws.
+enum SequoiaWallpaper {
+    private static let resources = URL(fileURLWithPath: WallpaperLibrary.sequoiaExtension).appendingPathComponent("Contents/Resources", isDirectory: true)
+    private static let executable = URL(fileURLWithPath: WallpaperLibrary.sequoiaExtension).appendingPathComponent("Contents/MacOS/WallpaperSequoiaExtension")
+
+    /// Where a streak stands, how it's turned, in radians, and how wide and how tall it is, each as a
+    /// share of 0.35 to 1.4 in 16 bits, as the shaders take it
+    private struct Streak {
+        var x: Float
+        var z: Float
+        var rotation: Float
+        var scaleRadial: UInt16
+        var scaleVertical: UInt16
+    }
+
+    /// The streaks as the extension lays them out: two heroes with meshes of their own, then 13 with a
+    /// turn and scale of their own, then the rest. Their places, and the 13's turns and scales, are
+    /// tables in the extension's code, found by their first values; nil where they aren't there.
+    private static let layout: (places: [SIMD2<Float>], shaped: [SIMD3<Float>])? = {
+        guard let code = try? Data(contentsOf: executable, options: .mappedIfSafe) else { return nil }
+        func floats(after key: [Float], count: Int, back: Int = 0) -> [Float]? {
+            let bytes = key.flatMap { withUnsafeBytes(of: $0.bitPattern.littleEndian, Array.init) }
+            guard let found = code.range(of: Data(bytes)) else { return nil }
+            let start = found.lowerBound - back * MemoryLayout<Float>.size
+            guard start >= code.startIndex, start + count * 4 <= code.endIndex else { return nil }
+            return (0..<count).map { Float(bitPattern: UInt32(littleEndian: code[(start + $0 * 4)..<(start + $0 * 4 + 4)].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })) }
+        }
+        guard let places = floats(after: [-0.39026403427124023, 2.568509101867676], count: 274 * 2),
+              let shaped = floats(after: [-17.06, 1.0, 0.48], count: 13 * 3, back: 7 * 3),
+              places.allSatisfy({ abs($0) < 50 }), shaped.enumerated().allSatisfy({ $0.offset % 3 == 0 ? abs($0.element) < 30 : (0.2...1.5).contains($0.element) }) else { return nil }
+        return (stride(from: 0, to: places.count, by: 2).map { SIMD2(places[$0], places[$0 + 1]) },
+                stride(from: 0, to: shaped.count, by: 3).map { SIMD3(shaped[$0], shaped[$0 + 1], shaped[$0 + 2]) })
+    }()
+
+    /// A scale as the shaders take it: its share of 0.35 to 1.4, in 16 bits
+    private static func normalized(_ scale: Float) -> UInt16 {
+        UInt16(min((scale + -0.35) / 1.05 * 65535, 65535))
+    }
+
+    /// The camera as the extension sets it up before Sequoia moves: a field of view of 39.7°, narrower
+    /// as the display is wider, standing at (0, 0, 2) tilted 177.12° less half the field of view, and
+    /// a projection with infinite depth, the near plane 0.01 away, depth reversed
+    private static func camera(aspect: Float) -> (view: float4x4, projection: float4x4) {
+        let fieldOfView = Float(39.7 * Double.pi / 180)
+        let focal = 1 / tan(fieldOfView * 0.5)
+        let projection = float4x4(SIMD4(aspect <= 1 ? focal / aspect : focal, 0, 0, 0), SIMD4(0, aspect <= 1 ? focal : aspect * focal, 0, 0),
+                                  SIMD4(0, 0, 2.5033950805664062e-05, -1), SIMD4(0, 0, 0.010000250302255154, 0))
+        var half = fieldOfView * 0.5
+        if aspect > 1 {
+            half = tan(atan(half) / aspect)
+        }
+        let tilt = Float(Double(Float(177.12 * Double.pi / 180)) - Double(half)) + Float.pi / 2
+        let tilted = float4x4(SIMD4(1, 0, 0, 0), SIMD4(0, cos(tilt), sin(tilt), 0), SIMD4(0, -sin(tilt), cos(tilt), 0), SIMD4(0, 0, 0, 1))
+        // Turned half round about z, which turns x and y over
+        var placed = float4x4(SIMD4(-1, 0, 0, 0), SIMD4(0, -1, 0, 0), SIMD4(0, 0, 1, 0), SIMD4(0, 0, 0, 1)) * tilted
+        placed[3] = SIMD4(0, 0, 2, 1)
+        return (placed.inverse, projection)
+    }
+
+    /// The streaks drawn on a display of `aspect`: the heroes, then the others in front of the camera,
+    /// nearest first. Where they stand on the ground wraps round from 4 behind to 16 ahead; past 10 ahead
+    /// they're left out, as is any whose post, 30 high and 0.7 round, is out of the camera's view (the
+    /// heroes, which always are in it, are always drawn).
+    private static func streaks(aspect: Float, rotation: (SIMD2<Float>) -> Float) -> (heroes: [Streak], others: [Streak])? {
+        guard let layout else { return nil }
+        let (view, projection) = camera(aspect: aspect)
+        let viewProjection = (projection * view).transpose
+        let rows = (0..<4).map { viewProjection[$0] }
+        let planes = [rows[3] + rows[0], rows[3] - rows[0], rows[3] + rows[1], rows[3] - rows[1]].map { $0 / length(SIMD3($0.x, $0.y, $0.z)) }
+        func isShown(_ streak: Streak) -> Bool {
+            guard streak.z <= 10 else { return false }
+            return planes.allSatisfy { plane in
+                let normal = SIMD3(plane.x, plane.y, plane.z)
+                return max(dot(normal, SIMD3(-streak.x, 0, streak.z)), dot(normal, SIMD3(-streak.x, 30, streak.z))) + plane.w + 0.7 >= 0
+            }
+        }
+        var heroes: [Streak] = [], others: [Streak] = []
+        let unscaled = normalized(1)
+        for (index, place) in layout.places.enumerated() {
+            let z = fmodf(place.y + 24, 20) + -4
+            var streak = Streak(x: place.x, z: z, rotation: 0, scaleRadial: unscaled, scaleVertical: unscaled)
+            if index >= 2, index < 2 + layout.shaped.count {
+                let shape = layout.shaped[index - 2]
+                (streak.rotation, streak.scaleRadial, streak.scaleVertical) = (shape.x, normalized(shape.y), normalized(shape.z))
+            } else if index >= 2 {
+                streak.rotation = rotation(place)
+            }
+            if index < 2 {
+                heroes.append(streak)
+            } else if isShown(streak) {
+                others.append(streak)
+            }
+        }
+        others.sort { $0.z < $1.z }
+        return (heroes, others)
+    }
+
+    /// The extension's shaders, meshes and gradients, set up once
+    private struct Renderer {
+        let device: MTLDevice
+        let queue: MTLCommandQueue
+        let streaks: MTLRenderPipelineState
+        let background: MTLRenderPipelineState
+        let depth: MTLDepthStencilState
+        /// The two heroes' meshes, then the other streaks'
+        let meshes: [MTKMesh]
+        /// Solar noon's gradient and solar midnight's
+        let gradients: (light: MTLTexture, dark: MTLTexture)
+
+        init?() {
+            guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue(),
+                  let library = try? device.makeLibrary(URL: SequoiaWallpaper.resources.appendingPathComponent("default.metallib")) else { return nil }
+            // Without a second gradient to blend towards, as before it moves
+            let constants = MTLFunctionConstantValues()
+            var hasSecondGradient = false
+            constants.setConstantValue(&hasSecondGradient, type: .bool, index: 0)
+            func pipeline(_ vertex: String, _ fragment: String) -> (MTLRenderPipelineState, MTLRenderPipelineReflection?)? {
+                guard let vertexFunction = try? library.makeFunction(name: vertex, constantValues: constants),
+                      let fragmentFunction = try? library.makeFunction(name: fragment, constantValues: constants) else { return nil }
+                let descriptor = MTLRenderPipelineDescriptor()
+                descriptor.vertexFunction = vertexFunction
+                descriptor.fragmentFunction = fragmentFunction
+                descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm_srgb
+                descriptor.depthAttachmentPixelFormat = .depth16Unorm
+                descriptor.rasterSampleCount = 4
+                var reflection: MTLRenderPipelineReflection?
+                guard let state = try? device.makeRenderPipelineState(descriptor: descriptor, options: .bindingInfo, reflection: &reflection) else { return nil }
+                return (state, reflection)
+            }
+            // What the shaders take, checked by name, size and place, so a macOS whose shaders take something else gets no picture from here
+            guard let streaks = pipeline("drawVertex", "drawFragment"), let background = pipeline("screenTriangleVertex", "backgroundFragment"),
+                  let uniforms = streaks.1?.vertexBindings.first(where: { $0.name == "uniforms" }) as? MTLBufferBinding, uniforms.index == 0, uniforms.bufferDataSize == 128,
+                  uniforms.bufferStructType?.members.map({ "\($0.name) \($0.offset)" }) == ["viewTransform 0", "projectionTransform 64"],
+                  let instances = streaks.1?.vertexBindings.first(where: { $0.name == "instances" }) as? MTLBufferBinding, instances.index == 2,
+                  instances.bufferStructType?.members.map({ "\($0.name) \($0.offset)" }) == ["x 0", "z 4", "rotation 8", "normalizedScaleRadial 12", "normalizedScaleVertical 14"],
+                  streaks.1?.vertexBindings.contains(where: { $0.name == "vertices" && $0.index == 1 }) == true,
+                  streaks.1?.fragmentBindings.contains(where: { $0.name == "dimmingGradientAmount" && $0.index == 1 }) == true,
+                  streaks.1?.fragmentBindings.contains(where: { $0.name == "gradientTexture" && $0.index == 0 }) == true else { return nil }
+            let depthDescriptor = MTLDepthStencilDescriptor()
+            depthDescriptor.depthCompareFunction = .greaterEqual
+            depthDescriptor.isDepthWriteEnabled = true
+            guard let depth = device.makeDepthStencilState(descriptor: depthDescriptor) else { return nil }
+
+            // Each mesh with its position and where on its gradient it is, 16 bytes a vertex
+            let vertices = MDLVertexDescriptor()
+            vertices.attributes = NSMutableArray(array: [MDLVertexAttribute(name: MDLVertexAttributePosition, format: .float3, offset: 0, bufferIndex: 0),
+                                                         MDLVertexAttribute(name: MDLVertexAttributeTextureCoordinate, format: .half2, offset: 12, bufferIndex: 0)])
+            vertices.layouts = NSMutableArray(array: [MDLVertexBufferLayout(stride: 16)])
+            let meshes = ["mesh hero 1", "mesh hero 2", "mesh"].compactMap { name -> MTKMesh? in
+                let asset = MDLAsset(url: SequoiaWallpaper.resources.appendingPathComponent(name).appendingPathExtension("usdc"), vertexDescriptor: vertices,
+                                     bufferAllocator: MTKMeshBufferAllocator(device: device))
+                guard let mesh = asset.childObjects(of: MDLMesh.self).first as? MDLMesh, let drawn = try? MTKMesh(mesh: mesh, device: device),
+                      drawn.vertexBuffers.count == 1, drawn.submeshes.count == 1 else { return nil }
+                return drawn
+            }
+            // Each gradient as the extension reads it: drawn in Generic RGB linear, in 16-bit floats
+            func gradient(_ name: String) -> MTLTexture? {
+                guard let source = CGImageSourceCreateWithURL(SequoiaWallpaper.resources.appendingPathComponent(name).appendingPathExtension("exr") as CFURL, nil),
+                      let image = CGImageSourceCreateImageAtIndex(source, 0, nil), let linear = CGColorSpace(name: CGColorSpace.genericRGBLinear),
+                      let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 16, bytesPerRow: image.width * 8, space: linear,
+                                              bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.floatComponents.rawValue | CGBitmapInfo.byteOrder16Little.rawValue),
+                      let data = context.data else { return nil }
+                context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+                let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: image.width, height: image.height, mipmapped: false)
+                guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+                texture.replace(region: MTLRegionMake2D(0, 0, image.width, image.height), mipmapLevel: 0, withBytes: data, bytesPerRow: image.width * 8)
+                return texture
+            }
+            guard meshes.count == 3, let light = gradient("solar noon"), let dark = gradient("solar midnight") else { return nil }
+            (self.device, self.queue, self.streaks, self.background, self.depth) = (device, queue, streaks.0, background.0, depth)
+            (self.meshes, self.gradients) = (meshes, (light, dark))
+        }
+    }
+
+    private static let renderer = Renderer()
+
+    /// Sequoia as it is before it moves, on a display of `size`, in pixels, in its Dark look or its
+    /// Light one, with each streak that has no turn of its own turned as `rotation` says for where it
+    /// stands, at random unless a test says otherwise. Nil on a macOS whose Sequoia isn't drawn as
+    /// worked out here.
+    static func picture(showsDark: Bool, size: CGSize, rotation: (SIMD2<Float>) -> Float = { _ in Float.random(in: 0..<(2 * .pi)) }) -> CGImage? {
+        let width = max(Int(size.width), 1), height = max(Int(size.height), 1)
+        guard let renderer, let streaks = streaks(aspect: Float(width) / Float(height), rotation: rotation) else { return nil }
+        let device = renderer.device
+        let laidOut = streaks.heroes + streaks.others
+        guard streaks.heroes.count == 2, let instances = device.makeBuffer(bytes: laidOut, length: MemoryLayout<Streak>.stride * laidOut.count) else { return nil }
+        // Drawn four samples a pixel, which only the GPU keeps where it can, with depth as the extension has it
+        func target(_ format: MTLPixelFormat) -> MTLTexture? {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: width, height: height, mipmapped: false)
+            descriptor.textureType = .type2DMultisample
+            descriptor.sampleCount = 4
+            descriptor.usage = .renderTarget
+            descriptor.storageMode = device.supportsFamily(.apple1) ? .memoryless : .private
+            return device.makeTexture(descriptor: descriptor)
+        }
+        let resolved = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: width, height: height, mipmapped: false)
+        resolved.usage = .renderTarget
+        resolved.storageMode = device.hasUnifiedMemory ? .shared : .managed
+        guard let colors = target(.bgra8Unorm_srgb), let depths = target(.depth16Unorm), let output = device.makeTexture(descriptor: resolved) else { return nil }
+
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = colors
+        pass.colorAttachments[0].resolveTexture = output
+        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].storeAction = .multisampleResolve
+        pass.depthAttachment.texture = depths
+        pass.depthAttachment.loadAction = .clear
+        pass.depthAttachment.clearDepth = 0
+        pass.depthAttachment.storeAction = .dontCare
+        guard let commands = renderer.queue.makeCommandBuffer(), let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { return nil }
+        let (view, projection) = camera(aspect: Float(width) / Float(height))
+        var uniforms = [view, projection]
+        var dimming: Float = 1
+        encoder.setCullMode(.front)
+        encoder.setRenderPipelineState(renderer.streaks)
+        encoder.setDepthStencilState(renderer.depth)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<float4x4>.stride * 2, index: 0)
+        encoder.setVertexBuffer(instances, offset: 0, index: 2)
+        encoder.setFragmentBytes(&dimming, length: MemoryLayout<Float>.size, index: 1)
+        encoder.setFragmentTexture(showsDark ? renderer.gradients.dark : renderer.gradients.light, index: 0)
+        // Each hero with its own mesh, then the other streaks with theirs
+        for (mesh, count, first) in [(renderer.meshes[0], 1, 0), (renderer.meshes[1], 1, 1), (renderer.meshes[2], streaks.others.count, 2)] where count > 0 {
+            let submesh = mesh.submeshes[0]
+            encoder.setVertexBuffer(mesh.vertexBuffers[0].buffer, offset: mesh.vertexBuffers[0].offset, index: 1)
+            encoder.drawIndexedPrimitives(type: submesh.primitiveType, indexCount: submesh.indexCount, indexType: submesh.indexType, indexBuffer: submesh.indexBuffer.buffer,
+                                          indexBufferOffset: submesh.indexBuffer.offset, instanceCount: count, baseVertex: 0, baseInstance: first)
+        }
+        // The sky, behind them all
+        encoder.setRenderPipelineState(renderer.background)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+        if output.storageMode == .managed, let blit = commands.makeBlitCommandEncoder() {
+            blit.synchronize(resource: output)
+            blit.endEncoding()
+        }
+        commands.commit()
+        commands.waitUntilCompleted()
+        guard commands.status == .completed else { return nil }
+
+        let rowBytes = width * 4
+        var pixels = Data(count: rowBytes * height)
+        pixels.withUnsafeMutableBytes { output.getBytes($0.baseAddress!, bytesPerRow: rowBytes, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0) }
+        guard let sRGB = CGColorSpace(name: CGColorSpace.sRGB), let provider = CGDataProvider(data: pixels as CFData) else { return nil }
+        return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: rowBytes, space: sRGB,
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+}
+
 // MARK: - 9. Wallpaper Library (System Settings › Wallpaper's Own)
 /// One of System Settings › Wallpaper's own wallpapers, as a still picture for Light and one for Dark,
 /// which are the same unless it has one of each
@@ -5269,9 +5536,8 @@ struct WallpaperShuffle: Identifiable, Hashable {
 /// System Settings › Wallpaper's own wallpapers, in its sections and its order, gathered as it gathers
 /// them from its extensions, as far as each has a still picture to put in a wallpaper of Safelight's:
 /// its dynamic wallpapers' pictures for Light and for Dark, its aerials as the desktop shows them
-/// before they move, Macintosh as it's drawn here, its pictures and its colours. Its shuffles have no
-/// one picture, so they aren't here, nor is Sequoia, which macOS draws as it's shown, and which has no
-/// picture to take.
+/// before they move, Sequoia and Macintosh as they're drawn here, its pictures and its colours. Its
+/// shuffles have no one picture, so they aren't here.
 final class WallpaperLibrary {
     static let shared = WallpaperLibrary()
 
@@ -5483,13 +5749,19 @@ final class WallpaperLibrary {
             aerialSections.append(Section(id: "shuffle-aerials", title: SystemStrings.shuffleAerials, kind: .shuffles, items: [], shuffles: shuffles))
         }
 
-        // Tahoe, Macintosh and Sonoma, from extensions of their own, before macOS's dynamic pictures
+        // Tahoe, Sequoia, Macintosh and Sonoma, from extensions of their own, before macOS's dynamic pictures
         let tahoe = URL(fileURLWithPath: Self.tahoeExtension).appendingPathComponent("Contents/Resources", isDirectory: true)
         let tahoeLight = tahoe.appendingPathComponent("TahoeLight.heic")
         let tahoeDark = tahoe.appendingPathComponent("TahoeDark.heic")
         if fileManager.fileExists(atPath: tahoeLight.path), fileManager.fileExists(atPath: tahoeDark.path) {
             dynamic.append(Placed(order: -400, item: WallpaperItem(id: "picture:Tahoe", name: SystemStrings.tahoe, light: .file(tahoeLight), dark: .file(tahoeDark),
                                                                    lightThumbnail: tahoeLight, darkThumbnail: tahoeDark, badge: .dynamic)))
+        }
+        let sequoiaThumbnail = URL(fileURLWithPath: Self.sequoiaExtension).appendingPathComponent("Contents/Resources/thumbnail.heic")
+        if fileManager.fileExists(atPath: sequoiaThumbnail.path) {
+            let sequoia = WallpaperManager.DrawnWallpaper.sequoia
+            dynamic.append(Placed(order: -300, item: WallpaperItem(id: sequoia.rawValue, name: sequoia.name, light: .drawn(sequoia, isDark: false), dark: .drawn(sequoia, isDark: true),
+                                                                   lightThumbnail: sequoiaThumbnail, darkThumbnail: sequoiaThumbnail, badge: .dynamic)))
         }
         if fileManager.fileExists(atPath: Self.macintoshExtension), fileManager.fileExists(atPath: Self.macintoshThumbnail.path) {
             let macintosh = WallpaperManager.DrawnWallpaper.macintosh
