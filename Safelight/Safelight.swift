@@ -4487,10 +4487,14 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
               let destination = CGImageDestinationCreateWithURL(wallpaper as CFURL, UTType.heic.identifier as CFString, isOnePicture ? 1 : 2, nil)
         else { return false }
 
-        // About the size of macOS's own wallpapers for their pictures' size
-        let options = [kCGImageDestinationLossyCompressionQuality: 0.95] as CFDictionary
+        // About the size of macOS's own wallpapers for their pictures' size. A picture that's lost nothing
+        // yet, as one drawn here is, loses nothing: lossy, Sequoia's gradients and Macintosh's blocks
+        // came out several levels off.
+        func options(_ source: CGImageSource) -> CFDictionary {
+            [kCGImageDestinationLossyCompressionQuality: CGImageSourceGetType(source) as String? == UTType.png.identifier ? 1 : 0.95] as CFDictionary
+        }
         if isOnePicture {
-            CGImageDestinationAddImage(destination, lightPicture, options)
+            CGImageDestinationAddImage(destination, lightPicture, options(lightSource))
         } else {
             let metadata = CGImageMetadataCreateMutable()
             let indexes = ["l": 0, "d": 1]
@@ -4498,8 +4502,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
                   let plist = try? PropertyListSerialization.data(fromPropertyList: indexes, format: .binary, options: 0),
                   CGImageMetadataSetValueWithPath(metadata, nil, appearanceMetadataPath, plist.base64EncodedString() as CFString)
             else { return false }
-            CGImageDestinationAddImageAndMetadata(destination, lightPicture, metadata, options)
-            CGImageDestinationAddImage(destination, darkPicture, options)
+            CGImageDestinationAddImageAndMetadata(destination, lightPicture, metadata, options(lightSource))
+            CGImageDestinationAddImage(destination, darkPicture, options(darkSource))
         }
         return CGImageDestinationFinalize(destination)
     }
