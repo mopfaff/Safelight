@@ -5,6 +5,8 @@ import Foundation // Required for dynamic library loading
 import ServiceManagement
 import UniformTypeIdentifiers
 import AVFoundation // For the aerials' pictures
+import Metal // For Macintosh's, drawn as macOS draws it
+import simd
 import PhotosUI
 #if canImport(Sparkle) // Not in scripts/screenshots.sh's copy, which leaves updates out
 import Sparkle
@@ -3794,14 +3796,14 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         /// One of System Settings' shuffles, which shows the same picture in both appearances until it
         /// changes, as often as it's set to
         case shuffle(WallpaperShuffle, interval: WallpaperShuffle.Interval)
-        /// A wallpaper macOS draws as it's shown, with nothing but its thumbnails to show of it: its
-        /// own look in each appearance, or while it's set to Light or Dark, that one's in both
-        case drawn(DrawnWallpaper, lightShowsDark: Bool, darkShowsDark: Bool)
+        /// A wallpaper macOS draws as it's shown: its own look in each appearance, or while it's set to
+        /// Light or Dark, that one's in both, in Macintosh's colours (its colorScheme option)
+        case drawn(DrawnWallpaper, lightShowsDark: Bool, darkShowsDark: Bool, colors: String?)
     }
 
     /// The wallpapers System Settings has that macOS draws as they're shown, from 3D models and little
-    /// programs, so there's no picture of them on the Mac to put in a wallpaper of Safelight's, only
-    /// System Settings' small thumbnails of them
+    /// programs, so there's no picture of them on the Mac to put in a wallpaper of Safelight's. Macintosh
+    /// is drawn here as macOS draws it; of Sequoia there's only System Settings' small thumbnails.
     enum DrawnWallpaper: String {
         case sequoia = "drawn:sequoia"
         case macintosh = "drawn:macintosh"
@@ -3868,8 +3870,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             thumbnails = nil
             return
         }
+        let screenSize = Self.screenSize
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let thumbnails = Self.thumbnails(of: desktop)
+            let thumbnails = Self.thumbnails(of: desktop, screenSize: screenSize)
             DispatchQueue.main.async {
                 guard let self, self.shown == desktop else { return }
                 self.thumbnails = thumbnails
@@ -3888,7 +3891,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             return item.id
         case .shuffle(let shuffle, _)?:
             return shuffle.id
-        case .drawn(let drawn, _, _)?:
+        case .drawn(let drawn, _, _, _)?:
             return drawn.rawValue
         default:
             return nil
@@ -3908,9 +3911,10 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// doesn't beep when it fails.
     func choose(_ item: WallpaperItem, isDark: Bool, from shuffle: WallpaperShuffle.ID? = nil, isQuiet: Bool = false, then completion: ((_ isMade: Bool) -> Void)? = nil) {
         let screenSize = Self.screenSize
+        let macintoshColors = Self.macintoshColors
         setPicture(isDark: isDark, choice: shuffle ?? item.id, item: item.id, hasPictureForEach: item.light != item.dark, isQuiet: isQuiet, completion: completion) { [weak self] isDark, folder in
             guard let self else { throw CancellationError() }
-            return try await self.file(for: isDark ? item.dark : item.light, in: folder, screenSize: screenSize)
+            return try await self.file(for: isDark ? item.dark : item.light, in: folder, screenSize: screenSize, macintoshColors: macintoshColors)
         }
     }
 
@@ -4051,7 +4055,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         case .shuffle(let shuffle, let interval)? where shuffled != nil:
             choices = Choices(light: shuffle.id, dark: shuffle.id)
             WallpaperShuffler.shared.carryOn(shuffle.id, interval: interval, from: shuffled, isDark: !isDark)
-        case .drawn(let drawn, _, _)?:
+        case .drawn(let drawn, _, _, _)?:
             choices = Choices(light: drawn.rawValue, dark: drawn.rawValue)
         case nil, .shuffle?:
             choices = Choices(light: item, dark: item)
@@ -4069,8 +4073,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     }
 
     /// The file with a wallpaper's picture in it, fetched into `folder` when it isn't one already.
-    /// `screenSize`, in pixels, is the size a colour is drawn at.
-    private func file(for picture: WallpaperItem.Picture, in folder: URL, screenSize: CGSize) async throws -> URL {
+    /// `screenSize`, in pixels, is the size a colour, or Macintosh, is drawn at, and `macintoshColors` the
+    /// colours Macintosh is drawn in.
+    private func file(for picture: WallpaperItem.Picture, in folder: URL, screenSize: CGSize, macintoshColors: String? = nil) async throws -> URL {
         switch picture {
         case .file(let file):
             return file
@@ -4080,6 +4085,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             return try await Self.frame(ofAerial: id, video: video, into: folder)
         case .color(let swatch):
             return try Self.colorPicture(swatch, size: screenSize, into: folder)
+        case .drawn(let drawn, let isDark):
+            return try Self.drawnPicture(drawn, showsDark: isDark, inDarkAppearance: isDark, colors: macintoshColors, size: screenSize, into: folder)
         }
     }
 
@@ -4241,8 +4248,21 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// that file. Otherwise it's the one chosen last, which is the Space's own unless Spaces have been
     /// given wallpapers of their own since.
     private static func desktop(showing wallpaper: URL?, on display: String?) -> Desktop? {
+        let desktops = storedDesktops(on: display)
+        func lastSet(_ desktop: [String: Any]) -> Date {
+            desktop["LastSet"] as? Date ?? .distantPast
+        }
+        let named = wallpaper.flatMap { wallpaper in
+            desktops.first { StoredDesktop($0)?.url?.standardizedFileURL.path == wallpaper.standardizedFileURL.path }
+        }
+        return (named ?? desktops.max { lastSet($0) < lastSet($1) }).flatMap(StoredDesktop.init).flatMap(desktop(of:))
+    }
+
+    /// The desktops macOS's wallpaper service keeps for a display: the one for all of them, its own, and
+    /// each Space's
+    private static func storedDesktops(on display: String?) -> [[String: Any]] {
         guard let data = try? Data(contentsOf: store),
-              let index = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return nil }
+              let index = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return [] }
         var desktops: [[String: Any]] = []
         func add(_ owner: Any?, ofDisplay: Bool = false) {
             var owner = owner as? [String: Any]
@@ -4260,13 +4280,15 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             add((space as? [String: Any])?["Default"])
             add(space, ofDisplay: true)
         }
-        func lastSet(_ desktop: [String: Any]) -> Date {
-            desktop["LastSet"] as? Date ?? .distantPast
-        }
-        let named = wallpaper.flatMap { wallpaper in
-            desktops.first { StoredDesktop($0)?.url?.standardizedFileURL.path == wallpaper.standardizedFileURL.path }
-        }
-        return (named ?? desktops.max { lastSet($0) < lastSet($1) }).flatMap(StoredDesktop.init).flatMap(desktop(of:))
+        return desktops
+    }
+
+    /// Macintosh's colours as System Settings would show it chosen now: its colorScheme option as the
+    /// desktop chosen last has it, which keeps options from one choice to the next
+    private static var macintoshColors: String? {
+        let desktops = storedDesktops(on: NSScreen.screens.first.flatMap(uuid(of:)))
+        let last = desktops.max { ($0["LastSet"] as? Date ?? .distantPast) < ($1["LastSet"] as? Date ?? .distantPast) }
+        return last.flatMap(StoredDesktop.init)?.option("colorScheme", "picker")?["id"] as? String
     }
 
     /// What one of the wallpaper service's desktops shows, when Safelight can tell its pictures
@@ -4280,7 +4302,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             return .item(item, lightShowsDark: appearance == "dark", darkShowsDark: appearance != "light")
         }
         func drawn(_ drawn: DrawnWallpaper, appearance: String?) -> Desktop {
-            .drawn(drawn, lightShowsDark: appearance == "dark", darkShowsDark: appearance != "light")
+            .drawn(drawn, lightShowsDark: appearance == "dark", darkShowsDark: appearance != "light", colors: stored.option("colorScheme", "picker")?["id"] as? String)
         }
         // A shuffle changes as often as its option says (the aerials' have one of their own), which is
         // only there once it's been set
@@ -4379,8 +4401,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             return (try Self.colorPicture(color, size: screenSize, named: "Desktop Colour", into: folder), isDark)
         case .gradient(let color):
             return (try Self.gradientPicture(color, size: screenSize, into: folder), isDark)
-        case .drawn(let drawn, let lightShowsDark, let darkShowsDark):
-            return (try Self.drawnPicture(drawn, isDark: isDark ? darkShowsDark : lightShowsDark, size: screenSize, into: folder), isDark)
+        case .drawn(let drawn, let lightShowsDark, let darkShowsDark, let colors):
+            return (try Self.drawnPicture(drawn, showsDark: isDark ? darkShowsDark : lightShowsDark, inDarkAppearance: isDark, colors: colors, size: screenSize, into: folder), isDark)
         case .shuffle:
             return nil
         }
@@ -4491,8 +4513,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
 
     /// The pictures the desktop shows in Light and in Dark, scaled down as `thumbnails(of:)` scales them.
     /// A wallpaper of System Settings' shows its thumbnails, which are the ones the Wallpaper window
-    /// shows, a shuffle its thumbnail, and a colour is just the colour, or its gradient.
-    private static func thumbnails(of desktop: Desktop) -> Thumbnails? {
+    /// shows, a shuffle its thumbnail, a colour is just the colour, or its gradient, and Macintosh is
+    /// drawn the shape of a display of `screenSize`.
+    private static func thumbnails(of desktop: Desktop, screenSize: CGSize) -> Thumbnails? {
         func both(_ thumbnail: CGImage?) -> Thumbnails? {
             thumbnail.map { Thumbnails(light: .picture($0), dark: .picture($0)) }
         }
@@ -4519,8 +4542,14 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             return both(gradientImage(color, size: CGSize(width: 160, height: 100)))
         case .shuffle(let shuffle, _):
             return Thumbnails(light: .shuffle(shuffle.thumbnails), dark: .shuffle(shuffle.thumbnails))
-        case .drawn(let drawn, let lightShowsDark, let darkShowsDark):
-            guard let light = thumbnail(of: drawn, isDark: lightShowsDark), let dark = thumbnail(of: drawn, isDark: darkShowsDark) else { return nil }
+        case .drawn(let drawn, let lightShowsDark, let darkShowsDark, let colors):
+            // Macintosh as it's drawn here, the shape of the screen, at about a thumbnail's size
+            let size = CGSize(width: 400, height: (400 * screenSize.height / max(screenSize.width, 1)).rounded())
+            func look(showsDark: Bool, isDark: Bool) -> CGImage? {
+                (drawn == .macintosh ? MacintoshWallpaper.picture(showsDark: showsDark, inDarkAppearance: isDark, scheme: colors, size: size) : nil)
+                    ?? thumbnail(of: drawn, isDark: showsDark)
+            }
+            guard let light = look(showsDark: lightShowsDark, isDark: false), let dark = look(showsDark: darkShowsDark, isDark: true) else { return nil }
             return Thumbnails(light: .picture(light), dark: .picture(dark))
         }
     }
@@ -4540,10 +4569,19 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
     }
 
-    /// System Settings' thumbnail of a wallpaper macOS draws, as it looks in an appearance, stretched to
-    /// fill a picture of `size`, in pixels, which is all there is of it to put in a wallpaper
-    private static func drawnPicture(_ drawn: DrawnWallpaper, isDark: Bool, size: CGSize, into folder: URL) throws -> URL {
-        guard let thumbnail = thumbnail(of: drawn, isDark: isDark),
+    /// A wallpaper macOS draws as a picture of `size`, in pixels: Macintosh in its Dark look or its Light
+    /// one, as it's drawn here in an appearance's colours of `colors`, or where it can't be, and for
+    /// Sequoia, System Settings' thumbnail of it in that look, stretched to fill the picture, which is
+    /// all there is of it to put in a wallpaper
+    private static func drawnPicture(_ drawn: DrawnWallpaper, showsDark: Bool, inDarkAppearance isDark: Bool, colors: String?, size: CGSize, into folder: URL) throws -> URL {
+        let file = folder.appendingPathComponent("Desktop \(drawn.name).png")
+        if drawn == .macintosh, let picture = MacintoshWallpaper.picture(showsDark: showsDark, inDarkAppearance: isDark, scheme: colors, size: size) {
+            guard let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.png.identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
+            CGImageDestinationAddImage(destination, picture, nil)
+            guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+            return file
+        }
+        guard let thumbnail = thumbnail(of: drawn, isDark: showsDark),
               let colorSpace = thumbnail.colorSpace.flatMap({ $0.model == .rgb ? $0 : nil }) ?? CGColorSpace(name: CGColorSpace.sRGB),
               let context = CGContext(data: nil, width: max(Int(size.width), 1), height: max(Int(size.height), 1), bitsPerComponent: 8, bytesPerRow: 0,
                                       space: colorSpace, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { throw CocoaError(.fileReadCorruptFile) }
@@ -4551,7 +4589,6 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         let filled = CGSize(width: CGFloat(thumbnail.width) * scale, height: CGFloat(thumbnail.height) * scale)
         context.interpolationQuality = .high
         context.draw(thumbnail, in: CGRect(x: (CGFloat(context.width) - filled.width) / 2, y: (CGFloat(context.height) - filled.height) / 2, width: filled.width, height: filled.height))
-        let file = folder.appendingPathComponent("Desktop \(drawn.name).png")
         guard let picture = context.makeImage(),
               let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.png.identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
         CGImageDestinationAddImage(destination, picture, nil)
@@ -4773,6 +4810,346 @@ final class WallpaperShuffler: ObservableObject {
     }
 }
 
+// MARK: - Macintosh (As macOS Draws It)
+/// System Settings' Macintosh wallpaper as a still picture, drawn as its extension draws it when it shows
+/// its still scene, Icon Garden: an emulated Mac screen of 512 by 342 pixels, each black pixel a block
+/// standing up from a background of two colours, with a soft shadow under it, seen from an angle. It's
+/// drawn with the extension's own shaders from the extension's own files, with what the extension gives
+/// the shaders worked out from its code. Drawn so, it's within a level of each colour of what the
+/// extension draws on a 5K and a 1080p display.
+enum MacintoshWallpaper {
+    private static let resources = URL(fileURLWithPath: WallpaperLibrary.macintoshExtension).appendingPathComponent("Contents/Resources", isDirectory: true)
+
+    /// What the extension gives its shaders for a frame, laid out as they take it
+    private struct Uniforms {
+        var viewProjectionMatrix: float4x4
+        /// The emulated screen's size, and half of it
+        var bitmapSize: SIMD4<Float>
+        var bitmapSizeInt: SIMD4<Int32>
+        /// The screen's pixels it draws: from where, and how many a row
+        var pixelsRectInt: SIMD4<Int32>
+        var translate: SIMD4<Float>
+        var rampDirection: SIMD4<Float>
+        /// How far the blocks stand up, and over what the ramp raises them
+        var animation: SIMD4<Float>
+        var backgroundColorTop: SIMD4<Float>
+        var backgroundColorBottom: SIMD4<Float>
+        var color: SIMD4<Float>
+    }
+
+    /// The shaders' uniforms by name and where each is, which is checked before drawing, so a macOS whose
+    /// shaders take something else gets no picture from here rather than a wrong one
+    private static let uniformsLayout = [("viewProjectionMatrix", 0), ("bitmapSize", 64), ("bitmapSizeInt", 80), ("pixelsRectInt", 96), ("translate", 112),
+                                         ("rampDirection", 128), ("animation", 144), ("backgroundColorTop", 160), ("backgroundColorBottom", 176), ("color", 192)]
+
+    /// The still scene, from the extension's program for it, in the extension's own little language
+    private struct Scene {
+        var image = ""
+        var camera = SIMD2<Float>(0, 0)
+        var scroll = SIMD2<Float>(0, 0)
+        var icons: [(x: Int, y: Int, name: String)] = []
+        var cursors: [(x: Int, y: Int, name: String)] = []
+        var carets: [(x: Int, y: Int, width: Int, height: Int)] = []
+
+        init?() {
+            guard let program = try? String(contentsOf: resources.appendingPathComponent("IconGardenWallpaper.program"), encoding: .utf8) else { return nil }
+            for line in program.components(separatedBy: .newlines) {
+                let words = line.trimmingCharacters(in: .whitespaces)
+                let quoted = words.components(separatedBy: "\"")
+                let name = quoted.count > 2 ? quoted[1] : ""
+                let numbers = quoted[0].split { !"-0123456789.".contains($0) }.compactMap { Float($0) }
+                if words.hasPrefix("let image =") {
+                    image = name
+                } else if words.hasPrefix("camera to"), numbers.count >= 2 {
+                    camera = SIMD2(numbers[0], numbers[1])
+                } else if words.hasPrefix("scroll to"), numbers.count >= 2 {
+                    scroll = SIMD2(numbers[0], numbers[1])
+                } else if words.hasPrefix("add icon at"), numbers.count >= 2 {
+                    icons.append((Int(numbers[0]), Int(numbers[1]), name))
+                } else if words.hasPrefix("add cursor at"), numbers.count >= 2 {
+                    cursors.append((Int(numbers[0]), Int(numbers[1]), name))
+                } else if words.hasPrefix("add caret at"), numbers.count >= 4 {
+                    carets.append((Int(numbers[0]), Int(numbers[1]), Int(numbers[2]), Int(numbers[3])))
+                } else if words == "exit" {
+                    break
+                }
+            }
+            guard !image.isEmpty else { return nil }
+        }
+    }
+
+    /// The cursors the still scene has, by the resources of the Mac's own they were: the watch, and the
+    /// spinning ball's first frame. Others are left out, as the scene's only other one is off the screen.
+    private static let cursorResources = ["Watch": "CURS_4", "Ball": "acur_128"]
+
+    /// A picture's pixels, each whether it's black, and whether it's there at all
+    private static func pixels(_ name: String) -> (width: Int, height: Int, black: [Bool], opaque: [Bool])? {
+        guard let source = CGImageSourceCreateWithURL(resources.appendingPathComponent(name).appendingPathExtension("png") as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil), let sRGB = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                                      space: sRGB, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let data = context.data else { return nil }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        let bytes = data.assumingMemoryBound(to: UInt8.self)
+        let count = image.width * image.height
+        let opaque = (0..<count).map { bytes[$0 * 4 + 3] > 127 }
+        let black = (0..<count).map { opaque[$0] && (Int(bytes[$0 * 4]) + Int(bytes[$0 * 4 + 1]) + Int(bytes[$0 * 4 + 2])) / 3 < 128 }
+        return (image.width, image.height, black, opaque)
+    }
+
+    /// The emulated screen as the still scene has it, row by row from the top: its picture, the first
+    /// frame of each icon over it with its bottom left corner where it's put, each cursor with its hot
+    /// spot there (black where its mask and picture are, white where only its mask is, and the screen
+    /// turned over where only its picture is), and each caret turned over, standing on where it's put
+    private static func screen(of scene: Scene) -> [Bool]? {
+        guard let picture = pixels(scene.image), picture.width == 512, picture.height == 342 else { return nil }
+        var screen = picture.black
+        func set(_ x: Int, _ y: Int, _ change: (inout Bool) -> Void) {
+            guard (0..<512).contains(x), (0..<342).contains(y) else { return }
+            change(&screen[y * 512 + x])
+        }
+        for icon in scene.icons {
+            guard let sheet = pixels(icon.name), sheet.height == 32 else { return nil }
+            for row in 0..<32 {
+                for column in 0..<32 where sheet.opaque[row * sheet.width + column] {
+                    set(icon.x + column, icon.y - 31 + row) { $0 = sheet.black[row * sheet.width + column] }
+                }
+            }
+        }
+        for cursor in scene.cursors {
+            guard var resource = cursorResources[cursor.name] else { continue }
+            // An animated cursor lists its frames' resources, after how many there are
+            if resource.hasPrefix("acur_") {
+                guard let list = try? Data(contentsOf: resources.appendingPathComponent(resource).appendingPathExtension("bin")), list.count >= 6 else { return nil }
+                resource = "CURS_\(Int16(bitPattern: UInt16(list[4]) << 8 | UInt16(list[5])))"
+            }
+            guard let data = try? Data(contentsOf: resources.appendingPathComponent(resource).appendingPathExtension("bin")), data.count >= 68 else { return nil }
+            let word = { (offset: Int) in UInt16(data[offset]) << 8 | UInt16(data[offset + 1]) }
+            let hotSpot = (v: Int(Int16(bitPattern: word(64))), h: Int(Int16(bitPattern: word(66))))
+            for row in 0..<16 {
+                for column in 0..<16 {
+                    let bit = UInt16(1) << (15 - column)
+                    let isBlack = word(row * 2) & bit != 0, isMasked = word(32 + row * 2) & bit != 0
+                    set(cursor.x - hotSpot.h + column, cursor.y - hotSpot.v + row) { pixel in
+                        if isMasked {
+                            pixel = isBlack
+                        } else if isBlack {
+                            pixel.toggle()
+                        }
+                    }
+                }
+            }
+        }
+        for caret in scene.carets {
+            for row in 0..<caret.height {
+                for column in 0..<caret.width {
+                    set(caret.x + column, caret.y - row) { $0.toggle() }
+                }
+            }
+        }
+        return screen
+    }
+
+    /// The camera the extension sees the screen with: from 1000 away, turned by the scene's two angles,
+    /// with an orthographic projection 140 pixels across (180 on a display more than twice as wide as
+    /// high or the other way round), scaled so the screen's blocks reach past each of the display's
+    /// corners. All of it in Float, as the extension works it out.
+    private static func matrix(size: CGSize, camera: SIMD2<Float>) -> float4x4 {
+        let aspect = Float(size.width / size.height)
+        let across: Float = aspect < 0.5 || aspect > 2 ? 180 : 140
+        var orthographic = float4x4(0)
+        orthographic[0][0] = 2 / across
+        orthographic[1][1] = 2 / (across / aspect)
+        orthographic[2][2] = -0.0005001250538043678
+        orthographic[3][2] = -1.0005000829696655
+        orthographic[3][3] = 1
+        // From OpenGL's depth to Metal's
+        let depth = float4x4(SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, -0.5, 0), SIMD4(0, 0, 0.5, 1))
+        let turn = camera.x / 180 * .pi * 0.5, tilt = camera.y / -180 * .pi * 0.5
+        let turned = simd_quatf(vector: SIMD4(0, 0, sin(turn), cos(turn)))
+        let axis = turned.conjugate.act(SIMD3(1, 0, 0))
+        let rotation = float4x4(turned * simd_quatf(vector: SIMD4(axis * sin(tilt), cos(tilt))))
+        let eye = SIMD3<Float>(0, 0, -1000)
+        let back = normalize(eye), side = normalize(cross(SIMD3(0, 1, 0), back)), up = cross(back, side)
+        let look = float4x4(SIMD4(side.x, up.x, back.x, 0), SIMD4(side.y, up.y, back.y, 0), SIMD4(side.z, up.z, back.z, 0),
+                            SIMD4(-dot(side, eye), -dot(up, eye), -dot(back, eye), 1))
+        let view = look * rotation
+        // Where the display's diagonals cross the edges of a pixel's square as the camera sees it
+        let x = SIMD2(view[0].x, view[0].y), y = SIMD2(view[1].x, view[1].y), origin = SIMD2(view[3].x, view[3].y)
+        let corners = [origin + x - y, origin + x + y, origin + y - x]
+        func crossing(_ from: SIMD2<Float>, _ to: SIMD2<Float>, _ diagonal: SIMD2<Float>) -> SIMD2<Float> {
+            let edge = to - from
+            return abs(from + edge * ((-from.y * diagonal.x + from.x * diagonal.y) / (edge.y * diagonal.x - edge.x * diagonal.y)))
+        }
+        let crossings = [SIMD2(aspect, 1), SIMD2(aspect, -1)].flatMap { [crossing(corners[0], corners[1], $0), crossing(corners[1], corners[2], $0)] }
+        let margin = across / (across - 2)
+        let scale = max(margin / (crossings.map(\.x).min() ?? 1), margin / (crossings.map(\.y).min() ?? 1) / aspect)
+        return depth * orthographic * view * float4x4(diagonal: SIMD4(scale, scale, scale, 1))
+    }
+
+    /// The colour a colour scheme gives, as the extension takes it: one of macOS's colours as it is in an
+    /// appearance, in linear sRGB. Spectrum (the default) and Accent with a multicolour accent start with
+    /// green, which is what the still scene keeps; Random has any of the colours.
+    private static func color(of scheme: String?, isDark: Bool) -> SIMD4<Float> {
+        let colors: [String: NSColor] = ["green": .systemGreen, "yellow": .systemYellow, "orange": .systemOrange, "red": .systemRed, "purple": .systemPurple, "blue": .systemBlue]
+        let color: NSColor
+        switch scheme {
+        case "gray":
+            return SIMD4(0.7, 0.7, 0.77, 1)
+        case "darkGray":
+            return SIMD4(0.165, 0.15, 0.15, 1)
+        case "accent" where UserDefaults.standard.object(forKey: "AppleAccentColor") != nil:
+            color = .controlAccentColor
+        case "random":
+            color = colors.values.randomElement() ?? .systemGreen
+        case let scheme?:
+            color = colors[scheme] ?? .systemGreen
+        case nil:
+            color = .systemGreen
+        }
+        var cgColor: CGColor?
+        NSAppearance(named: isDark ? .darkAqua : .aqua)?.performAsCurrentDrawingAppearance {
+            cgColor = color.cgColor
+        }
+        guard let linear = CGColorSpace(name: CGColorSpace.linearSRGB),
+              let components = cgColor?.converted(to: linear, intent: .defaultIntent, options: nil)?.components, components.count == 4 else { return SIMD4(0, 0, 0, 1) }
+        return SIMD4(components.map { Float($0) })
+    }
+
+    /// The extension's shaders and what they draw with, set up once
+    private struct Renderer {
+        let device: MTLDevice
+        let queue: MTLCommandQueue
+        let background: MTLRenderPipelineState
+        let shadows: MTLRenderPipelineState
+        let blocks: MTLRenderPipelineState
+        /// The squares drawn for each of the screen's pixels: the background's across the whole display,
+        /// a shadow's under each, and a block's, which stands up as far as the pixel is black
+        let backgroundSquare: MTLBuffer
+        let shadowSquare: MTLBuffer
+        let blockSquare: MTLBuffer
+
+        init?() {
+            guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue(),
+                  let library = try? device.makeLibrary(URL: MacintoshWallpaper.resources.appendingPathComponent("default.metallib")) else { return nil }
+            func pipeline(_ vertex: String, _ fragment: String, blends: Bool) -> (MTLRenderPipelineState, MTLRenderPipelineReflection?)? {
+                guard let vertexFunction = library.makeFunction(name: vertex), let fragmentFunction = library.makeFunction(name: fragment) else { return nil }
+                let descriptor = MTLRenderPipelineDescriptor()
+                descriptor.vertexFunction = vertexFunction
+                descriptor.fragmentFunction = fragmentFunction
+                descriptor.rasterSampleCount = 4
+                let attachment = descriptor.colorAttachments[0]!
+                attachment.pixelFormat = .rgba16Float
+                // A shadow over what's under it
+                if blends {
+                    attachment.isBlendingEnabled = true
+                    attachment.sourceRGBBlendFactor = .sourceAlpha
+                    attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
+                    attachment.sourceAlphaBlendFactor = .one
+                    attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
+                }
+                var reflection: MTLRenderPipelineReflection?
+                guard let state = try? device.makeRenderPipelineState(descriptor: descriptor, options: .bindingInfo, reflection: &reflection) else { return nil }
+                return (state, reflection)
+            }
+            guard let background = pipeline("backgroundVertex", "backgroundFragment", blends: false),
+                  let shadows = pipeline("pixelVertex", "shadowFragment", blends: true),
+                  let blocks = pipeline("pixelVertex", "pixelFragment", blends: false),
+                  let uniforms = blocks.1?.vertexBindings.first(where: { $0.name == "uniforms" }) as? MTLBufferBinding,
+                  uniforms.index == 0, uniforms.bufferDataSize == MemoryLayout<Uniforms>.size,
+                  let members = uniforms.bufferStructType?.members, members.map({ ($0.name, $0.offset) }).elementsEqual(MacintoshWallpaper.uniformsLayout, by: ==),
+                  blocks.1?.vertexBindings.contains(where: { $0.name == "vertices" && $0.index == 1 }) == true else { return nil }
+            func square(_ corners: [SIMD4<Float>]) -> MTLBuffer? {
+                device.makeBuffer(bytes: corners, length: MemoryLayout<SIMD4<Float>>.stride * corners.count)
+            }
+            guard let backgroundSquare = square([SIMD4(-1, -1, 0, 1), SIMD4(1, -1, 0, 1), SIMD4(-1, 1, 0, 1), SIMD4(1, 1, 0, 1)]),
+                  let shadowSquare = square([SIMD4(-1.125, -1.125, -0.45, 1), SIMD4(1.125, -1.125, -0.45, 1), SIMD4(-1.125, 1.125, -0.45, 1), SIMD4(1.125, 1.125, -0.45, 1)]),
+                  let blockSquare = square([SIMD4(-0.45, -0.45, 0, 1), SIMD4(0.45, -0.45, 0, 1), SIMD4(-0.45, 0.45, 0, 1), SIMD4(0.45, 0.45, 0, 1)]) else { return nil }
+            (self.device, self.queue, self.background, self.shadows, self.blocks) = (device, queue, background.0, shadows.0, blocks.0)
+            (self.backgroundSquare, self.shadowSquare, self.blockSquare) = (backgroundSquare, shadowSquare, blockSquare)
+        }
+    }
+
+    private static let renderer = Renderer()
+
+    /// Macintosh as the still scene shows it on a display of `size`, in pixels: in its Dark look or its
+    /// Light one, in the colours of `scheme` (its colorScheme option) as they are in an appearance. Nil
+    /// on a macOS whose Macintosh isn't drawn as worked out here.
+    static func picture(showsDark: Bool, inDarkAppearance isDark: Bool, scheme: String?, size: CGSize) -> CGImage? {
+        let width = max(Int(size.width), 1), height = max(Int(size.height), 1)
+        guard let renderer, let scene = Scene(), let screen = screen(of: scene) else { return nil }
+        let device = renderer.device
+        let screenDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: 512, height: 342, mipmapped: false)
+        guard let screenTexture = device.makeTexture(descriptor: screenDescriptor) else { return nil }
+        let bytes = screen.flatMap { $0 ? [UInt8](repeating: 0, count: 3) + [255] : [UInt8](repeating: 255, count: 4) }
+        screenTexture.replace(region: MTLRegionMake2D(0, 0, 512, 342), mipmapLevel: 0, withBytes: bytes, bytesPerRow: 512 * 4)
+        // Drawn four samples a pixel, which only the GPU keeps where it can
+        let samples = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false)
+        samples.textureType = .type2DMultisample
+        samples.sampleCount = 4
+        samples.usage = .renderTarget
+        samples.storageMode = device.supportsFamily(.apple1) ? .memoryless : .private
+        let resolved = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false)
+        resolved.usage = .renderTarget
+        resolved.storageMode = device.hasUnifiedMemory ? .shared : .managed
+        guard let sampleTexture = device.makeTexture(descriptor: samples), let output = device.makeTexture(descriptor: resolved) else { return nil }
+
+        // The bottom of the background in the scheme's colour, a third as bright in the Dark look; its top
+        // lighter, towards white in gamma 2.2; the blocks two thirds as bright as the bottom, as they are
+        // in the still scene
+        let base = color(of: scheme, isDark: isDark)
+        let bottom = showsDark ? SIMD4(base.x * 0.3, base.y * 0.3, base.z * 0.3, base.w) : base
+        let gamma = SIMD4<Float>(pow(bottom.x, 1 / 2.2), pow(bottom.y, 1 / 2.2), pow(bottom.z, 1 / 2.2), pow(bottom.w, 1 / 2.2))
+        let lighter = gamma + (SIMD4(repeating: 1) - gamma) * (showsDark ? 0.09 : 0.26)
+        let top = SIMD4<Float>(pow(lighter.x, 2.2), pow(lighter.y, 2.2), pow(lighter.z, 2.2), pow(lighter.w, 2.2))
+        let blocks = SIMD4(bottom.x * 0.666, bottom.y * 0.666, bottom.z * 0.666, 1)
+        // The 140 by 140 of the screen's pixels around where it's scrolled to, from its middle
+        let corner = SIMD2<Int32>(Int32(scene.scroll.x) - 70, Int32(scene.scroll.y) - 70)
+        var uniforms = Uniforms(viewProjectionMatrix: matrix(size: CGSize(width: width, height: height), camera: scene.camera),
+                                bitmapSize: SIMD4(512, 342, 256, 171), bitmapSizeInt: SIMD4(512, 342, 0, 0), pixelsRectInt: SIMD4(corner.x, corner.y, 140, 0),
+                                translate: SIMD4(scene.scroll.x - 256, scene.scroll.y - 171, 0, 0), rampDirection: .zero, animation: SIMD4(1, 0.5, 0.75, 0),
+                                backgroundColorTop: top, backgroundColorBottom: bottom, color: blocks)
+
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = sampleTexture
+        pass.colorAttachments[0].resolveTexture = output
+        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].storeAction = .multisampleResolve
+        guard let commands = renderer.queue.makeCommandBuffer(), let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { return nil }
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 0)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.size, index: 0)
+        encoder.setVertexTexture(screenTexture, index: 0)
+        let count = 140 * 140
+        for (pipeline, square, instances) in [(renderer.background, renderer.backgroundSquare, 1), (renderer.shadows, renderer.shadowSquare, count), (renderer.blocks, renderer.blockSquare, count)] {
+            encoder.setRenderPipelineState(pipeline)
+            encoder.setVertexBuffer(square, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: instances)
+        }
+        encoder.endEncoding()
+        if output.storageMode == .managed, let blit = commands.makeBlitCommandEncoder() {
+            blit.synchronize(resource: output)
+            blit.endEncoding()
+        }
+        commands.commit()
+        commands.waitUntilCompleted()
+        guard commands.status == .completed else { return nil }
+
+        // In 16-bit floats, as the extension draws it, then in 8-bit sRGB as other pictures are
+        let rowBytes = width * 8
+        var halves = Data(count: rowBytes * height)
+        halves.withUnsafeMutableBytes { output.getBytes($0.baseAddress!, bytesPerRow: rowBytes, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0) }
+        guard let linear = CGColorSpace(name: CGColorSpace.linearSRGB), let sRGB = CGColorSpace(name: CGColorSpace.sRGB),
+              let provider = CGDataProvider(data: halves as CFData),
+              let drawn = CGImage(width: width, height: height, bitsPerComponent: 16, bitsPerPixel: 64, bytesPerRow: rowBytes, space: linear,
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.floatComponents.rawValue | CGBitmapInfo.byteOrder16Little.rawValue),
+                                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent),
+              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: sRGB,
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        context.draw(drawn, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
+    }
+}
+
 // MARK: - 9. Wallpaper Library (System Settings › Wallpaper's Own)
 /// One of System Settings › Wallpaper's own wallpapers, as a still picture for Light and one for Dark,
 /// which are the same unless it has one of each
@@ -4787,6 +5164,8 @@ struct WallpaperItem: Identifiable, Hashable {
         case aerial(id: String, video: URL)
         /// A colour, as its swatch
         case color(URL)
+        /// One of the wallpapers macOS draws, in its Dark look or its Light one
+        case drawn(WallpaperManager.DrawnWallpaper, isDark: Bool)
     }
 
     /// What System Settings badges a thumbnail with: a dynamic wallpaper, which has a picture for Light
@@ -4808,7 +5187,7 @@ struct WallpaperItem: Identifiable, Hashable {
     var isOnMac: Bool {
         [light, dark].allSatisfy { picture in
             switch picture {
-            case .file, .color:
+            case .file, .color, .drawn:
                 return true
             case .download:
                 return false
@@ -4890,8 +5269,8 @@ struct WallpaperShuffle: Identifiable, Hashable {
 /// System Settings › Wallpaper's own wallpapers, in its sections and its order, gathered as it gathers
 /// them from its extensions, as far as each has a still picture to put in a wallpaper of Safelight's:
 /// its dynamic wallpapers' pictures for Light and for Dark, its aerials as the desktop shows them
-/// before they move, its pictures and its colours. Its shuffles have no one picture, so they aren't
-/// here, nor are the wallpapers it draws as they're shown, Sequoia and Macintosh, which have no
+/// before they move, Macintosh as it's drawn here, its pictures and its colours. Its shuffles have no
+/// one picture, so they aren't here, nor is Sequoia, which macOS draws as it's shown, and which has no
 /// picture to take.
 final class WallpaperLibrary {
     static let shared = WallpaperLibrary()
@@ -5104,13 +5483,18 @@ final class WallpaperLibrary {
             aerialSections.append(Section(id: "shuffle-aerials", title: SystemStrings.shuffleAerials, kind: .shuffles, items: [], shuffles: shuffles))
         }
 
-        // Tahoe and Sonoma, from extensions of their own, before macOS's dynamic pictures
+        // Tahoe, Macintosh and Sonoma, from extensions of their own, before macOS's dynamic pictures
         let tahoe = URL(fileURLWithPath: Self.tahoeExtension).appendingPathComponent("Contents/Resources", isDirectory: true)
         let tahoeLight = tahoe.appendingPathComponent("TahoeLight.heic")
         let tahoeDark = tahoe.appendingPathComponent("TahoeDark.heic")
         if fileManager.fileExists(atPath: tahoeLight.path), fileManager.fileExists(atPath: tahoeDark.path) {
             dynamic.append(Placed(order: -400, item: WallpaperItem(id: "picture:Tahoe", name: SystemStrings.tahoe, light: .file(tahoeLight), dark: .file(tahoeDark),
                                                                    lightThumbnail: tahoeLight, darkThumbnail: tahoeDark, badge: .dynamic)))
+        }
+        if fileManager.fileExists(atPath: Self.macintoshExtension), fileManager.fileExists(atPath: Self.macintoshThumbnail.path) {
+            let macintosh = WallpaperManager.DrawnWallpaper.macintosh
+            dynamic.append(Placed(order: -200, item: WallpaperItem(id: macintosh.rawValue, name: macintosh.name, light: .drawn(macintosh, isDark: false), dark: .drawn(macintosh, isDark: true),
+                                                                   lightThumbnail: Self.macintoshThumbnail, darkThumbnail: Self.macintoshThumbnail, badge: .dynamic)))
         }
         let sonoma = Self.desktopPictures.appendingPathComponent("Sonoma.heic")
         if fileManager.fileExists(atPath: Self.sonomaExtension), fileManager.fileExists(atPath: sonoma.path) {
