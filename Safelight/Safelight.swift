@@ -4121,7 +4121,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// it. Tile has been left out, as AppKit can't ask macOS for it, so what it looks like can't be told.
     /// macOS places a wallpaper file as a whole, and its own wallpapers are square, to fill a display
     /// either way up, so Safelight draws each appearance's picture placed (`placedPicture`), and the
-    /// wallpaper with both fills the display.
+    /// wallpaper with both fills the display. A placed picture is drawn for each display's size, as
+    /// macOS places it on each, so each display has a wallpaper of its own then (`file(of:for:)`).
     struct Placement: Codable, Equatable {
         enum Kind: String, Codable, CaseIterable {
             case fill, fit, stretch, center
@@ -4224,9 +4225,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
     }
 
-    /// The choices a wallpaper Safelight made has, by its file
+    /// The choices a wallpaper Safelight made has, by any of its files
     private func choices(of wallpaper: URL) -> Choices {
-        choices[wallpaper.deletingLastPathComponent().lastPathComponent] ?? earlierChoices ?? Choices()
+        choices[Self.wallpaperFolder(of: wallpaper).lastPathComponent] ?? earlierChoices ?? Choices()
     }
 
     /// What the desktop has, which `thumbnails` are of
@@ -4381,7 +4382,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         let library = WallpaperLibrary.shared
         if WallpaperItem.isOwnPicture(choice) {
             guard case .file(let wallpaper, _)? = shown, isMadeHere(wallpaper),
-                  let original = Self.original(in: wallpaper.deletingLastPathComponent(), isDark: isDark) else { return }
+                  let original = Self.original(in: Self.wallpaperFolder(of: wallpaper), isDark: isDark) else { return }
             setPicture(original, isDark: isDark, choice: choice, options: options)
         } else if let item = library.item(choice) ?? YourPhotos.shared.items.first(where: { $0.id == choice }) {
             choose(item, isDark: isDark, options: options)
@@ -4406,7 +4407,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// kept it as it was before it was placed, as one made before Safelight kept them didn't
     func canPlaceAgain(isDark: Bool) -> Bool {
         guard case .file(let wallpaper, _)? = shown, isMadeHere(wallpaper) else { return false }
-        return Self.original(in: wallpaper.deletingLastPathComponent(), isDark: isDark) != nil
+        return Self.original(in: Self.wallpaperFolder(of: wallpaper), isDark: isDark) != nil
     }
 
     /// Looks for the files macOS has downloaded System Settings' wallpapers into, as the Wallpaper
@@ -4469,22 +4470,20 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         // Only a picture is placed, as System Settings' image options place one
         let placement = item.isPicture ? options.placement : nil
         let chosenIsDark = isDark
-        setPicture(isDark: isDark, choice: shuffle ?? item.id, item: item.id, options: options, hasPictureForEach: item.light != item.dark, isQuiet: isQuiet, completion: completion) { [weak self] isDark, pictures in
+        setPicture(isDark: isDark, choice: shuffle ?? item.id, item: item.id, options: options, placement: placement, hasPictureForEach: item.light != item.dark,
+                   isQuiet: isQuiet, completion: completion) { [weak self] isDark, pictures in
             guard let self else { throw CancellationError() }
             // Its picture for the appearance chosen for as its options say, and its own for the other
-            let isChosen = isDark == chosenIsDark
-            let showsDark = isChosen && item.badge == .dynamic ? options.showsDark(isDark: isDark) : isDark
-            let file = try await self.file(for: showsDark ? item.dark : item.light, in: pictures, screenSize: screenSize, inDarkAppearance: isDark,
-                                           macintoshColors: macintoshColors, isGradient: options.isGradient == true)
-            return try Self.placedPicture((file, showsDark), placement: isChosen ? placement : nil, screenSize: screenSize,
-                                          named: isDark ? "Dark" : "Light", into: pictures)
+            let showsDark = isDark == chosenIsDark && item.badge == .dynamic ? options.showsDark(isDark: isDark) : isDark
+            return (try await self.file(for: showsDark ? item.dark : item.light, in: pictures, screenSize: screenSize, inDarkAppearance: isDark,
+                                        macintoshColors: macintoshColors, isGradient: options.isGradient == true), showsDark)
         }
     }
 
     /// Makes a wallpaper all in one colour for one appearance, as `setPicture(_:isDark:)` does
     func setColor(_ color: NSColor, isDark: Bool) {
         let screenSize = Self.screenSize
-        setPicture(isDark: isDark, choice: nil, item: nil, options: keptOptions(isDark: isDark), hasPictureForEach: false) { isDark, folder in
+        setPicture(isDark: isDark, choice: nil, item: nil, options: keptOptions(isDark: isDark), placement: nil, hasPictureForEach: false) { isDark, folder in
             (try Self.colorPicture(color.usingColorSpace(.displayP3)?.cgColor ?? color.cgColor, size: screenSize, named: "Colour", into: folder), isDark)
         }
     }
@@ -4492,20 +4491,35 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// The size, in pixels, of the largest display, which a colour is drawn at
     private static var screenSize: CGSize {
         NSScreen.screens.reduce(CGSize.zero) { size, screen in
-            CGSize(width: max(size.width, screen.frame.width * screen.backingScaleFactor), height: max(size.height, screen.frame.height * screen.backingScaleFactor))
+            let pixels = pixelSize(of: screen)
+            return CGSize(width: max(size.width, pixels.width), height: max(size.height, pixels.height))
+        }
+    }
+
+    /// The size of a display, in pixels, which a picture in the middle of it has one of its own pixels to each of
+    private static func pixelSize(of screen: NSScreen) -> CGSize {
+        CGSize(width: screen.frame.width * screen.backingScaleFactor, height: screen.frame.height * screen.backingScaleFactor)
+    }
+
+    /// The sizes, in pixels, of the displays, each once, the main display's first, which a picture placed
+    /// otherwise than filling the display is drawn at, for each
+    private static var displaySizes: [CGSize] {
+        NSScreen.screens.map(pixelSize(of:)).reduce(into: []) { sizes, size in
+            if !sizes.contains(size) {
+                sizes.append(size)
+            }
         }
     }
 
     /// Makes a wallpaper with a photo from Photos for one appearance, as `setPicture(_:isDark:)` does
     func choose(_ photo: PhotosPickerItem, isDark: Bool) {
-        let screenSize = Self.screenSize
         let options = keptOptions(isDark: isDark)
-        setPicture(isDark: isDark, choice: WallpaperItem.ownPicture(named: nil), item: nil, options: options, hasPictureForEach: false) { isDark, pictures in
+        setPicture(isDark: isDark, choice: WallpaperItem.ownPicture(named: nil), item: nil, options: options, placement: options.placement, hasPictureForEach: false) { isDark, pictures in
             guard let data = try await photo.loadTransferable(type: Data.self) else { throw CocoaError(.fileReadUnknown) }
             let file = pictures.appendingPathComponent("Photo").appendingPathExtension(photo.supportedContentTypes.first?.preferredFilenameExtension ?? "heic")
             try data.write(to: file)
             try Self.keepOriginal(file, isDark: isDark, beside: pictures)
-            return try Self.placedPicture((file, isDark), placement: options.placement, screenSize: screenSize, named: isDark ? "Dark" : "Light", into: pictures)
+            return (file, isDark)
         }
     }
 
@@ -4521,10 +4535,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// does, placed as `options` say, remembered as `choice`. The picture is kept beside the wallpaper
     /// as it was, so it can be placed another way.
     private func setPicture(_ file: URL, isDark: Bool, choice: WallpaperItem.ID, options: PictureOptions) {
-        let screenSize = Self.screenSize
-        setPicture(isDark: isDark, choice: choice, item: nil, options: options, hasPictureForEach: false) { isDark, pictures in
+        setPicture(isDark: isDark, choice: choice, item: nil, options: options, placement: options.placement, hasPictureForEach: false) { isDark, pictures in
             try Self.keepOriginal(file, isDark: isDark, beside: pictures)
-            return try Self.placedPicture((file, isDark), placement: options.placement, screenSize: screenSize, named: isDark ? "Dark" : "Light", into: pictures)
+            return (file, isDark)
         }
     }
 
@@ -4556,11 +4569,17 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// of it, stretched to fill the screen. While it has a wallpaper whose pictures Safelight can't tell,
     /// it takes the one `picture` gives for it, when there's `hasPictureForEach`, or the same one. `picture`
     /// fetches it into the folder it's given, which is taken away once the wallpaper is made, and says
-    /// whether it's the file's picture for Dark, for one with a picture for each. `choice` is remembered
-    /// as the appearance's choice, with the `options` it's shown with, and `item` is the wallpaper of
-    /// System Settings' the picture is from. It beeps when it can't be made, unless `isQuiet`.
-    private func setPicture(isDark: Bool, choice: String?, item: WallpaperItem.ID?, options: PictureOptions, hasPictureForEach: Bool, isQuiet: Bool = false,
-                            completion: ((_ isMade: Bool) -> Void)? = nil, picture: @escaping (_ isDark: Bool, _ folder: URL) async throws -> (file: URL, isDark: Bool)) {
+    /// whether it's the file's picture for Dark, for one with a picture for each, and it's placed on the
+    /// display as `placement` says. `choice` is remembered as the appearance's choice, with the `options`
+    /// it's shown with, and `item` is the wallpaper of System Settings' the picture is from. It beeps
+    /// when it can't be made, unless `isQuiet`.
+    ///
+    /// While a picture is placed otherwise than filling the display, in either appearance, each size of
+    /// display has a wallpaper of its own, with the pictures placed for its size, as macOS places a
+    /// picture on each display (`file(of:for:)`). Otherwise one fills them all.
+    private func setPicture(isDark: Bool, choice: String?, item: WallpaperItem.ID?, options: PictureOptions, placement: Placement?, hasPictureForEach: Bool,
+                            isQuiet: Bool = false, completion: ((_ isMade: Bool) -> Void)? = nil,
+                            picture: @escaping (_ isDark: Bool, _ folder: URL) async throws -> (file: URL, isDark: Bool)) {
         guard !isChanging, let folder else {
             completion?(false)
             return
@@ -4568,6 +4587,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         refresh()
         let current = shown
         let screenSize = Self.screenSize
+        // Never none, as it's made all the same while there's no display to put it on
+        let displaySizes = Self.displaySizes.isEmpty ? [.zero] : Self.displaySizes
         let wallpaper = folder.appendingPathComponent(UUID().uuidString, isDirectory: true).appendingPathComponent("Safelight.heic")
         let pictures = wallpaper.deletingLastPathComponent().appendingPathComponent("Pictures", isDirectory: true)
         isChanging = true
@@ -4581,24 +4602,47 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             do {
                 try FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true)
                 let chosen = try await picture(isDark, pictures)
-                let other: (file: URL, isDark: Bool)
+                // Each appearance's picture as the wallpaper for a display of a size, in pixels, has it
+                let chosenOn = { (size: CGSize) in DisplayPicture(chosen, placement: placement, screenSize: size) }
+                let otherOn: (CGSize) -> DisplayPicture
                 if case .shuffle(let shuffle, _)? = current {
                     shuffled = WallpaperLibrary.shared.pictures(of: shuffle.id).randomElement()
                 }
                 if let shuffled {
-                    other = (try await self.file(for: isDark ? shuffled.light : shuffled.dark, in: pictures, screenSize: screenSize, inDarkAppearance: !isDark), !isDark)
-                } else if let current, let picture = try await self.picture(current, shows: !isDark, in: pictures, screenSize: screenSize) {
-                    other = picture
+                    let other = (try await self.file(for: isDark ? shuffled.light : shuffled.dark, in: pictures, screenSize: screenSize, inDarkAppearance: !isDark), !isDark)
+                    otherOn = { _ in DisplayPicture(other) }
+                } else if let current, let other = try await self.picture(current, shows: !isDark, in: pictures, screenSize: screenSize) {
+                    // As each display shows it: placed for it, or from a wallpaper Safelight made, the
+                    // wallpaper's own for it while it's placed for it there (another size of picture)
+                    let isMadeHere = self.isMadeHere(other.file)
+                    let main = Self.file(of: other.file, forPixelSize: displaySizes[0])
+                    otherOn = { size in
+                        let own = isMadeHere ? Self.file(of: other.file, forPixelSize: size) : other.file
+                        let isOwn = !isMadeHere || own != main && Self.pixelSize(of: (own, other.isDark)) != Self.pixelSize(of: (main, other.isDark))
+                        return DisplayPicture((isOwn ? own : main, other.isDark), placement: other.placement, screenSize: size)
+                    }
                 } else if hasPictureForEach {
-                    other = try await picture(!isDark, pictures)
+                    let other = try await picture(!isDark, pictures)
+                    otherOn = { _ in DisplayPicture(other) }
                 } else {
-                    other = (chosen.file, !isDark)
+                    otherOn = { size in DisplayPicture((chosen.file, !isDark), placement: placement, screenSize: size) }
                 }
-                isMade = Self.makeWallpaper(at: wallpaper, light: isDark ? other : chosen, dark: isDark ? chosen : other)
+                func picturesOn(_ size: CGSize) -> (light: DisplayPicture, dark: DisplayPicture) {
+                    isDark ? (otherOn(size), chosenOn(size)) : (chosenOn(size), otherOn(size))
+                }
+                // The main display's, and each other size's whose pictures are others, placed for it
+                let main = displaySizes[0]
+                let sizes = [main] + displaySizes.dropFirst().filter { picturesOn($0) != picturesOn(main) }
+                isMade = try sizes.indices.allSatisfy { index in
+                    let (light, dark) = picturesOn(sizes[index])
+                    let name = Self.folderName(of: sizes[index])
+                    return Self.makeWallpaper(at: index == 0 ? wallpaper : Self.file(in: wallpaper.deletingLastPathComponent(), forPixelSize: sizes[index]),
+                                              light: try light.picture(named: "Light \(name)", into: pictures), dark: try dark.picture(named: "Dark \(name)", into: pictures))
+                }
                 // A picture of the user's own the other appearance kept stays as it was before it was
                 // placed, to be placed again
                 if isMade, case .file(let made, _)? = current, self.isMadeHere(made),
-                   let original = Self.original(in: made.deletingLastPathComponent(), isDark: !isDark) {
+                   let original = Self.original(in: Self.wallpaperFolder(of: made), isDark: !isDark) {
                     try? Self.keepOriginal(original, isDark: !isDark, beside: pictures)
                 }
             } catch {
@@ -4640,7 +4684,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         case .file(let made, _)? where isMadeHere(made):
             choices = self.choices(of: made)
             // The choices kept from before are its own, which another Space may still show
-            self.choices[made.deletingLastPathComponent().lastPathComponent] = choices
+            self.choices[Self.wallpaperFolder(of: made).lastPathComponent] = choices
         case .item(let current, let lightShowsDark, let darkShowsDark)?:
             let options = PictureOptions(appearance: AppearanceOption(lightShowsDark: lightShowsDark, darkShowsDark: darkShowsDark))
             choices = Choices(light: current.id, dark: current.id, lightOptions: options, darkOptions: options)
@@ -4658,13 +4702,15 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             choices = Choices()
         }
         choices.set(choice, options: options, isDark: isDark)
-        self.choices[wallpaper.deletingLastPathComponent().lastPathComponent] = choices
+        self.choices[Self.wallpaperFolder(of: wallpaper).lastPathComponent] = choices
         setDesktop(wallpaper)
+        // The main display's, which is the one looked at
+        let shownFile = NSScreen.screens.first.map { Self.file(of: wallpaper, for: $0) } ?? wallpaper
         var before = Set([lastRead?.standardizedFileURL].compactMap { $0 })
         if let justPut, Date() < justPut.until {
             before.formUnion(justPut.before.union([justPut.wallpaper]))
         }
-        justPut = (wallpaper.standardizedFileURL, before, Date().addingTimeInterval(5))
+        justPut = (shownFile.standardizedFileURL, before, Date().addingTimeInterval(5))
         // Once macOS surely names it, or another Space's, as Spaces may have been switched meanwhile
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.1) { [weak self] in
             self?.refresh()
@@ -4677,14 +4723,15 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
         earlierChoices = nil
         UserDefaults.standard.removeObject(forKey: Self.earlierChoicesKey)
-        show(.file(wallpaper))
+        show(.file(shownFile))
         YourPhotos.shared.reloadAfterSettingWallpaper()
         // A shuffle stops once the appearance has another choice
         WallpaperShuffler.shared.schedule()
     }
 
-    /// Puts one of Safelight's wallpapers on every display, on every Space or only on the one each
-    /// display is showing, as `showsOnAllSpaces` says, filling it, as each of its pictures is placed in it
+    /// Puts one of Safelight's wallpapers on every display, its own file for each (`file(of:for:)`), on
+    /// every Space or only on the one each display is showing, as `showsOnAllSpaces` says, filling it,
+    /// as each of its pictures is placed in it
     private func setDesktop(_ wallpaper: URL) {
         for screen in NSScreen.screens {
             var options = NSWorkspace.shared.desktopImageOptions(for: screen) ?? [:]
@@ -4693,12 +4740,46 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             if let allSpacesOption = Self.allSpacesOption {
                 options[allSpacesOption] = showsOnAllSpaces
             }
+            let file = Self.file(of: wallpaper, for: screen)
             do {
-                try NSWorkspace.shared.setDesktopImageURL(wallpaper, for: screen, options: options)
+                try NSWorkspace.shared.setDesktopImageURL(file, for: screen, options: options)
             } catch {
                 NSLog("Safelight: couldn't set the wallpaper of \(screen.localizedName): \(error)")
             }
         }
+    }
+
+    /// The file of a wallpaper Safelight made, by any of its files, that a display shows: one made for
+    /// a display of its size, while a picture in it is placed otherwise than filling the display, or else
+    /// the wallpaper's own, which the main display has
+    private static func file(of wallpaper: URL, for screen: NSScreen) -> URL {
+        file(of: wallpaper, forPixelSize: pixelSize(of: screen))
+    }
+
+    /// The file of a wallpaper Safelight made, by any of its files, for a display of a size, in pixels
+    private static func file(of wallpaper: URL, forPixelSize size: CGSize) -> URL {
+        let folder = wallpaperFolder(of: wallpaper)
+        let own = file(in: folder, forPixelSize: size)
+        return FileManager.default.fileExists(atPath: own.path) ? own : folder.appendingPathComponent("Safelight.heic")
+    }
+
+    /// Where the wallpaper made in `folder` has its file for a display of a size, in pixels, when it has
+    /// one: in a folder named for the size, by the same name as its own, as macOS shows its name
+    private static func file(in folder: URL, forPixelSize size: CGSize) -> URL {
+        folder.appendingPathComponent(folderName(of: size), isDirectory: true).appendingPathComponent("Safelight.heic")
+    }
+
+    /// The name of the folder a wallpaper has its file for a display of a size in, like "1920x1080"
+    private static func folderName(of size: CGSize) -> String {
+        "\(Int(size.width.rounded()))x\(Int(size.height.rounded()))"
+    }
+
+    /// The folder of the wallpaper Safelight made that `file` is one of, its own or one for a display of
+    /// a size, or for any other file, the folder it's in
+    private static func wallpaperFolder(of file: URL) -> URL {
+        let folder = file.deletingLastPathComponent()
+        let size = folder.lastPathComponent.split(separator: "x")
+        return size.count == 2 && size.allSatisfy({ Int($0) != nil }) ? folder.deletingLastPathComponent() : folder
     }
 
     /// The file with a wallpaper's picture in it, fetched into `folder` when it isn't one already.
@@ -4858,10 +4939,10 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         return file
     }
 
-    /// Whether `wallpaper` is one Safelight made
+    /// Whether `wallpaper` is one Safelight made, or a display's file of one
     private func isMadeHere(_ wallpaper: URL) -> Bool {
         guard let folder else { return false }
-        return wallpaper.standardizedFileURL.deletingLastPathComponent().deletingLastPathComponent().path == folder.standardizedFileURL.path
+        return Self.wallpaperFolder(of: wallpaper.standardizedFileURL).deletingLastPathComponent().path == folder.standardizedFileURL.path
     }
 
     /// Where macOS's wallpaper service keeps what each display and Space has on its desktop
@@ -5086,24 +5167,24 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     }
 
     /// The file with the picture `desktop` shows in an appearance, fetched into `folder` when it isn't
-    /// one already, and whether it's that file's picture for Dark, for one with a picture for each. A
-    /// picture file is placed on the display as macOS places it (`placedPicture`). For a wallpaper macOS
-    /// draws, it's drawn as macOS draws it, or where it can't be, System Settings' thumbnail of it,
+    /// one already, whether it's that file's picture for Dark, for one with a picture for each, and how
+    /// it's placed on the display, for a picture file macOS places (`placedPicture`). For a wallpaper
+    /// macOS draws, it's drawn as macOS draws it, or where it can't be, System Settings' thumbnail of it,
     /// stretched to fill the screen. Nil for a shuffle, which hasn't one picture.
-    private func picture(_ desktop: Desktop, shows isDark: Bool, in folder: URL, screenSize: CGSize) async throws -> (file: URL, isDark: Bool)? {
+    private func picture(_ desktop: Desktop, shows isDark: Bool, in folder: URL, screenSize: CGSize) async throws -> (file: URL, isDark: Bool, placement: Placement?)? {
         switch desktop {
         case .file(let file, let placement):
-            return try Self.placedPicture((file, isDark), placement: placement, screenSize: screenSize, named: "Desktop", into: folder)
+            return (file, isDark, placement)
         case .item(let item, let lightShowsDark, let darkShowsDark):
             let showsDark = isDark ? darkShowsDark : lightShowsDark
-            return (try await file(for: showsDark ? item.dark : item.light, in: folder, screenSize: screenSize, inDarkAppearance: isDark), showsDark)
+            return (try await file(for: showsDark ? item.dark : item.light, in: folder, screenSize: screenSize, inDarkAppearance: isDark), showsDark, nil)
         case .color(let color):
             // Named apart from a colour chosen for the other appearance, which is fetched into the same folder
-            return (try Self.colorPicture(color, size: screenSize, named: "Desktop Colour", into: folder), isDark)
+            return (try Self.colorPicture(color, size: screenSize, named: "Desktop Colour", into: folder), isDark, nil)
         case .gradient(let color):
-            return (try Self.gradientPicture(color, size: screenSize, into: folder), isDark)
+            return (try Self.gradientPicture(color, size: screenSize, into: folder), isDark, nil)
         case .drawn(let drawn, let lightShowsDark, let darkShowsDark, let colors):
-            return (try Self.drawnPicture(drawn, showsDark: isDark ? darkShowsDark : lightShowsDark, inDarkAppearance: isDark, colors: colors, size: screenSize, into: folder), isDark)
+            return (try Self.drawnPicture(drawn, showsDark: isDark ? darkShowsDark : lightShowsDark, inDarkAppearance: isDark, colors: colors, size: screenSize, into: folder), isDark, nil)
         case .shuffle:
             return nil
         }
@@ -5168,11 +5249,11 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// others may still have one. Their choices go with them.
     private func removeWallpapers(except wallpaper: URL, keepingThoseShown: Bool = false) {
         guard let folder, let made = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return }
-        var kept: Set<String> = [wallpaper.deletingLastPathComponent().lastPathComponent]
+        var kept: Set<String> = [Self.wallpaperFolder(of: wallpaper).lastPathComponent]
         if keepingThoseShown {
             // When it can't be told which are, none is taken away
             guard let shown = Self.filesShown() else { return }
-            kept.formUnion(shown.filter(isMadeHere).map { $0.deletingLastPathComponent().lastPathComponent })
+            kept.formUnion(shown.filter(isMadeHere).map { Self.wallpaperFolder(of: $0).lastPathComponent })
         }
         for old in made where !kept.contains(old.lastPathComponent) {
             try? FileManager.default.removeItem(at: old)
@@ -5225,9 +5306,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         // came out several levels off. Nor does one kept from a wallpaper made before, as the other
         // appearance's is: made again lossy, a picture that had lost nothing lost as much as it would
         // the first time (a fitted grid's lines, up to 189 levels), though again and again no more.
-        let made = wallpaper.deletingLastPathComponent().deletingLastPathComponent()
+        let made = wallpaperFolder(of: wallpaper).deletingLastPathComponent()
         func options(_ source: CGImageSource, _ file: URL) -> CFDictionary {
-            let isKept = file.deletingLastPathComponent().deletingLastPathComponent().standardizedFileURL == made.standardizedFileURL
+            let isKept = wallpaperFolder(of: file).deletingLastPathComponent().standardizedFileURL == made.standardizedFileURL
             return [kCGImageDestinationLossyCompressionQuality: isKept || CGImageSourceGetType(source) as String? == UTType.png.identifier ? 1 : 0.95] as CFDictionary
         }
         if isOnePicture {
@@ -5262,17 +5343,36 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         return Thumbnails(light: .picture(light), dark: .picture(dark))
     }
 
-    /// One of a file's pictures as macOS places it on the largest display, as `placement` says, on a
-    /// picture of the display's shape (`screenSize`, in pixels) that a wallpaper with it then fills.
+    /// One of a file's pictures as macOS places it on a display of `screenSize`, in pixels, as
+    /// `placement` says, on a picture of the display's shape that a wallpaper with it then fills.
     /// Fitted or stretched, that's at the picture's own size, only as much larger as the display's shape
-    /// needs, so macOS scales it to each display as it scales a picture it places itself, with its own
-    /// filter, though never larger than the display. In the middle, it's the display's size. It's written into `folder`, named after `name`, without loss
-    /// until the wallpaper is made, or the picture as it is when it fills the display
+    /// needs, so macOS scales it to the display as it scales a picture it places itself, with its own
+    /// filter, though never larger than the display. In the middle, it's the display's size. It's
+    /// written into `folder`, named after `name`, without loss until the wallpaper is made, or the
+    /// picture as it is when it fills the display
     private static func placedPicture(_ picture: (file: URL, isDark: Bool), placement: Placement?, screenSize: CGSize, named name: String, into folder: URL) throws -> (file: URL, isDark: Bool) {
         guard let placement, placement.kind != .fill else { return picture }
         guard let source = CGImageSourceCreateWithURL(picture.file as CFURL, nil) else { throw CocoaError(.fileReadCorruptFile) }
         let index = index(in: source, isDark: picture.isDark)
         let size = pixelSize(in: source, at: index)
+        guard let image = Self.picture(in: source, at: index),
+              let placed = placed(image, size: size, placement: placement, screenSize: screenSize, canvas: canvas(for: size, placement: placement, screenSize: screenSize))
+        else { throw CocoaError(.fileReadCorruptFile) }
+        // A PNG as one (which the wallpaper keeps without loss), others with nothing lost
+        let isPNG = CGImageSourceGetType(source) as String? == UTType.png.identifier
+        let file = folder.appendingPathComponent("\(name) Placed").appendingPathExtension(isPNG ? "png" : "tiff")
+        guard let destination = CGImageDestinationCreateWithURL(file as CFURL, (isPNG ? UTType.png : UTType.tiff).identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
+        CGImageDestinationAddImage(destination, placed, [kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFCompression: 5]] as CFDictionary) // LZW
+        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+        return (file, false)
+    }
+
+    /// The size, in pixels, of the picture `placedPicture` draws a picture of `size`, in pixels, on for a
+    /// display of `screenSize`: the display's shape at the picture's own size, while that's no larger
+    /// than the display, or else the display's size. A picture larger than the display is scaled down
+    /// here, as macOS scaling down a wallpaper that fills the display came out further from its own Fit
+    /// to Screen: on a 1920 by 1080 display, 72% of pixels within 2 levels of it, against 78% this way.
+    private static func canvas(for size: CGSize, placement: Placement, screenSize: CGSize) -> CGSize {
         var canvas = screenSize
         if placement.kind != .center, size.width > 0, size.height > 0, screenSize.height > 0 {
             let aspect = screenSize.width / screenSize.height
@@ -5283,16 +5383,44 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
                                 height: own.height + (own.height - size.height).truncatingRemainder(dividingBy: 2))
             }
         }
-        guard let image = Self.picture(in: source, at: index),
-              let placed = placed(image, size: size, placement: placement, screenSize: screenSize, canvas: canvas)
-        else { throw CocoaError(.fileReadCorruptFile) }
-        // A PNG as one (which the wallpaper keeps without loss), others with nothing lost
-        let isPNG = CGImageSourceGetType(source) as String? == UTType.png.identifier
-        let file = folder.appendingPathComponent("\(name) Placed").appendingPathExtension(isPNG ? "png" : "tiff")
-        guard let destination = CGImageDestinationCreateWithURL(file as CFURL, (isPNG ? UTType.png : UTType.tiff).identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
-        CGImageDestinationAddImage(destination, placed, [kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFCompression: 5]] as CFDictionary) // LZW
-        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
-        return (file, false)
+        return canvas
+    }
+
+    /// One of a file's pictures as the wallpaper for a display of a size has it: as it is, the same for
+    /// every display, or placed on the display as macOS places it (`placedPicture`), when it's placed
+    /// otherwise than filling it, the same for each display it's drawn on the same size of picture for
+    private struct DisplayPicture: Equatable {
+        let file: URL
+        let isDark: Bool
+        /// How it's placed, on a display of what size, in pixels, and the size of the picture it's drawn
+        /// on then, which is all that tells it from one placed for another display
+        let placing: (placement: Placement, screenSize: CGSize, canvas: CGSize)?
+
+        init(_ picture: (file: URL, isDark: Bool), placement: Placement? = nil, screenSize: CGSize = .zero) {
+            (file, isDark) = picture
+            placing = placement.flatMap { placement in
+                guard placement.kind != .fill else { return nil }
+                // One that can't be read can't be placed for any display
+                let size = CGImageSourceCreateWithURL(picture.file as CFURL, nil).map { pixelSize(in: $0, at: index(in: $0, isDark: picture.isDark)) } ?? .zero
+                return (placement, screenSize, canvas(for: size, placement: placement, screenSize: screenSize))
+            }
+        }
+
+        static func == (a: DisplayPicture, b: DisplayPicture) -> Bool {
+            a.file == b.file && a.isDark == b.isDark && a.placing?.placement == b.placing?.placement && a.placing?.canvas == b.placing?.canvas
+        }
+
+        /// The file with it as the wallpaper has it: placed, written into `folder`, named after `name`,
+        /// or the file it's in
+        func picture(named name: String, into folder: URL) throws -> (file: URL, isDark: Bool) {
+            guard let placing else { return (file, isDark) }
+            return try placedPicture((file, isDark), placement: placing.placement, screenSize: placing.screenSize, named: name, into: folder)
+        }
+    }
+
+    /// The size, in pixels, of one of a file's pictures, nil when it can't be read
+    private static func pixelSize(of picture: (file: URL, isDark: Bool)) -> CGSize? {
+        CGImageSourceCreateWithURL(picture.file as CFURL, nil).map { pixelSize(in: $0, at: index(in: $0, isDark: picture.isDark)) }
     }
 
     /// The size of one of `source`'s pictures the right way up, in pixels
