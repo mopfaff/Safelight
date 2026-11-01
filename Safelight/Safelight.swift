@@ -4496,26 +4496,36 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// fails.
     func choose(_ item: WallpaperItem, isDark: Bool, options: PictureOptions? = nil, from shuffle: WallpaperShuffle.ID? = nil, isQuiet: Bool = false,
                 then completion: ((_ isMade: Bool) -> Void)? = nil) {
-        let screenSize = Self.screenSize
         let options = options ?? keptOptions(isDark: isDark)
         let macintoshColors = options.macintoshColors ?? Self.macintoshColors
+        let isGradient = options.isGradient == true
         // Only a picture is placed, as System Settings' image options place one
         let placement = item.isPicture ? options.placement : nil
         let chosenIsDark = isDark
         setPicture(isDark: isDark, choice: shuffle ?? item.id, item: item.id, options: options, placement: placement, hasPictureForEach: item.light != item.dark,
-                   isQuiet: isQuiet, completion: completion) { [weak self] isDark, pictures in
+                   isDrawn: Self.isDrawn(item.light, isGradient: isGradient), isQuiet: isQuiet, completion: completion) { [weak self] isDark, size, pictures in
             guard let self else { throw CancellationError() }
             // Its picture for the appearance chosen for as its options say, and its own for the other
             let showsDark = isDark == chosenIsDark && item.badge == .dynamic ? options.showsDark(isDark: isDark) : isDark
-            return (try await self.file(for: showsDark ? item.dark : item.light, in: pictures, screenSize: screenSize, inDarkAppearance: isDark,
-                                        macintoshColors: macintoshColors, isGradient: options.isGradient == true), showsDark)
+            return (try await self.file(for: showsDark ? item.dark : item.light, in: pictures, screenSize: size, inDarkAppearance: isDark,
+                                        macintoshColors: macintoshColors, isGradient: isGradient), showsDark)
+        }
+    }
+
+    /// Whether a wallpaper's picture is one macOS draws itself on each display, for the display's size:
+    /// Macintosh, Sequoia, or a colour as its gradient
+    private static func isDrawn(_ picture: WallpaperItem.Picture, isGradient: Bool) -> Bool {
+        switch picture {
+        case .drawn: true
+        case .color: isGradient
+        case .file, .download, .aerial, .asset: false
         }
     }
 
     /// Makes a wallpaper all in one colour for one appearance, as `setPicture(_:isDark:)` does
     func setColor(_ color: NSColor, isDark: Bool) {
         let screenSize = Self.screenSize
-        setPicture(isDark: isDark, choice: nil, item: nil, options: keptOptions(isDark: isDark), placement: nil, hasPictureForEach: false) { isDark, folder in
+        setPicture(isDark: isDark, choice: nil, item: nil, options: keptOptions(isDark: isDark), placement: nil, hasPictureForEach: false) { isDark, _, folder in
             (try Self.colorPicture(color.usingColorSpace(.displayP3)?.cgColor ?? color.cgColor, size: screenSize, named: "Colour", into: folder), isDark)
         }
     }
@@ -4546,7 +4556,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// Makes a wallpaper with a photo from Photos for one appearance, as `setPicture(_:isDark:)` does
     func choose(_ photo: PhotosPickerItem, isDark: Bool) {
         let options = keptOptions(isDark: isDark)
-        setPicture(isDark: isDark, choice: WallpaperItem.ownPicture(named: nil), item: nil, options: options, placement: options.placement, hasPictureForEach: false) { isDark, pictures in
+        setPicture(isDark: isDark, choice: WallpaperItem.ownPicture(named: nil), item: nil, options: options, placement: options.placement, hasPictureForEach: false) { isDark, _, pictures in
             guard let data = try await photo.loadTransferable(type: Data.self) else { throw CocoaError(.fileReadUnknown) }
             let file = pictures.appendingPathComponent("Photo").appendingPathExtension(photo.supportedContentTypes.first?.preferredFilenameExtension ?? "heic")
             try data.write(to: file)
@@ -4567,7 +4577,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// does, placed as `options` say, remembered as `choice`. The picture is kept beside the wallpaper
     /// as it was, so it can be placed another way.
     private func setPicture(_ file: URL, isDark: Bool, choice: WallpaperItem.ID, options: PictureOptions) {
-        setPicture(isDark: isDark, choice: choice, item: nil, options: options, placement: options.placement, hasPictureForEach: false) { isDark, pictures in
+        setPicture(isDark: isDark, choice: choice, item: nil, options: options, placement: options.placement, hasPictureForEach: false) { isDark, _, pictures in
             try Self.keepOriginal(file, isDark: isDark, beside: pictures)
             return (file, isDark)
         }
@@ -4597,21 +4607,23 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// does. The other appearance keeps the picture the desktop shows in it, fetched as one of System
     /// Settings' own is when it's one of those. While the desktop has one of System Settings' shuffles,
     /// it takes one of the shuffle's pictures instead, and Safelight's own shuffle of them carries on
-    /// for it. While the desktop has one macOS draws, like Sequoia, it takes System Settings' thumbnail
-    /// of it, stretched to fill the screen. While it has a wallpaper whose pictures Safelight can't tell,
+    /// for it. While the desktop has one macOS draws, like Sequoia, it takes it drawn as macOS draws it
+    /// (`drawing(of:shows:)`). While it has a wallpaper whose pictures Safelight can't tell,
     /// it takes the one `picture` gives for it, when there's `hasPictureForEach`, or the same one. `picture`
-    /// fetches it into the folder it's given, which is taken away once the wallpaper is made, and says
-    /// whether it's the file's picture for Dark, for one with a picture for each, and it's placed on the
-    /// display as `placement` says. `choice` is remembered as the appearance's choice, with the `options`
-    /// it's shown with, and `item` is the wallpaper of System Settings' the picture is from. It beeps
-    /// when it can't be made, unless `isQuiet`.
+    /// fetches it, for a display of the size it's given, in pixels, into the folder it's given, which is
+    /// taken away once the wallpaper is made, and says whether it's the file's picture for Dark, for one
+    /// with a picture for each, and it's placed on the display as `placement` says. `choice` is
+    /// remembered as the appearance's choice, with the `options` it's shown with, and `item` is the
+    /// wallpaper of System Settings' the picture is from. It beeps when it can't be made, unless `isQuiet`.
     ///
     /// While a picture is placed otherwise than filling the display, in either appearance, each size of
     /// display has a wallpaper of its own, with the pictures placed for its size, as macOS places a
-    /// picture on each display (`file(of:for:)`). Otherwise one fills them all.
+    /// picture on each display (`file(of:for:)`). So it has while either appearance has one macOS draws
+    /// itself, drawn for its size, as macOS draws one on each display: the desktop's, or `picture`'s, when
+    /// `isDrawn`. Otherwise one fills them all.
     private func setPicture(isDark: Bool, choice: String?, item: WallpaperItem.ID?, options: PictureOptions, placement: Placement?, hasPictureForEach: Bool,
-                            isQuiet: Bool = false, completion: ((_ isMade: Bool) -> Void)? = nil,
-                            picture: @escaping (_ isDark: Bool, _ folder: URL) async throws -> (file: URL, isDark: Bool)) {
+                            isDrawn: Bool = false, isQuiet: Bool = false, completion: ((_ isMade: Bool) -> Void)? = nil,
+                            picture: @escaping (_ isDark: Bool, _ size: CGSize, _ folder: URL) async throws -> (file: URL, isDark: Bool)) {
         guard !isChanging, let folder else {
             completion?(false)
             return
@@ -4633,9 +4645,21 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             var shuffled: WallpaperItem?
             do {
                 try FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true)
-                let chosen = try await picture(isDark, pictures)
+                // A picture fetched for the main display, and while it's drawn for a display's size, drawn
+                // again for each other size of display, into a folder of its own, as each display has it
+                func onEachSize(isDrawn: Bool, _ fetch: (_ size: CGSize, _ folder: URL) async throws -> (file: URL, isDark: Bool)) async throws -> (CGSize) -> (file: URL, isDark: Bool) {
+                    let main = try await fetch(displaySizes[0], pictures)
+                    var drawn: [String: (file: URL, isDark: Bool)] = [:]
+                    for size in isDrawn ? displaySizes.dropFirst() : [] {
+                        let folder = pictures.appendingPathComponent(Self.folderName(of: size), isDirectory: true)
+                        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                        drawn[Self.folderName(of: size)] = try await fetch(size, folder)
+                    }
+                    return { drawn[Self.folderName(of: $0)] ?? main }
+                }
+                let chosen = try await onEachSize(isDrawn: isDrawn) { try await picture(isDark, $0, $1) }
                 // Each appearance's picture as the wallpaper for a display of a size, in pixels, has it
-                let chosenOn = { (size: CGSize) in DisplayPicture(chosen, placement: placement, screenSize: size) }
+                let chosenOn = { (size: CGSize) in DisplayPicture(chosen(size), placement: placement, screenSize: size) }
                 let otherOn: (CGSize) -> DisplayPicture
                 if case .shuffle(let shuffle, _)? = current {
                     shuffled = WallpaperLibrary.shared.pictures(of: shuffle.id).randomElement()
@@ -4643,6 +4667,10 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
                 if let shuffled {
                     let other = (try await self.file(for: isDark ? shuffled.light : shuffled.dark, in: pictures, screenSize: screenSize, inDarkAppearance: !isDark), !isDark)
                     otherOn = { _ in DisplayPicture(other) }
+                } else if let current, let drawing = Self.drawing(of: current, shows: !isDark) {
+                    // Drawn for each size of display, as macOS draws it on each
+                    let other = try await onEachSize(isDrawn: true, drawing)
+                    otherOn = { DisplayPicture(other($0)) }
                 } else if let current, let other = try await self.picture(current, shows: !isDark, in: pictures, screenSize: screenSize) {
                     // As each display shows it: placed for it, or from a wallpaper Safelight made, the
                     // wallpaper's own for it while it's placed for it there (another size of picture)
@@ -4654,10 +4682,10 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
                         return DisplayPicture((isOwn ? own : main, other.isDark), placement: other.placement, screenSize: size)
                     }
                 } else if hasPictureForEach {
-                    let other = try await picture(!isDark, pictures)
-                    otherOn = { _ in DisplayPicture(other) }
+                    let other = try await onEachSize(isDrawn: isDrawn) { try await picture(!isDark, $0, $1) }
+                    otherOn = { DisplayPicture(other($0)) }
                 } else {
-                    otherOn = { size in DisplayPicture((chosen.file, !isDark), placement: placement, screenSize: size) }
+                    otherOn = { size in DisplayPicture((chosen(size).file, !isDark), placement: placement, screenSize: size) }
                 }
                 func picturesOn(_ size: CGSize) -> (light: DisplayPicture, dark: DisplayPicture) {
                     isDark ? (otherOn(size), chosenOn(size)) : (chosenOn(size), otherOn(size))
@@ -4817,7 +4845,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     }
 
     /// The file with a wallpaper's picture in it, fetched into `folder` when it isn't one already.
-    /// `screenSize`, in pixels, is the size a colour, or Macintosh, is drawn at, Macintosh in the
+    /// `screenSize`, in pixels, is the size a colour, Macintosh or Sequoia is drawn at, Macintosh in the
     /// colours of `macintoshColors` as they are in Dark or in Light (`inDarkAppearance`), and a colour as
     /// its gradient when `isGradient`.
     private func file(for picture: WallpaperItem.Picture, in folder: URL, screenSize: CGSize, inDarkAppearance: Bool, macintoshColors: String? = nil, isGradient: Bool = false) async throws -> URL {
@@ -5202,9 +5230,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
 
     /// The file with the picture `desktop` shows in an appearance, fetched into `folder` when it isn't
     /// one already, whether it's that file's picture for Dark, for one with a picture for each, and how
-    /// it's placed on the display, for a picture file macOS places (`placedPicture`). For a wallpaper
-    /// macOS draws, it's drawn as macOS draws it, or where it can't be, System Settings' thumbnail of it,
-    /// stretched to fill the screen. Nil for a shuffle, which hasn't one picture.
+    /// it's placed on the display, for a picture file macOS places (`placedPicture`). Nil for a shuffle,
+    /// which hasn't one picture, and for a wallpaper macOS draws, which is drawn for each display
+    /// (`drawing(of:shows:)`).
     private func picture(_ desktop: Desktop, shows isDark: Bool, in folder: URL, screenSize: CGSize) async throws -> (file: URL, isDark: Bool, placement: Placement?)? {
         switch desktop {
         case .file(let file, let placement):
@@ -5215,11 +5243,22 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         case .color(let color):
             // Named apart from a colour chosen for the other appearance, which is fetched into the same folder
             return (try Self.colorPicture(color, size: screenSize, named: "Desktop Colour", into: folder), isDark, nil)
+        case .gradient, .drawn, .shuffle:
+            return nil
+        }
+    }
+
+    /// How the picture a wallpaper macOS draws itself shows in an appearance is drawn here, for a display
+    /// of a size, in pixels, into a folder, as macOS draws it on each display: a colour's gradient, or
+    /// Macintosh or Sequoia as macOS draws it, or where it can't be, System Settings' thumbnail of it,
+    /// stretched to fill the screen. Nil for any other wallpaper.
+    private static func drawing(of desktop: Desktop, shows isDark: Bool) -> ((_ size: CGSize, _ folder: URL) throws -> (file: URL, isDark: Bool))? {
+        switch desktop {
         case .gradient(let color):
-            return (try Self.gradientPicture(color, size: screenSize, into: folder), isDark, nil)
+            return { size, folder in (try gradientPicture(color, size: size, into: folder), isDark) }
         case .drawn(let drawn, let lightShowsDark, let darkShowsDark, let colors):
-            return (try Self.drawnPicture(drawn, showsDark: isDark ? darkShowsDark : lightShowsDark, inDarkAppearance: isDark, colors: colors, size: screenSize, into: folder), isDark, nil)
-        case .shuffle:
+            return { size, folder in (try drawnPicture(drawn, showsDark: isDark ? darkShowsDark : lightShowsDark, inDarkAppearance: isDark, colors: colors, size: size, into: folder), isDark) }
+        case .file, .item, .color, .shuffle:
             return nil
         }
     }
@@ -5574,7 +5613,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// it's drawn here, or where it can't be, System Settings' thumbnail of it in that look, stretched to
     /// fill the picture, which is all there is of it on the Mac to put in a wallpaper
     private static func drawnPicture(_ drawn: DrawnWallpaper, showsDark: Bool, inDarkAppearance isDark: Bool, colors: String?, size: CGSize, into folder: URL) throws -> URL {
-        let file = folder.appendingPathComponent("Desktop \(drawn.name).png")
+        // Named for its appearance, apart from the other appearance's, which is drawn into the same folder
+        // when both have it
+        let file = folder.appendingPathComponent("\(drawn.name) in \(isDark ? "Dark" : "Light").png")
         if let picture = drawnImage(drawn, showsDark: showsDark, inDarkAppearance: isDark, colors: colors, size: size) {
             guard let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.png.identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
             CGImageDestinationAddImage(destination, picture, nil)
