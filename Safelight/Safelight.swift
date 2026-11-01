@@ -9,6 +9,7 @@ import Metal // For Macintosh and Sequoia, drawn as macOS draws them
 import MetalKit
 import ModelIO
 import simd
+import Photos // For the Photos library's albums and people, which Add Photo… offers to shuffle
 import PhotosUI
 #if canImport(Sparkle) // Not in scripts/screenshots.sh's copy, which leaves updates out
 import Sparkle
@@ -1191,6 +1192,20 @@ final class WallpaperWindow: NSObject, ObservableObject {
         }
     }
 
+    /// Asks for a folder, as System Settings › Wallpaper's Choose Folder… does, in a sheet, and shuffles
+    /// its pictures
+    func chooseFolder() {
+        guard let window else { return }
+        let isDark = isDark
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let folder = panel.url else { return }
+            WallpaperShuffler.shared.start(PhotoSet.shuffle(ofFolder: folder), isDark: isDark)
+        }
+    }
+
     /// Opens the Colours panel for any colour, as System Settings › Wallpaper's custom colour does
     func chooseColor() {
         let panel = NSColorPanel.shared
@@ -1231,6 +1246,7 @@ struct WallpaperGallery: View {
     @ObservedObject var window = WallpaperWindow.shared
     @ObservedObject var photos = YourPhotos.shared
     @ObservedObject var shuffler = WallpaperShuffler.shared
+    @ObservedObject var photoSets = PhotoLibrarySets.shared
     /// The sections showing all their wallpapers, not only a row
     @State private var expandedSections: Set<String> = []
     @State private var isChoosingPhoto = false
@@ -1569,16 +1585,39 @@ struct WallpaperGallery: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    /// Your Photos' first tile, which, as in System Settings, asks for a photo from Photos or a picture
-    /// from a file
+    /// Your Photos' first tile, whose menu, as System Settings' does, offers a photo from Photos or a
+    /// picture from a file, or a set to shuffle: a folder's pictures, or the Photos library's Favourites,
+    /// a person's photos, a shared album's or another album's, which it lists once it may read the
+    /// library, asking as soon as the tile shows, as System Settings does
     private var addPhoto: some View {
         Menu {
-            Button(SystemStrings.chooseFromPhotos) {
-                isChoosingPhoto = true
+            Section(SystemStrings.singlePhoto) {
+                Button(SystemStrings.chooseFromPhotos) {
+                    isChoosingPhoto = true
+                }
+                Button(SystemStrings.chooseFile) {
+                    window.addPhoto()
+                }
             }
-            Button(SystemStrings.chooseFile) {
-                window.addPhoto()
+            Section(SystemStrings.photoSets) {
+                Button(SystemStrings.chooseFolder, systemImage: "folder") {
+                    window.chooseFolder()
+                }
+                if let favorites = photoSets.lists.favorites {
+                    photoSetButton(favorites, systemImage: "heart")
+                }
+                ForEach(photoSets.lists.people) { person in
+                    photoSetButton(person, systemImage: "person.crop.circle")
+                }
+                ForEach(photoSets.lists.sharedAlbums) { album in
+                    photoSetButton(album, systemImage: "rectangle.stack.badge.person.crop")
+                }
+                ForEach(photoSets.lists.albums) { album in
+                    photoSetButton(album, systemImage: "rectangle.stack")
+                }
             }
+            // With their symbols, which a menu leaves out otherwise
+            .labelStyle(.titleAndIcon)
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: "photo.badge.plus")
@@ -1595,6 +1634,16 @@ struct WallpaperGallery: View {
         .menuIndicator(.hidden)
         .buttonStyle(.plain)
         .fixedSize()
+        .task {
+            await photoSets.load()
+        }
+    }
+
+    /// One of the Photos library's sets in Add Photo…'s menu, which shuffles its photos
+    private func photoSetButton(_ set: WallpaperShuffle, systemImage: String) -> some View {
+        Button(set.name, systemImage: systemImage) {
+            shuffler.start(set, isDark: window.isDark)
+        }
     }
 
     /// One of Colours' first two swatches, a symbol in a grey circle, as in System Settings: the colours'
@@ -4187,7 +4236,41 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             return try Self.colorPicture(swatch, size: screenSize, into: folder)
         case .drawn(let drawn, let isDark):
             return try Self.drawnPicture(drawn, showsDark: isDark, inDarkAppearance: isDark, colors: macintoshColors, size: screenSize, into: folder)
+        case .asset(let id):
+            return try await photo(id, into: folder)
         }
+    }
+
+    /// A photo in the Photos library, as it looks there, with its edits, at its full size, downloaded
+    /// from iCloud when the Mac doesn't have it, as System Settings' photo sets' photos are
+    private func photo(_ id: String, into folder: URL) async throws -> URL {
+        guard PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized,
+              let asset = PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject else { throw CocoaError(.fileNoSuchFile) }
+        let options = PHImageRequestOptions()
+        options.version = .current
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        options.progressHandler = { [weak self] progress, _, _, _ in
+            // In whole percents, so the window isn't redrawn for every few bytes
+            let fraction = (progress * 100).rounded(.down) / 100
+            DispatchQueue.main.async {
+                if self?.downloadProgress != fraction {
+                    self?.downloadProgress = fraction
+                }
+            }
+        }
+        let (data, type) = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(Data, String?), Error>) in
+            PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, type, _, info in
+                if let data {
+                    continuation.resume(returning: (data, type))
+                } else {
+                    continuation.resume(throwing: info?[PHImageErrorKey] as? Error ?? CocoaError(.fileReadUnknown))
+                }
+            }
+        }
+        let file = folder.appendingPathComponent("Photo").appendingPathExtension(type.flatMap { UTType($0)?.preferredFilenameExtension } ?? "heic")
+        try data.write(to: file)
+        return file
     }
 
     /// One of the pictures macOS downloads from Apple once it's chosen in System Settings, downloaded
@@ -4929,7 +5012,11 @@ final class WallpaperShuffler: ObservableObject {
             let pictures = WallpaperLibrary.shared.pictures(of: shuffle.id)
             let next = pictures.filter { $0.id != shuffle.current }.randomElement() ?? pictures.randomElement()
             DispatchQueue.main.async {
+                // As for a folder with no pictures in it
                 guard let next else {
+                    if !isQuiet {
+                        NSSound.beep()
+                    }
                     completion?()
                     return
                 }
@@ -5570,6 +5657,8 @@ struct WallpaperItem: Identifiable, Hashable {
         case color(URL)
         /// One of the wallpapers macOS draws, in its Dark look or its Light one
         case drawn(WallpaperManager.DrawnWallpaper, isDark: Bool)
+        /// A photo in the Photos library, by its ID there, as it looks in Photos
+        case asset(String)
     }
 
     /// What System Settings badges a thumbnail with: a dynamic wallpaper, which has a picture for Light
@@ -5672,18 +5761,24 @@ struct WallpaperShuffle: Identifiable, Hashable {
     let thumbnails: [URL?]
 
     var isAerials: Bool {
-        id != Self.photos && id != Self.colors
+        Self.isAerials(id)
+    }
+
+    /// Whether a shuffle is of aerials: all of System Settings' are but Your Photos', Colours' and the
+    /// photo sets' (`PhotoSet`)
+    static func isAerials(_ id: ID) -> Bool {
+        id != photos && id != colors && !PhotoSet.isSet(id)
     }
 
     /// How often it can change, as System Settings offers for its kind, but never every few seconds or
     /// continuously, as each change makes a wallpaper
     static func intervals(for id: ID) -> [Interval] {
-        id == photos || id == colors ? [.minute, .fiveMinutes, .fifteenMinutes, .thirtyMinutes, .hour, .day, .login, .wake] : [.twelveHours, .day, .twoDays, .week, .month]
+        isAerials(id) ? [.twelveHours, .day, .twoDays, .week, .month] : [.minute, .fiveMinutes, .fifteenMinutes, .thirtyMinutes, .hour, .day, .login, .wake]
     }
 
     /// As often as macOS changes one until it's set: every half hour, or for the aerials, every day
     static func defaultInterval(for id: ID) -> Interval {
-        id == photos || id == colors ? .thirtyMinutes : .day
+        isAerials(id) ? .day : .thirtyMinutes
     }
 
     /// How often one of System Settings' shuffles changes, by the ID of its choice in macOS's wallpaper
@@ -6025,7 +6120,7 @@ final class WallpaperLibrary {
         if let item = items[choice] ?? YourPhotos.shared.items.first(where: { $0.id == choice }) {
             return item.name
         }
-        return shuffle(choice)?.name ?? WallpaperManager.DrawnWallpaper(rawValue: choice)?.name
+        return shuffle(choice)?.name ?? PhotoSet.name(of: choice) ?? WallpaperManager.DrawnWallpaper(rawValue: choice)?.name
     }
 
     /// One of the shuffles: the aerials', the colours', or Your Photos', with the newest four photos in
@@ -6037,9 +6132,12 @@ final class WallpaperLibrary {
         return sections.lazy.flatMap(\.shuffles).first { $0.id == id }
     }
 
-    /// The pictures a shuffle picks from. Your Photos' are read again each time, as they change, but
-    /// without the wallpapers Safelight made, which are already the desktop's.
+    /// The pictures a shuffle picks from. Your Photos' and a photo set's are read again each time, as
+    /// they change, Your Photos' without the wallpapers Safelight made, which are already the desktop's.
     func pictures(of shuffle: WallpaperShuffle.ID) -> [WallpaperItem] {
+        if PhotoSet.isSet(shuffle) {
+            return PhotoSet.pictures(of: shuffle)
+        }
         guard shuffle == WallpaperShuffle.photos else { return shufflePictures[shuffle] ?? [] }
         return YourPhotos.read().filter { $0.lightThumbnail != nil && !$0.id.hasSuffix("/Safelight.heic") }
     }
@@ -6242,6 +6340,196 @@ final class YourPhotos: ObservableObject {
     }
 }
 
+/// System Settings › Wallpaper's photo sets, which its Add Photo… shuffles: a folder's pictures, or the
+/// photos of one of the Photos library's albums (Favourites is one) or of a person in it. A set's
+/// shuffle is known by its ID: `set:folder:` and the folder's path, or `set:album:` or `set:person:`
+/// and the album's or the person's ID in the library.
+enum PhotoSet {
+    private static let folderPrefix = "set:folder:"
+    private static let albumPrefix = "set:album:"
+    private static let personPrefix = "set:person:"
+
+    static func isSet(_ id: WallpaperShuffle.ID) -> Bool {
+        id.hasPrefix(folderPrefix) || id.hasPrefix(albumPrefix) || id.hasPrefix(personPrefix)
+    }
+
+    static func shuffle(ofFolder folder: URL) -> WallpaperShuffle {
+        WallpaperShuffle(id: folderPrefix + folder.path, name: FileManager.default.displayName(atPath: folder.path), thumbnails: [])
+    }
+
+    static func shuffle(of album: PHAssetCollection) -> WallpaperShuffle {
+        WallpaperShuffle(id: albumPrefix + album.localIdentifier, name: name(of: album), thumbnails: [])
+    }
+
+    static func shuffle(ofPerson person: NSObject, named name: String) -> WallpaperShuffle? {
+        (person as? PHObject).map { WallpaperShuffle(id: personPrefix + $0.localIdentifier, name: name, thumbnails: []) }
+    }
+
+    /// A set's name, as Add Photo… lists it, while it's there
+    static func name(of id: WallpaperShuffle.ID) -> String? {
+        if id.hasPrefix(folderPrefix) {
+            return FileManager.default.displayName(atPath: String(id.dropFirst(folderPrefix.count)))
+        } else if let album = album(id) {
+            return name(of: album)
+        } else if let person = person(id) {
+            return PhotoLibrarySets.name(of: person)
+        }
+        return nil
+    }
+
+    private static func name(of album: PHAssetCollection) -> String {
+        album.assetCollectionSubtype == .smartAlbumFavorites ? SystemStrings.favorites : album.localizedTitle ?? ""
+    }
+
+    /// The pictures a set's shuffle picks from, read again each time, as they change: those in a folder
+    /// itself, not in folders in it, nor hidden, which are pictures by their names' extensions, as
+    /// System Settings takes them, and an album's or a person's photos, but not videos
+    static func pictures(of id: WallpaperShuffle.ID) -> [WallpaperItem] {
+        if id.hasPrefix(folderPrefix) {
+            let folder = URL(fileURLWithPath: String(id.dropFirst(folderPrefix.count)), isDirectory: true)
+            let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles)) ?? []
+            return files.filter { file in
+                UTType(filenameExtension: file.pathExtension)?.conforms(to: .image) == true && (try? file.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory != true
+            }.map { file in
+                WallpaperItem(id: "photo:\(file.path)", name: file.deletingPathExtension().lastPathComponent, light: .file(file), dark: .file(file),
+                              lightThumbnail: file, darkThumbnail: file)
+            }
+        }
+        let options = PhotoLibrarySets.fetchOptions()
+        options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+        let assets: PHFetchResult<PHAsset>
+        if let album = album(id) {
+            assets = PHAsset.fetchAssets(in: album, options: options)
+        } else if let person = person(id), let found = PhotoLibrarySets.call(PHAsset.self, "fetchAssetsForPerson:options:", with: person, options) as? PHFetchResult<PHAsset> {
+            assets = found
+        } else {
+            return []
+        }
+        return assets.objects(at: IndexSet(integersIn: 0..<assets.count)).map { asset in
+            WallpaperItem(id: "asset:\(asset.localIdentifier)", name: "", light: .asset(asset.localIdentifier), dark: .asset(asset.localIdentifier),
+                          lightThumbnail: nil, darkThumbnail: nil)
+        }
+    }
+
+    private static func album(_ id: WallpaperShuffle.ID) -> PHAssetCollection? {
+        guard id.hasPrefix(albumPrefix), PhotoLibrarySets.mayRead else { return nil }
+        return PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [String(id.dropFirst(albumPrefix.count))], options: nil).firstObject
+    }
+
+    private static func person(_ id: WallpaperShuffle.ID) -> NSObject? {
+        guard id.hasPrefix(personPrefix), PhotoLibrarySets.mayRead, let people = NSClassFromString("PHPerson") else { return nil }
+        let found = PhotoLibrarySets.call(people, "fetchPersonsWithLocalIdentifiers:options:", with: [String(id.dropFirst(personPrefix.count))], PhotoLibrarySets.fetchOptions())
+        return (found as? PHFetchResult<AnyObject>)?.firstObject as? NSObject
+    }
+}
+
+/// The Photos library's sets, as System Settings › Wallpaper's Add Photo… lists them, read as its
+/// Wallpaper extension reads them: Favourites, while it has anything in it, the people with names, by
+/// name, then the shared albums and the others, in the library's order. People aren't in Photos' public
+/// interface, so they're read through its own, while it has them.
+final class PhotoLibrarySets: NSObject, ObservableObject, PHPhotoLibraryChangeObserver {
+    static let shared = PhotoLibrarySets()
+
+    struct Lists: Equatable {
+        var favorites: WallpaperShuffle?
+        var people: [WallpaperShuffle] = []
+        var sharedAlbums: [WallpaperShuffle] = []
+        var albums: [WallpaperShuffle] = []
+    }
+
+    @Published private(set) var lists = Lists()
+    /// Where they're read, one read after another, so the last one shown is the latest
+    private let queue = DispatchQueue(label: "Safelight.PhotoSets", qos: .userInitiated)
+    private var isObserving = false
+
+    /// Whether Safelight may read the library, which it asks for only from Add Photo…
+    static var mayRead: Bool {
+        PHPhotoLibrary.authorizationStatus(for: .readWrite) == .authorized
+    }
+
+    /// Asks to read the library, as System Settings does, the first time, then lists its sets, and
+    /// from then on whenever it changes
+    @MainActor
+    func load() async {
+        if !Self.mayRead {
+            guard await PHPhotoLibrary.requestAuthorization(for: .readWrite) == .authorized else { return }
+        }
+        if !isObserving {
+            isObserving = true
+            PHPhotoLibrary.shared().register(self)
+        }
+        reload()
+    }
+
+    func photoLibraryDidChange(_ changeInstance: PHChange) {
+        reload()
+    }
+
+    private func reload() {
+        queue.async {
+            let lists = Self.read()
+            DispatchQueue.main.async {
+                if lists != self.lists {
+                    self.lists = lists
+                }
+            }
+        }
+    }
+
+    private static func read() -> Lists {
+        var lists = Lists()
+        if let favorites = PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .smartAlbumFavorites, options: fetchOptions()).firstObject {
+            let options = fetchOptions()
+            options.fetchLimit = 1
+            if PHAsset.fetchAssets(in: favorites, options: options).count > 0 {
+                lists.favorites = PhotoSet.shuffle(of: favorites)
+            }
+        }
+        if let people = NSClassFromString("PHPerson"), let found = call(people, "fetchPersonsWithOptions:", with: fetchOptions()) as? PHFetchResult<AnyObject> {
+            lists.people = found.objects(at: IndexSet(integersIn: 0..<found.count)).compactMap { person in
+                guard let person = person as? NSObject, let name = name(of: person), !name.isEmpty else { return nil }
+                return PhotoSet.shuffle(ofPerson: person, named: name)
+            }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        }
+        func albums(_ subtype: PHAssetCollectionSubtype) -> [WallpaperShuffle] {
+            let found = PHAssetCollection.fetchAssetCollections(with: .album, subtype: subtype, options: fetchOptions())
+            return found.objects(at: IndexSet(integersIn: 0..<found.count)).map(PhotoSet.shuffle(of:))
+        }
+        lists.sharedAlbums = albums(.albumCloudShared)
+        lists.albums = albums(.albumRegular)
+        return lists
+    }
+
+    /// The options System Settings reads the library with: those of the library itself, in the context
+    /// in which people are shown (its Wallpaper extension's)
+    static func fetchOptions() -> PHFetchOptions {
+        let library = PHPhotoLibrary.shared()
+        let options = call(library, "librarySpecificFetchOptions") as? PHFetchOptions ?? PHFetchOptions()
+        if options.responds(to: NSSelectorFromString("setPersonContext:")) {
+            options.setValue(1, forKey: "personContext")
+        }
+        return options
+    }
+
+    /// A person's name, nil for one with none
+    static func name(of person: NSObject) -> String? {
+        call(person, "name") as? String
+    }
+
+    /// Calls one of Photos' own methods that isn't in its public interface, with up to two objects,
+    /// or gives nil if it hasn't one by that name
+    static func call(_ object: AnyObject, _ name: String, with first: Any? = nil, _ second: Any? = nil) -> AnyObject? {
+        let selector = NSSelectorFromString(name)
+        guard object.responds(to: selector) else { return nil }
+        let result: Unmanaged<AnyObject>? = switch name.filter({ $0 == ":" }).count {
+        case 0: object.perform(selector)
+        case 1: object.perform(selector, with: first)
+        default: object.perform(selector, with: first, with: second)
+        }
+        return result?.takeUnretainedValue()
+    }
+}
+
 // MARK: - 10. System Strings (System Settings' Translations)
 /// Every label in the app, read from the string tables System Settings (or Control Center, the Dock,
 /// or an app's menus) loads the same label from, so it comes out in the system language, worded
@@ -6296,6 +6584,10 @@ enum SystemStrings {
     static let addPhoto = lookup("ADD_PHOTO", in: wallpaperSettings, english: "Add Photo…")
     static let chooseFromPhotos = lookup("CHOOSE_FROM_PHOTOS", in: wallpaperSettings, english: "Choose from Photos…")
     static let chooseFile = lookup("CHOOSE_FILE", in: wallpaperSettings, english: "Choose File…")
+    static let singlePhoto = lookup("SINGLE_PHOTO", in: wallpaperSettings, english: "Single Photo")
+    static let photoSets = lookup("PHOTO_SETS", in: wallpaperSettings, english: "Photo Sets")
+    static let chooseFolder = lookup("CHOOSE_FOLDER", in: wallpaperSettings, english: "Choose Folder…")
+    static let favorites = lookup("FAVORITES", in: wallpaperSettings, english: "Favorites")
     static let showAll = lookup("SHOW_ALL_%@", in: wallpaperSettings, english: "Show All (%@)")
     static let showLess = lookup("SHOW_LESS", in: wallpaperSettings, english: "Show Less")
     static let removeDownload = lookup("REMOVE_DOWNLOAD", in: wallpaperSettings, english: "Remove Download")
