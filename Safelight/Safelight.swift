@@ -6505,8 +6505,10 @@ enum SystemStrings {
     static let high = lookup("display.colorFilter.intensity.high", in: accessibilitySettings, english: "High")
     static let tint = lookup("display.colorFilter.tint", in: accessibilitySettings, english: "Tint")
     
-    // System Settings › Accessibility › Hearing Devices' switch for setting each hearing aid by itself
-    static let adjustIndependently = lookup("mfi.hearingaids.adjust.independently.toggle.title", in: accessibilitySettings, english: "Adjust Independently")
+    // System Settings › Accessibility › Hearing Devices' switch for setting each hearing aid by itself,
+    // in sentence case, as System Settings labels a switch (Color filters), though its table has it in
+    // title case, in English and in the translations that followed it (Indonesian, Malay, Portuguese, Turkish)
+    static let adjustIndependently = lookup("mfi.hearingaids.adjust.independently.toggle.title", in: accessibilitySettings, english: "Adjust independently", sentenceCased: true)
     
     // System Settings › Displays (Schedule is Night Shift's)
     static let brightness = lookup("Brightness", in: displaysSettings, english: "Brightness")
@@ -6622,8 +6624,24 @@ enum SystemStrings {
     /// table's closest match the way System Settings does (e.g. French (Canada) before French).
     private static let languages = Locale.preferredLanguages.map(Locale.Language.init(identifier:))
     
-    private static func lookup(_ key: String, table: String = "Localizable", in bundlePath: String, english: String) -> String {
+    private static func lookup(_ key: String, table: String = "Localizable", in bundlePath: String, english: String, sentenceCased: Bool = false) -> String {
         guard let bundle = Bundle(path: bundlePath) else { return english }
-        return bundle.localizedString(forKey: key, value: english, table: table, localizations: languages)
+        let label = bundle.localizedString(forKey: key, value: english, table: table, localizations: languages)
+        guard sentenceCased, label != english,
+              let localization = Bundle.preferredLocalizations(from: bundle.localizations, forPreferences: Locale.preferredLanguages).first
+        else { return label }
+        return sentenceCase(label, in: Locale(identifier: localization))
+    }
+
+    /// `label` with each word after the first lowercased, in `locale`'s way (Turkish's dotless ı), as
+    /// System Settings capitalizes a switch's label. Acronyms and names like iPhone keep their capitals,
+    /// and German, which capitalizes its nouns, keeps Apple's wording as it is.
+    private static func sentenceCase(_ label: String, in locale: Locale) -> String {
+        guard locale.language.languageCode != .german else { return label }
+        let words = label.split(separator: " ", omittingEmptySubsequences: false)
+        return ([String(words[0])] + words.dropFirst().map { word in
+            guard let first = word.first, first.isUppercase, !word.dropFirst().contains(where: \.isUppercase) else { return String(word) }
+            return String(first).lowercased(with: locale) + word.dropFirst()
+        }).joined(separator: " ")
     }
 }
