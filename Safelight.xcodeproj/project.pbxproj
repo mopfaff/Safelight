@@ -292,7 +292,7 @@
 				INFOPLIST_FILE = Safelight/Info.plist;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2025–2026 mopfaff. Licensed under the GNU GPL v3.0.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Safelight lists your albums and the people in your Photos library, as System Settings › Wallpaper does, so their photos can shuffle on your desktop.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Safelight lists your albums in Photos, as System Settings › Wallpaper does, so their photos can shuffle on your desktop.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -327,7 +327,7 @@
 				INFOPLIST_FILE = Safelight/Info.plist;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2025–2026 mopfaff. Licensed under the GNU GPL v3.0.";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Safelight lists your albums and the people in your Photos library, as System Settings › Wallpaper does, so their photos can shuffle on your desktop.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Safelight lists your albums in Photos, as System Settings › Wallpaper does, so their photos can shuffle on your desktop.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

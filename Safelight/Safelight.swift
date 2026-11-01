@@ -9,7 +9,7 @@ import Metal // For Macintosh and Sequoia, drawn as macOS draws them
 import MetalKit
 import ModelIO
 import simd
-import Photos // For the Photos library's albums and people, which Add Photo… offers to shuffle
+import Photos // For the Photos library's albums, which Add Photo… offers to shuffle
 import PhotosUI
 #if canImport(Sparkle) // Not in scripts/screenshots.sh's copy, which leaves updates out
 import Sparkle
@@ -1587,8 +1587,9 @@ struct WallpaperGallery: View {
 
     /// Your Photos' first tile, whose menu, as System Settings' does, offers a photo from Photos or a
     /// picture from a file, or a set to shuffle: a folder's pictures, or the Photos library's Favourites,
-    /// a person's photos, a shared album's or another album's, which it lists once it may read the
-    /// library, asking as soon as the tile shows, as System Settings does
+    /// a shared album's or another album's, which it lists once it may read the library, asking as soon
+    /// as the tile shows, as System Settings does. System Settings lists people as well, which Photos
+    /// gives only to Apple's own apps.
     private var addPhoto: some View {
         Menu {
             Section(SystemStrings.singlePhoto) {
@@ -1605,9 +1606,6 @@ struct WallpaperGallery: View {
                 }
                 if let favorites = photoSets.lists.favorites {
                     photoSetButton(favorites, systemImage: "heart")
-                }
-                ForEach(photoSets.lists.people) { person in
-                    photoSetButton(person, systemImage: "person.crop.circle")
                 }
                 ForEach(photoSets.lists.sharedAlbums) { album in
                     photoSetButton(album, systemImage: "rectangle.stack.badge.person.crop")
@@ -6341,16 +6339,15 @@ final class YourPhotos: ObservableObject {
 }
 
 /// System Settings › Wallpaper's photo sets, which its Add Photo… shuffles: a folder's pictures, or the
-/// photos of one of the Photos library's albums (Favourites is one) or of a person in it. A set's
-/// shuffle is known by its ID: `set:folder:` and the folder's path, or `set:album:` or `set:person:`
-/// and the album's or the person's ID in the library.
+/// photos of one of the Photos library's albums (Favourites is one). System Settings has its people
+/// too, but Photos only gives people to Apple's own apps. A set's shuffle is known by its ID:
+/// `set:folder:` and the folder's path, or `set:album:` and the album's ID in the library.
 enum PhotoSet {
     private static let folderPrefix = "set:folder:"
     private static let albumPrefix = "set:album:"
-    private static let personPrefix = "set:person:"
 
     static func isSet(_ id: WallpaperShuffle.ID) -> Bool {
-        id.hasPrefix(folderPrefix) || id.hasPrefix(albumPrefix) || id.hasPrefix(personPrefix)
+        id.hasPrefix(folderPrefix) || id.hasPrefix(albumPrefix)
     }
 
     static func shuffle(ofFolder folder: URL) -> WallpaperShuffle {
@@ -6361,20 +6358,12 @@ enum PhotoSet {
         WallpaperShuffle(id: albumPrefix + album.localIdentifier, name: name(of: album), thumbnails: [])
     }
 
-    static func shuffle(ofPerson person: NSObject, named name: String) -> WallpaperShuffle? {
-        (person as? PHObject).map { WallpaperShuffle(id: personPrefix + $0.localIdentifier, name: name, thumbnails: []) }
-    }
-
     /// A set's name, as Add Photo… lists it, while it's there
     static func name(of id: WallpaperShuffle.ID) -> String? {
         if id.hasPrefix(folderPrefix) {
             return FileManager.default.displayName(atPath: String(id.dropFirst(folderPrefix.count)))
-        } else if let album = album(id) {
-            return name(of: album)
-        } else if let person = person(id) {
-            return PhotoLibrarySets.name(of: person)
         }
-        return nil
+        return album(id).map(name(of:))
     }
 
     private static func name(of album: PHAssetCollection) -> String {
@@ -6383,7 +6372,7 @@ enum PhotoSet {
 
     /// The pictures a set's shuffle picks from, read again each time, as they change: those in a folder
     /// itself, not in folders in it, nor hidden, which are pictures by their names' extensions, as
-    /// System Settings takes them, and an album's or a person's photos, but not videos
+    /// System Settings takes them, or an album's photos, but not its videos
     static func pictures(of id: WallpaperShuffle.ID) -> [WallpaperItem] {
         if id.hasPrefix(folderPrefix) {
             let folder = URL(fileURLWithPath: String(id.dropFirst(folderPrefix.count)), isDirectory: true)
@@ -6395,16 +6384,10 @@ enum PhotoSet {
                               lightThumbnail: file, darkThumbnail: file)
             }
         }
-        let options = PhotoLibrarySets.fetchOptions()
+        guard let album = album(id) else { return [] }
+        let options = PHFetchOptions()
         options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.image.rawValue)
-        let assets: PHFetchResult<PHAsset>
-        if let album = album(id) {
-            assets = PHAsset.fetchAssets(in: album, options: options)
-        } else if let person = person(id), let found = PhotoLibrarySets.call(PHAsset.self, "fetchAssetsForPerson:options:", with: person, options) as? PHFetchResult<PHAsset> {
-            assets = found
-        } else {
-            return []
-        }
+        let assets = PHAsset.fetchAssets(in: album, options: options)
         return assets.objects(at: IndexSet(integersIn: 0..<assets.count)).map { asset in
             WallpaperItem(id: "asset:\(asset.localIdentifier)", name: "", light: .asset(asset.localIdentifier), dark: .asset(asset.localIdentifier),
                           lightThumbnail: nil, darkThumbnail: nil)
@@ -6415,24 +6398,16 @@ enum PhotoSet {
         guard id.hasPrefix(albumPrefix), PhotoLibrarySets.mayRead else { return nil }
         return PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [String(id.dropFirst(albumPrefix.count))], options: nil).firstObject
     }
-
-    private static func person(_ id: WallpaperShuffle.ID) -> NSObject? {
-        guard id.hasPrefix(personPrefix), PhotoLibrarySets.mayRead, let people = NSClassFromString("PHPerson") else { return nil }
-        let found = PhotoLibrarySets.call(people, "fetchPersonsWithLocalIdentifiers:options:", with: [String(id.dropFirst(personPrefix.count))], PhotoLibrarySets.fetchOptions())
-        return (found as? PHFetchResult<AnyObject>)?.firstObject as? NSObject
-    }
 }
 
 /// The Photos library's sets, as System Settings › Wallpaper's Add Photo… lists them, read as its
-/// Wallpaper extension reads them: Favourites, while it has anything in it, the people with names, by
-/// name, then the shared albums and the others, in the library's order. People aren't in Photos' public
-/// interface, so they're read through its own, while it has them.
+/// Wallpaper extension reads them: Favourites, while it has anything in it, then the shared albums and
+/// the others, in the library's order
 final class PhotoLibrarySets: NSObject, ObservableObject, PHPhotoLibraryChangeObserver {
     static let shared = PhotoLibrarySets()
 
     struct Lists: Equatable {
         var favorites: WallpaperShuffle?
-        var people: [WallpaperShuffle] = []
         var sharedAlbums: [WallpaperShuffle] = []
         var albums: [WallpaperShuffle] = []
     }
@@ -6478,55 +6453,20 @@ final class PhotoLibrarySets: NSObject, ObservableObject, PHPhotoLibraryChangeOb
 
     private static func read() -> Lists {
         var lists = Lists()
-        if let favorites = PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .smartAlbumFavorites, options: fetchOptions()).firstObject {
-            let options = fetchOptions()
+        if let favorites = PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .smartAlbumFavorites, options: nil).firstObject {
+            let options = PHFetchOptions()
             options.fetchLimit = 1
             if PHAsset.fetchAssets(in: favorites, options: options).count > 0 {
                 lists.favorites = PhotoSet.shuffle(of: favorites)
             }
         }
-        if let people = NSClassFromString("PHPerson"), let found = call(people, "fetchPersonsWithOptions:", with: fetchOptions()) as? PHFetchResult<AnyObject> {
-            lists.people = found.objects(at: IndexSet(integersIn: 0..<found.count)).compactMap { person in
-                guard let person = person as? NSObject, let name = name(of: person), !name.isEmpty else { return nil }
-                return PhotoSet.shuffle(ofPerson: person, named: name)
-            }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        }
         func albums(_ subtype: PHAssetCollectionSubtype) -> [WallpaperShuffle] {
-            let found = PHAssetCollection.fetchAssetCollections(with: .album, subtype: subtype, options: fetchOptions())
+            let found = PHAssetCollection.fetchAssetCollections(with: .album, subtype: subtype, options: nil)
             return found.objects(at: IndexSet(integersIn: 0..<found.count)).map(PhotoSet.shuffle(of:))
         }
         lists.sharedAlbums = albums(.albumCloudShared)
         lists.albums = albums(.albumRegular)
         return lists
-    }
-
-    /// The options System Settings reads the library with: those of the library itself, in the context
-    /// in which people are shown (its Wallpaper extension's)
-    static func fetchOptions() -> PHFetchOptions {
-        let library = PHPhotoLibrary.shared()
-        let options = call(library, "librarySpecificFetchOptions") as? PHFetchOptions ?? PHFetchOptions()
-        if options.responds(to: NSSelectorFromString("setPersonContext:")) {
-            options.setValue(1, forKey: "personContext")
-        }
-        return options
-    }
-
-    /// A person's name, nil for one with none
-    static func name(of person: NSObject) -> String? {
-        call(person, "name") as? String
-    }
-
-    /// Calls one of Photos' own methods that isn't in its public interface, with up to two objects,
-    /// or gives nil if it hasn't one by that name
-    static func call(_ object: AnyObject, _ name: String, with first: Any? = nil, _ second: Any? = nil) -> AnyObject? {
-        let selector = NSSelectorFromString(name)
-        guard object.responds(to: selector) else { return nil }
-        let result: Unmanaged<AnyObject>? = switch name.filter({ $0 == ":" }).count {
-        case 0: object.perform(selector)
-        case 1: object.perform(selector, with: first)
-        default: object.perform(selector, with: first, with: second)
-        }
-        return result?.takeUnretainedValue()
     }
 }
 
