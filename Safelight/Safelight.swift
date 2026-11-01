@@ -4231,6 +4231,12 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
 
     /// What the desktop has, which `thumbnails` are of
     private var shown: Desktop?
+    /// The desktop's picture file as macOS named it when it was last looked at
+    private var lastRead: URL?
+    /// A wallpaper just put on the desktop, and the desktop's picture files before it, which macOS can
+    /// still name for a second or so, though they may have been taken away: until it names the new one,
+    /// for a few seconds at most
+    private var justPut: (wallpaper: URL, before: Set<URL>, until: Date)?
     /// The files macOS has downloaded that it's showing, as the desktop or the screen saver
     @Published private var downloadsInUse: Set<URL> = []
     /// Those of the files macOS downloads System Settings' wallpapers into that are on the Mac, nil
@@ -4268,6 +4274,13 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
         guard let screen = NSScreen.screens.first else { return show(nil) }
         let wallpaper = NSWorkspace.shared.desktopImageURL(for: screen)
+        // Still one from before, which may have been taken away
+        if let justPut, Date() < justPut.until, let wallpaper = wallpaper?.standardizedFileURL, wallpaper != justPut.wallpaper,
+           justPut.before.contains(wallpaper) || isMadeHere(wallpaper) {
+            return
+        }
+        justPut = nil
+        lastRead = wallpaper
         let placement = Self.placement(on: screen)
         if let wallpaper, isMadeHere(wallpaper) {
             show(.file(wallpaper, placement: placement))
@@ -4302,9 +4315,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             thumbnails = nil
             return
         }
-        let screenSize = Self.screenSize, screenScale = Self.screenScale
+        let screenSize = Self.screenSize
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let thumbnails = Self.thumbnails(of: desktop, screenSize: screenSize, screenScale: screenScale)
+            let thumbnails = Self.thumbnails(of: desktop, screenSize: screenSize)
             DispatchQueue.main.async {
                 guard let self, self.shown == desktop else { return }
                 self.thumbnails = thumbnails
@@ -4450,7 +4463,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// fails.
     func choose(_ item: WallpaperItem, isDark: Bool, options: PictureOptions? = nil, from shuffle: WallpaperShuffle.ID? = nil, isQuiet: Bool = false,
                 then completion: ((_ isMade: Bool) -> Void)? = nil) {
-        let screenSize = Self.screenSize, screenScale = Self.screenScale
+        let screenSize = Self.screenSize
         let options = options ?? keptOptions(isDark: isDark)
         let macintoshColors = options.macintoshColors ?? Self.macintoshColors
         // Only a picture is placed, as System Settings' image options place one
@@ -4463,7 +4476,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             let showsDark = isChosen && item.badge == .dynamic ? options.showsDark(isDark: isDark) : isDark
             let file = try await self.file(for: showsDark ? item.dark : item.light, in: pictures, screenSize: screenSize, inDarkAppearance: isDark,
                                            macintoshColors: macintoshColors, isGradient: options.isGradient == true)
-            return try Self.placedPicture((file, showsDark), placement: isChosen ? placement : nil, screenSize: screenSize, screenScale: screenScale,
+            return try Self.placedPicture((file, showsDark), placement: isChosen ? placement : nil, screenSize: screenSize,
                                           named: isDark ? "Dark" : "Light", into: pictures)
         }
     }
@@ -4483,21 +4496,16 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
     }
 
-    /// How many of the widest display's pixels make a point, which a picture in its middle is drawn at
-    private static var screenScale: CGFloat {
-        NSScreen.screens.max { $0.frame.width * $0.backingScaleFactor < $1.frame.width * $1.backingScaleFactor }?.backingScaleFactor ?? 1
-    }
-
     /// Makes a wallpaper with a photo from Photos for one appearance, as `setPicture(_:isDark:)` does
     func choose(_ photo: PhotosPickerItem, isDark: Bool) {
-        let screenSize = Self.screenSize, screenScale = Self.screenScale
+        let screenSize = Self.screenSize
         let options = keptOptions(isDark: isDark)
         setPicture(isDark: isDark, choice: WallpaperItem.ownPicture(named: nil), item: nil, options: options, hasPictureForEach: false) { isDark, pictures in
             guard let data = try await photo.loadTransferable(type: Data.self) else { throw CocoaError(.fileReadUnknown) }
             let file = pictures.appendingPathComponent("Photo").appendingPathExtension(photo.supportedContentTypes.first?.preferredFilenameExtension ?? "heic")
             try data.write(to: file)
             try Self.keepOriginal(file, isDark: isDark, beside: pictures)
-            return try Self.placedPicture((file, isDark), placement: options.placement, screenSize: screenSize, screenScale: screenScale, named: isDark ? "Dark" : "Light", into: pictures)
+            return try Self.placedPicture((file, isDark), placement: options.placement, screenSize: screenSize, named: isDark ? "Dark" : "Light", into: pictures)
         }
     }
 
@@ -4513,10 +4521,10 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// does, placed as `options` say, remembered as `choice`. The picture is kept beside the wallpaper
     /// as it was, so it can be placed another way.
     private func setPicture(_ file: URL, isDark: Bool, choice: WallpaperItem.ID, options: PictureOptions) {
-        let screenSize = Self.screenSize, screenScale = Self.screenScale
+        let screenSize = Self.screenSize
         setPicture(isDark: isDark, choice: choice, item: nil, options: options, hasPictureForEach: false) { isDark, pictures in
             try Self.keepOriginal(file, isDark: isDark, beside: pictures)
-            return try Self.placedPicture((file, isDark), placement: options.placement, screenSize: screenSize, screenScale: screenScale, named: isDark ? "Dark" : "Light", into: pictures)
+            return try Self.placedPicture((file, isDark), placement: options.placement, screenSize: screenSize, named: isDark ? "Dark" : "Light", into: pictures)
         }
     }
 
@@ -4559,7 +4567,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
         refresh()
         let current = shown
-        let screenSize = Self.screenSize, screenScale = Self.screenScale
+        let screenSize = Self.screenSize
         let wallpaper = folder.appendingPathComponent(UUID().uuidString, isDirectory: true).appendingPathComponent("Safelight.heic")
         let pictures = wallpaper.deletingLastPathComponent().appendingPathComponent("Pictures", isDirectory: true)
         isChanging = true
@@ -4579,7 +4587,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
                 }
                 if let shuffled {
                     other = (try await self.file(for: isDark ? shuffled.light : shuffled.dark, in: pictures, screenSize: screenSize, inDarkAppearance: !isDark), !isDark)
-                } else if let current, let picture = try await self.picture(current, shows: !isDark, in: pictures, screenSize: screenSize, screenScale: screenScale) {
+                } else if let current, let picture = try await self.picture(current, shows: !isDark, in: pictures, screenSize: screenSize) {
                     other = picture
                 } else if hasPictureForEach {
                     other = try await picture(!isDark, pictures)
@@ -4652,6 +4660,15 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         choices.set(choice, options: options, isDark: isDark)
         self.choices[wallpaper.deletingLastPathComponent().lastPathComponent] = choices
         setDesktop(wallpaper)
+        var before = Set([lastRead?.standardizedFileURL].compactMap { $0 })
+        if let justPut, Date() < justPut.until {
+            before.formUnion(justPut.before.union([justPut.wallpaper]))
+        }
+        justPut = (wallpaper.standardizedFileURL, before, Date().addingTimeInterval(5))
+        // Once macOS surely names it, or another Space's, as Spaces may have been switched meanwhile
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.1) { [weak self] in
+            self?.refresh()
+        }
         // Only once every Space has the new one: another Space may still show one from before
         if showsOnAllSpaces && Self.allSpacesOption != nil {
             removeWallpapers(except: wallpaper)
@@ -5073,10 +5090,10 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// picture file is placed on the display as macOS places it (`placedPicture`). For a wallpaper macOS
     /// draws, it's drawn as macOS draws it, or where it can't be, System Settings' thumbnail of it,
     /// stretched to fill the screen. Nil for a shuffle, which hasn't one picture.
-    private func picture(_ desktop: Desktop, shows isDark: Bool, in folder: URL, screenSize: CGSize, screenScale: CGFloat) async throws -> (file: URL, isDark: Bool)? {
+    private func picture(_ desktop: Desktop, shows isDark: Bool, in folder: URL, screenSize: CGSize) async throws -> (file: URL, isDark: Bool)? {
         switch desktop {
         case .file(let file, let placement):
-            return try Self.placedPicture((file, isDark), placement: placement, screenSize: screenSize, screenScale: screenScale, named: "Desktop", into: folder)
+            return try Self.placedPicture((file, isDark), placement: placement, screenSize: screenSize, named: "Desktop", into: folder)
         case .item(let item, let lightShowsDark, let darkShowsDark):
             let showsDark = isDark ? darkShowsDark : lightShowsDark
             return (try await file(for: showsDark ? item.dark : item.light, in: folder, screenSize: screenSize, inDarkAppearance: isDark), showsDark)
@@ -5205,12 +5222,16 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
 
         // About the size of macOS's own wallpapers for their pictures' size. A picture that's lost nothing
         // yet, as one drawn here is, loses nothing: lossy, Sequoia's gradients and Macintosh's blocks
-        // came out several levels off.
-        func options(_ source: CGImageSource) -> CFDictionary {
-            [kCGImageDestinationLossyCompressionQuality: CGImageSourceGetType(source) as String? == UTType.png.identifier ? 1 : 0.95] as CFDictionary
+        // came out several levels off. Nor does one kept from a wallpaper made before, as the other
+        // appearance's is: made again lossy, a picture that had lost nothing lost as much as it would
+        // the first time (a fitted grid's lines, up to 189 levels), though again and again no more.
+        let made = wallpaper.deletingLastPathComponent().deletingLastPathComponent()
+        func options(_ source: CGImageSource, _ file: URL) -> CFDictionary {
+            let isKept = file.deletingLastPathComponent().deletingLastPathComponent().standardizedFileURL == made.standardizedFileURL
+            return [kCGImageDestinationLossyCompressionQuality: isKept || CGImageSourceGetType(source) as String? == UTType.png.identifier ? 1 : 0.95] as CFDictionary
         }
         if isOnePicture {
-            CGImageDestinationAddImage(destination, lightPicture, options(lightSource))
+            CGImageDestinationAddImage(destination, lightPicture, options(lightSource, light.file))
         } else {
             let metadata = CGImageMetadataCreateMutable()
             let indexes = ["l": 0, "d": 1]
@@ -5218,8 +5239,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
                   let plist = try? PropertyListSerialization.data(fromPropertyList: indexes, format: .binary, options: 0),
                   CGImageMetadataSetValueWithPath(metadata, nil, appearanceMetadataPath, plist.base64EncodedString() as CFString)
             else { return false }
-            CGImageDestinationAddImageAndMetadata(destination, lightPicture, metadata, options(lightSource))
-            CGImageDestinationAddImage(destination, darkPicture, options(darkSource))
+            CGImageDestinationAddImageAndMetadata(destination, lightPicture, metadata, options(lightSource, light.file))
+            CGImageDestinationAddImage(destination, darkPicture, options(darkSource, dark.file))
         }
         return CGImageDestinationFinalize(destination)
     }
@@ -5228,28 +5249,42 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// enough to fill a thumbnail at twice its size, even from a picture much wider than the screen
     /// Placed otherwise than filling the display, each is drawn the shape of a display of `screenSize`,
     /// in pixels, placed on it as macOS places it (`placed(_:size:placement:screenSize:)`).
-    private static func thumbnails(of wallpaper: URL, placement: Placement = Placement(), screenSize: CGSize = .zero, screenScale: CGFloat = 1) -> Thumbnails? {
+    private static func thumbnails(of wallpaper: URL, placement: Placement = Placement(), screenSize: CGSize = .zero) -> Thumbnails? {
         guard let source = CGImageSourceCreateWithURL(wallpaper as CFURL, nil) else { return nil }
         func thumbnail(isDark: Bool) -> CGImage? {
             let index = index(in: source, isDark: isDark)
             guard let picture = picture(in: source, at: index, maxPixelSize: 400) else { return nil }
-            guard placement.kind != .fill else { return picture }
-            return placed(picture, size: pointSize(in: source, at: index), placement: placement, screenSize: screenSize, screenScale: screenScale, width: 400)
+            guard placement.kind != .fill, screenSize.width > 0, screenSize.height > 0 else { return picture }
+            let canvas = CGSize(width: 400, height: max((400 * screenSize.height / screenSize.width).rounded(), 1))
+            return placed(picture, size: pixelSize(in: source, at: index), placement: placement, screenSize: screenSize, canvas: canvas)
         }
         guard let light = thumbnail(isDark: false), let dark = thumbnail(isDark: true) else { return nil }
         return Thumbnails(light: .picture(light), dark: .picture(dark))
     }
 
-    /// One of a file's pictures as macOS places it on the widest display, as `placement` says: drawn
-    /// the size of the largest display (`screenSize`, in pixels, with `screenScale` of them to a point),
-    /// which a wallpaper with it then fills, written into `folder`, named after `name`, without loss
+    /// One of a file's pictures as macOS places it on the largest display, as `placement` says, on a
+    /// picture of the display's shape (`screenSize`, in pixels) that a wallpaper with it then fills.
+    /// Fitted or stretched, that's at the picture's own size, only as much larger as the display's shape
+    /// needs, so macOS scales it to each display as it scales a picture it places itself, with its own
+    /// filter, though never larger than the display. In the middle, it's the display's size. It's written into `folder`, named after `name`, without loss
     /// until the wallpaper is made, or the picture as it is when it fills the display
-    private static func placedPicture(_ picture: (file: URL, isDark: Bool), placement: Placement?, screenSize: CGSize, screenScale: CGFloat, named name: String, into folder: URL) throws -> (file: URL, isDark: Bool) {
+    private static func placedPicture(_ picture: (file: URL, isDark: Bool), placement: Placement?, screenSize: CGSize, named name: String, into folder: URL) throws -> (file: URL, isDark: Bool) {
         guard let placement, placement.kind != .fill else { return picture }
         guard let source = CGImageSourceCreateWithURL(picture.file as CFURL, nil) else { throw CocoaError(.fileReadCorruptFile) }
         let index = index(in: source, isDark: picture.isDark)
+        let size = pixelSize(in: source, at: index)
+        var canvas = screenSize
+        if placement.kind != .center, size.width > 0, size.height > 0, screenSize.height > 0 {
+            let aspect = screenSize.width / screenSize.height
+            let own = CGSize(width: max(size.width, (size.height * aspect).rounded()), height: max(size.height, (size.width / aspect).rounded()))
+            if own.width <= screenSize.width {
+                // As much each side, so a fitted picture is on whole pixels
+                canvas = CGSize(width: own.width + (own.width - size.width).truncatingRemainder(dividingBy: 2),
+                                height: own.height + (own.height - size.height).truncatingRemainder(dividingBy: 2))
+            }
+        }
         guard let image = Self.picture(in: source, at: index),
-              let placed = placed(image, size: pointSize(in: source, at: index), placement: placement, screenSize: screenSize, screenScale: screenScale, width: Int(screenSize.width))
+              let placed = placed(image, size: size, placement: placement, screenSize: screenSize, canvas: canvas)
         else { throw CocoaError(.fileReadCorruptFile) }
         // A PNG as one (which the wallpaper keeps without loss), others with nothing lost
         let isPNG = CGImageSourceGetType(source) as String? == UTType.png.identifier
@@ -5260,24 +5295,21 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         return (file, false)
     }
 
-    /// The size of one of `source`'s pictures the right way up, in points: a pixel to a point at 72
-    /// pixels to the inch, as AppKit sizes a picture
-    private static func pointSize(in source: CGImageSource, at index: Int) -> CGSize {
+    /// The size of one of `source`'s pictures the right way up, in pixels
+    private static func pixelSize(in source: CGImageSource, at index: Int) -> CGSize {
         let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
         let width = properties?[kCGImagePropertyPixelWidth] as? CGFloat ?? 0, height = properties?[kCGImagePropertyPixelHeight] as? CGFloat ?? 0
-        let resolution = { (key: CFString) in (properties?[key] as? CGFloat).flatMap { $0 > 0 ? $0 : nil } ?? 72 }
-        let size = CGSize(width: width * 72 / resolution(kCGImagePropertyDPIWidth), height: height * 72 / resolution(kCGImagePropertyDPIHeight))
         // Turned a quarter, by the orientations that turn it
-        return (5...8).contains(properties?[kCGImagePropertyOrientation] as? Int ?? 1) ? CGSize(width: size.height, height: size.width) : size
+        return (5...8).contains(properties?[kCGImagePropertyOrientation] as? Int ?? 1) ? CGSize(width: height, height: width) : CGSize(width: width, height: height)
     }
 
-    /// A picture whose own size is `size`, in points, as macOS places it on a display of `screenSize`,
-    /// in pixels, with `screenScale` of them to a point, drawn the shape of the display, `width` pixels
-    /// across: all of it on the display, stretched to its shape, or at its own size in the middle, with
-    /// the fill colour around it (or as it fills the display, which macOS does with a wallpaper itself)
-    private static func placed(_ picture: CGImage, size: CGSize, placement: Placement, screenSize: CGSize, screenScale: CGFloat, width: Int) -> CGImage? {
-        guard width > 0, screenSize.width > 0, screenSize.height > 0, size.width > 0, size.height > 0 else { return nil }
-        let height = max(Int((CGFloat(width) * screenSize.height / screenSize.width).rounded()), 1)
+    /// A picture whose own size is `size`, in pixels, as macOS places it on a display of `screenSize`,
+    /// in pixels, drawn on a `canvas` of the display's shape: all of it on the display, stretched to its
+    /// shape, or in the middle a pixel to each of the display's pixels, whatever its resolution, with the
+    /// fill colour around it (or as it fills the display, which macOS does with a wallpaper itself)
+    private static func placed(_ picture: CGImage, size: CGSize, placement: Placement, screenSize: CGSize, canvas: CGSize) -> CGImage? {
+        let width = Int(canvas.width), height = Int(canvas.height)
+        guard width > 0, height > 0, screenSize.width > 0, screenSize.height > 0, size.width > 0, size.height > 0 else { return nil }
         // In the picture's colours, or sRGB's where a context can't have them
         let context = [picture.colorSpace.flatMap { $0.model == .rgb ? $0 : nil }, CGColorSpace(name: CGColorSpace.sRGB)].lazy.compactMap { $0 }.compactMap {
             CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: $0, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
@@ -5289,13 +5321,13 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         let scale: CGFloat = switch placement.kind {
         case .fill: max(display.width / size.width, display.height / size.height)
         case .fit: min(display.width / size.width, display.height / size.height)
-        case .stretch, .center: screenScale * display.width / screenSize.width
+        case .stretch, .center: display.width / screenSize.width
         }
         var frame = CGRect(x: 0, y: 0, width: size.width * scale, height: size.height * scale)
         if placement.kind == .stretch {
             frame = display
         }
-        frame.origin = CGPoint(x: (display.width - frame.width) / 2, y: (display.height - frame.height) / 2)
+        frame.origin = CGPoint(x: ((display.width - frame.width) / 2).rounded(.down), y: ((display.height - frame.height) / 2).rounded(.down))
         context.interpolationQuality = .high
         context.draw(picture, in: frame)
         return context.makeImage()
@@ -5313,13 +5345,13 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// A wallpaper of System Settings' shows its thumbnails, which are the ones the Wallpaper window
     /// shows, a shuffle its thumbnail, a colour is just the colour, or its gradient, and Macintosh is
     /// drawn the shape of a display of `screenSize`, as is a picture placed otherwise than filling it.
-    private static func thumbnails(of desktop: Desktop, screenSize: CGSize, screenScale: CGFloat) -> Thumbnails? {
+    private static func thumbnails(of desktop: Desktop, screenSize: CGSize) -> Thumbnails? {
         func both(_ thumbnail: CGImage?) -> Thumbnails? {
             thumbnail.map { Thumbnails(light: .picture($0), dark: .picture($0)) }
         }
         switch desktop {
         case .file(let wallpaper, let placement):
-            return thumbnails(of: wallpaper, placement: placement, screenSize: screenSize, screenScale: screenScale)
+            return thumbnails(of: wallpaper, placement: placement, screenSize: screenSize)
         case .item(let item, let lightShowsDark, let darkShowsDark):
             func thumbnail(showsDark: Bool) -> CGImage? {
                 guard let file = showsDark ? item.darkThumbnail : item.lightThumbnail,
