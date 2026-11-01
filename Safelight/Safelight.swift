@@ -211,6 +211,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Ensure software dimming is cleared when the app is force-quit
         GammaManager.shared.reset()
+        // With Sequoia's looks through the day for Light on the desktop, which only Safelight takes off in Dark
+        WallpaperManager.shared.putOwnFileBack()
     }
 }
 
@@ -4015,7 +4017,9 @@ class AppearanceManager {
 /// choosing a picture in System Settings › Wallpaper does with Show on all Spaces on, or with it off,
 /// on the Space each display is showing. Each picture can be one of the user's own, or one of System
 /// Settings' own wallpapers (`WallpaperLibrary`), fetched first if it has to be, shown with System
-/// Settings' options for it (`PictureOptions`).
+/// Settings' options for it (`PictureOptions`). With Sequoia set to Automatic for Light, which changes
+/// its look with the time of day, the desktop has another file in Light, which macOS changes through
+/// Sequoia's looks itself as the sun moves (`makeSunWallpaper`, `followAppearance`).
 final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its state only changes on the main thread
     static let shared = WallpaperManager()
 
@@ -4224,6 +4228,17 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             self?.refresh()
             WallpaperShuffler.shared.schedule()
         }
+        // A wallpaper with Sequoia's looks through the day for Light has another file in Dark, put on as
+        // soon as the appearance changes, and again a second later, should it not have read as changed yet
+        DistributedNotificationCenter.default().addObserver(forName: AppearanceManager.changedNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.refresh()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self?.refresh() }
+        }
+    }
+
+    /// Whether the Mac has the Dark appearance now
+    private static var isDark: Bool {
+        AppearanceManager.shared.isDark() ?? (UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark")
     }
 
     /// The choices a wallpaper Safelight made has, by any of its files
@@ -4260,7 +4275,13 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     private static let metadataNamespace = "http://ns.apple.com/namespace/1.0/" as CFString
     private static let metadataPrefix = "apple_desktop" as CFString
     private static let appearanceMetadataPath = "apple_desktop:apr" as CFString
-    private static let dynamicMetadataPaths = ["apple_desktop:solar", "apple_desktop:h24"] as [CFString]
+    private static let solarMetadataPath = "apple_desktop:solar" as CFString
+    private static let dynamicMetadataPaths = [solarMetadataPath, "apple_desktop:h24" as CFString]
+
+    /// The name of the file a wallpaper made here has beside each of its own while Light has Sequoia set
+    /// to Automatic, with Sequoia's looks through the day (`makeSunWallpaper`), which the desktop has in
+    /// Light in place of the wallpaper's own (`followAppearance`)
+    private static let sunFileName = "Sun.heic"
 
     /// AppKit's option for putting a picture on every Space a display has, as System Settings ›
     /// Wallpaper does with Show on all Spaces on. It's exported, but not in the public headers; without
@@ -4286,7 +4307,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         let placement = Self.placement(on: screen)
         if let wallpaper, isMadeHere(wallpaper) {
             systemSettings = nil
-            return show(.file(wallpaper, placement: placement))
+            followAppearance(showing: wallpaper)
+            // Its own file, with its pictures for Light and for Dark, whichever is on the desktop
+            return show(.file(Self.ownFile(beside: wallpaper), placement: placement))
         }
         var desktop = Self.desktop(showing: wallpaper, on: Self.uuid(of: screen))
         if case .file(let file, _)? = desktop {
@@ -4294,6 +4317,38 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
         followSystemSettings(showing: desktop)
         show(desktop)
+    }
+
+    /// The file of the wallpaper on the desktop just put on in place of another for the appearance, and
+    /// until when it isn't put on again, as macOS still names the other for a second or so
+    private var followed: (file: URL, until: Date)?
+
+    /// Puts on the file of the wallpaper made here, of which `file` is on the desktop, that the desktop
+    /// has in the appearance the Mac has now, when it's another (`setDesktop(_:isDark:)`). Only one with
+    /// Sequoia's looks through the day for Light has another: in Light, macOS shows the look of the time of
+    /// day from that file itself, as it does with Sequoia set to Automatic, but it does in Dark as well,
+    /// for a file an app puts on, where Sequoia shows its Dark look. Only System Settings can have it keep
+    /// to one look in Dark. So in Dark the desktop has the wallpaper's own file, with its picture for Dark.
+    private func followAppearance(showing file: URL) {
+        guard !isChanging, let screen = NSScreen.screens.first else { return }
+        let own = Self.ownFile(beside: file)
+        let wanted = Self.shownFile(of: own, for: screen, isDark: Self.isDark).standardizedFileURL
+        guard wanted != file.standardizedFileURL else { return }
+        if let followed, followed.file == wanted, Date() < followed.until {
+            return
+        }
+        followed = (wanted, Date().addingTimeInterval(5))
+        setDesktop(own)
+    }
+
+    /// Puts the wallpaper's own file back on the desktop in place of the one with Sequoia's looks through
+    /// the day, as Safelight quits, so the desktop has its picture for Dark in Dark while it isn't running
+    /// to put it on. In Light it has its own picture for Light, until Safelight puts the other on again.
+    func putOwnFileBack() {
+        guard let screen = NSScreen.screens.first, let file = NSWorkspace.shared.desktopImageURL(for: screen),
+              isMadeHere(file), file.lastPathComponent == Self.sunFileName else { return }
+        followed = nil
+        setDesktop(Self.ownFile(beside: file), isDark: true)
     }
 
     /// The wallpaper of System Settings' the desktop had when Show on all Spaces was last set as System
@@ -4630,6 +4685,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
         refresh()
         let current = shown
+        let followsSun = lightFollowsSun(isDark: isDark, choice: choice, options: options, replacing: current)
         let screenSize = Self.screenSize
         // Never none, as it's made all the same while there's no display to put it on
         let displaySizes = Self.displaySizes.isEmpty ? [.zero] : Self.displaySizes
@@ -4705,6 +4761,25 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
                    let original = Self.original(in: Self.wallpaperFolder(of: made), isDark: !isDark) {
                     try? Self.keepOriginal(original, isDark: !isDark, beside: pictures)
                 }
+                // With Sequoia set to Automatic in Light, its looks through the day beside each file, for
+                // Light, which macOS changes between as the sun moves: those of the wallpaper before
+                // for the same size of display, which only depend on that, or else drawn. The wallpaper
+                // does without, should they fail, as it would on a macOS whose Sequoia can't be drawn.
+                if isMade, followsSun {
+                    let before: URL? = if case .file(let made, _)? = current, self.isMadeHere(made) { made } else { nil }
+                    for (index, size) in sizes.enumerated() where size.width > 0 && size.height > 0 {
+                        let own = index == 0 ? wallpaper : Self.file(in: wallpaper.deletingLastPathComponent(), forPixelSize: size)
+                        let sun = own.deletingLastPathComponent().appendingPathComponent(Self.sunFileName)
+                        let kept = before.map { Self.file(of: $0, forPixelSize: size).deletingLastPathComponent().appendingPathComponent(Self.sunFileName) }
+                        if let kept, Self.pixelSize(of: (kept, false)) == size, (try? FileManager.default.linkItem(at: kept, to: sun)) != nil {
+                            continue
+                        }
+                        if !Self.makeSunWallpaper(at: sun, size: size) {
+                            NSLog("Safelight: couldn't make Sequoia's looks through the day for \(Self.folderName(of: size))")
+                            try? FileManager.default.removeItem(at: sun)
+                        }
+                    }
+                }
             } catch {
                 NSLog("Safelight: couldn't fetch the wallpaper's picture: \(error)")
                 isMade = false
@@ -4727,6 +4802,52 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
                 completion?(isMade)
             }
         }
+    }
+
+    /// Whether a wallpaper made with `choice` for an appearance, shown with `options`, in place of
+    /// `current`, has Sequoia set to Automatic in Light: chosen for Light, or kept for it from `current`
+    /// (`put`), which then has its looks through the day for Light, as the extension shows them
+    private func lightFollowsSun(isDark: Bool, choice: String?, options: PictureOptions, replacing current: Desktop?) -> Bool {
+        let light: (choice: String?, options: PictureOptions)
+        switch (isDark, current) {
+        case (false, _):
+            light = (choice, options)
+        case (true, .file(let made, _)?) where isMadeHere(made):
+            let choices = self.choices(of: made)
+            light = (choices.light, choices.options(isDark: false))
+        case (true, .drawn(let drawn, let lightShowsDark, let darkShowsDark, _)?):
+            light = (drawn.rawValue, PictureOptions(appearance: AppearanceOption(lightShowsDark: lightShowsDark, darkShowsDark: darkShowsDark)))
+        default:
+            return false
+        }
+        return light.choice == DrawnWallpaper.sequoia.rawValue && (light.options.appearance ?? .automatic) == .automatic
+    }
+
+    /// Writes Sequoia's looks through the day (`SequoiaWallpaper.looks`), drawn for a display of `size`,
+    /// in pixels, into a HEIC at `file`, each with where the sun is when the extension shows it, in the
+    /// metadata macOS's dynamic wallpapers have, and Sequoia's Light and Dark looks as its own. So
+    /// macOS shows the look of the time of day from it itself, as the sun moves, from the same location,
+    /// as it does with Sequoia set to Automatic. Like the pictures drawn here, without loss.
+    private static func makeSunWallpaper(at file: URL, size: CGSize) -> Bool {
+        let looks = SequoiaWallpaper.looks
+        let solar: [String: Any] = ["si": looks.enumerated().map { ["a": $0.element.altitude, "z": $0.element.azimuth, "i": $0.offset] },
+                                    "ap": ["l": SequoiaWallpaper.lightLook, "d": SequoiaWallpaper.darkLook]]
+        let metadata = CGImageMetadataCreateMutable()
+        guard let plist = try? PropertyListSerialization.data(fromPropertyList: solar, format: .binary, options: 0),
+              CGImageMetadataRegisterNamespaceForPrefix(metadata, metadataNamespace, metadataPrefix, nil),
+              CGImageMetadataSetValueWithPath(metadata, nil, solarMetadataPath, plist.base64EncodedString() as CFString),
+              let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.heic.identifier as CFString, looks.count, nil) else { return false }
+        // All of them kept until they're written: at 5120 by 2880, a second and 0.7 GB more for that long
+        let options = [kCGImageDestinationLossyCompressionQuality: 1] as CFDictionary
+        for look in looks.indices {
+            guard let picture = SequoiaWallpaper.picture(look: look, size: size) else { return false }
+            if look == 0 {
+                CGImageDestinationAddImageAndMetadata(destination, picture, metadata, options)
+            } else {
+                CGImageDestinationAddImage(destination, picture, options)
+            }
+        }
+        return CGImageDestinationFinalize(destination)
     }
 
     /// Puts a wallpaper just made on every display, on every Space or the one it's showing, in place of
@@ -4763,14 +4884,16 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
         choices.set(choice, options: options, isDark: isDark)
         self.choices[Self.wallpaperFolder(of: wallpaper).lastPathComponent] = choices
-        setDesktop(wallpaper)
+        let isDarkNow = Self.isDark
+        setDesktop(wallpaper, isDark: isDarkNow)
         // The main display's, which is the one looked at
         let shownFile = NSScreen.screens.first.map { Self.file(of: wallpaper, for: $0) } ?? wallpaper
         var before = Set([lastRead?.standardizedFileURL].compactMap { $0 })
         if let justPut, Date() < justPut.until {
             before.formUnion(justPut.before.union([justPut.wallpaper]))
         }
-        justPut = (shownFile.standardizedFileURL, before, Date().addingTimeInterval(5))
+        let putFile = NSScreen.screens.first.map { Self.shownFile(of: wallpaper, for: $0, isDark: isDarkNow) } ?? shownFile
+        justPut = (putFile.standardizedFileURL, before, Date().addingTimeInterval(5))
         // Once macOS surely names it, or another Space's, as Spaces may have been switched meanwhile
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.1) { [weak self] in
             self?.refresh()
@@ -4793,8 +4916,10 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// every Space or only on the one each display is showing, as `showsOnAllSpaces` says, filling it,
     /// as each of its pictures is placed in it. Only on the one, the other Spaces keep theirs, even
     /// System Settings' wallpaper for every Space, which macOS's wallpaper service then gives each Space
-    /// as its own, as System Settings does with its Show on all Spaces turned off.
-    private func setDesktop(_ wallpaper: URL) {
+    /// as its own, as System Settings does with its Show on all Spaces turned off. In Light, while it has
+    /// Sequoia's looks through the day for Light, it's that file that's put on (`followAppearance`).
+    private func setDesktop(_ wallpaper: URL, isDark: Bool? = nil) {
+        let isDark = isDark ?? Self.isDark
         for screen in NSScreen.screens {
             var options = NSWorkspace.shared.desktopImageOptions(for: screen) ?? [:]
             options[.imageScaling] = NSNumber(value: NSImageScaling.scaleProportionallyUpOrDown.rawValue)
@@ -4802,7 +4927,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             if let allSpacesOption = Self.allSpacesOption {
                 options[allSpacesOption] = showsOnAllSpaces
             }
-            let file = Self.file(of: wallpaper, for: screen)
+            let file = Self.shownFile(of: wallpaper, for: screen, isDark: isDark)
             do {
                 try NSWorkspace.shared.setDesktopImageURL(file, for: screen, options: options)
             } catch {
@@ -4816,6 +4941,20 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// the wallpaper's own, which the main display has
     private static func file(of wallpaper: URL, for screen: NSScreen) -> URL {
         file(of: wallpaper, forPixelSize: pixelSize(of: screen))
+    }
+
+    /// The file of a wallpaper Safelight made, by any of its files, that a display has in an appearance:
+    /// in Light, the one beside its own with Sequoia's looks through the day, when it has one
+    private static func shownFile(of wallpaper: URL, for screen: NSScreen, isDark: Bool) -> URL {
+        let own = file(of: wallpaper, for: screen)
+        let sun = own.deletingLastPathComponent().appendingPathComponent(sunFileName)
+        return !isDark && FileManager.default.fileExists(atPath: sun.path) ? sun : own
+    }
+
+    /// The wallpaper's own file beside one of its files, which is that file unless it's the one with
+    /// Sequoia's looks through the day
+    private static func ownFile(beside file: URL) -> URL {
+        file.lastPathComponent == sunFileName ? file.deletingLastPathComponent().appendingPathComponent("Safelight.heic") : file
     }
 
     /// The file of a wallpaper Safelight made, by any of its files, for a display of a size, in pixels
@@ -6208,15 +6347,42 @@ enum MacintoshWallpaper {
 // MARK: - Sequoia (As macOS Draws It)
 /// System Settings' Sequoia wallpaper as a still picture, drawn as its extension draws it before it starts
 /// to move: a field of streaks, each one of three 3D meshes stood on the ground, turned and scaled, seen
-/// from low down and coloured by height from a gradient of the time of day, solar noon's in the Light
-/// look and solar midnight's in the Dark one. It's drawn with the extension's own shaders, meshes and
+/// from low down and coloured by height from a gradient of the time of day (`looks`), solar noon's in the
+/// Light look and solar midnight's in the Dark one. It's drawn with the extension's own shaders, meshes and
 /// gradients, and the streaks stand where the extension's own tables put them. As in the extension, the
-/// streaks without a turn of their own get a random one, so no two pictures (and no two times macOS
-/// starts drawing it) are quite the same. Drawn so, with the extension's streaks turned as it had turned
-/// them, it's within a level of each colour of what the extension draws.
+/// streaks without a turn of their own get a random one, so no two times Safelight (or macOS) starts
+/// drawing it are quite the same, though while it runs they keep theirs, as the extension's keep theirs
+/// while its colours change, so its looks differ only in colour. Drawn so, with the extension's streaks
+/// turned as it had turned them, it's within a level of each colour of what the extension draws.
 enum SequoiaWallpaper {
     private static let resources = URL(fileURLWithPath: WallpaperLibrary.sequoiaExtension).appendingPathComponent("Contents/Resources", isDirectory: true)
     private static let executable = URL(fileURLWithPath: WallpaperLibrary.sequoiaExtension).appendingPathComponent("Contents/MacOS/WallpaperSequoiaExtension")
+
+    /// One of Sequoia's looks through the day: its gradient, where the sun is when Sequoia set to
+    /// Automatic shows it in Light (its altitude and azimuth, in degrees), and how far its colours are
+    /// dimmed, which the shaders take as `dimmingGradientAmount`
+    struct Look {
+        let gradient: String
+        let altitude: Double
+        let azimuth: Double
+        let dimming: Float
+    }
+
+    /// Its looks in the extension's order, with the values in the extension's code. Set to Automatic,
+    /// the extension shows the one of the time of day in Light, picked by where the sun is
+    /// (`WallpaperManager.makeSunWallpaper`), and solar midnight's in Dark. Set to Light it shows solar
+    /// noon's, and set to Dark solar midnight's. Live on 2026-11-01, sunset's was 96% within 2 levels of
+    /// the extension's (mean 0.87), against none at all drawn as dimmed as solar noon's.
+    static let looks = [Look(gradient: "solar midnight", altitude: -45, azimuth: 0, dimming: 1),
+                        Look(gradient: "dawn", altitude: -16, azimuth: 65, dimming: 0.5),
+                        Look(gradient: "sunrise", altitude: 0, azimuth: 75, dimming: 0),
+                        Look(gradient: "mid morning", altitude: 18, azimuth: 95, dimming: 0),
+                        Look(gradient: "solar noon", altitude: 45, azimuth: 180, dimming: 1),
+                        Look(gradient: "late afternoon", altitude: 18, azimuth: 265, dimming: 0),
+                        Look(gradient: "sunset", altitude: 0, azimuth: 285, dimming: 0),
+                        Look(gradient: "dusk", altitude: -16, azimuth: 290, dimming: 0.5)]
+    /// Which of `looks` is its Light look, and which its Dark one
+    static let lightLook = 4, darkLook = 0
 
     /// Where a streak stands, how it's turned, in radians, and how wide and how tall it is, each as a
     /// share of 0.35 to 1.4 in 16 bits, as the shaders take it
@@ -6319,8 +6485,8 @@ enum SequoiaWallpaper {
         let depth: MTLDepthStencilState
         /// The two heroes' meshes, then the other streaks'
         let meshes: [MTKMesh]
-        /// Solar noon's gradient and solar midnight's
-        let gradients: (light: MTLTexture, dark: MTLTexture)
+        /// Each of `looks`' gradients
+        let gradients: [MTLTexture]
 
         init?() {
             guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue(),
@@ -6381,21 +6547,31 @@ enum SequoiaWallpaper {
                 texture.replace(region: MTLRegionMake2D(0, 0, image.width, image.height), mipmapLevel: 0, withBytes: data, bytesPerRow: image.width * 8)
                 return texture
             }
-            guard meshes.count == 3, let light = gradient("solar noon"), let dark = gradient("solar midnight") else { return nil }
+            let gradients = looks.compactMap { gradient($0.gradient) }
+            guard meshes.count == 3, gradients.count == looks.count else { return nil }
             (self.device, self.queue, self.streaks, self.background, self.depth) = (device, queue, streaks.0, background.0, depth)
-            (self.meshes, self.gradients) = (meshes, (light, dark))
+            (self.meshes, self.gradients) = (meshes, gradients)
         }
     }
 
     private static let renderer = Renderer()
 
+    /// The random turn of the streak standing at each place, the same for every picture drawn while
+    /// Safelight runs
+    private static let turns = Dictionary((layout?.places ?? []).map { ($0, Float.random(in: 0..<(2 * .pi))) }) { first, _ in first }
+
     /// Sequoia as it is before it moves, on a display of `size`, in pixels, in its Dark look or its
-    /// Light one, with each streak that has no turn of its own turned as `rotation` says for where it
-    /// stands, at random unless a test says otherwise. Nil on a macOS whose Sequoia isn't drawn as
-    /// worked out here.
-    static func picture(showsDark: Bool, size: CGSize, rotation: (SIMD2<Float>) -> Float = { _ in Float.random(in: 0..<(2 * .pi)) }) -> CGImage? {
+    /// Light one (`picture(look:size:rotation:)`). Nil on a macOS whose Sequoia isn't drawn as worked out here.
+    static func picture(showsDark: Bool, size: CGSize, rotation: (SIMD2<Float>) -> Float = { turns[$0] ?? 0 }) -> CGImage? {
+        picture(look: showsDark ? darkLook : lightLook, size: size, rotation: rotation)
+    }
+
+    /// Sequoia as it is before it moves, on a display of `size`, in pixels, in one of its `looks`, with
+    /// each streak that has no turn of its own turned as `rotation` says for where it stands, at random
+    /// unless a test says otherwise. Nil on a macOS whose Sequoia isn't drawn as worked out here.
+    static func picture(look: Int, size: CGSize, rotation: (SIMD2<Float>) -> Float = { turns[$0] ?? 0 }) -> CGImage? {
         let width = max(Int(size.width), 1), height = max(Int(size.height), 1)
-        guard let renderer, let streaks = streaks(aspect: Float(width) / Float(height), rotation: rotation) else { return nil }
+        guard let renderer, looks.indices.contains(look), let streaks = streaks(aspect: Float(width) / Float(height), rotation: rotation) else { return nil }
         let device = renderer.device
         let laidOut = streaks.heroes + streaks.others
         guard streaks.heroes.count == 2, let instances = device.makeBuffer(bytes: laidOut, length: MemoryLayout<Streak>.stride * laidOut.count) else { return nil }
@@ -6425,14 +6601,14 @@ enum SequoiaWallpaper {
         guard let commands = renderer.queue.makeCommandBuffer(), let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { return nil }
         let (view, projection) = camera(aspect: Float(width) / Float(height))
         var uniforms = [view, projection]
-        var dimming: Float = 1
+        var dimming = looks[look].dimming
         encoder.setCullMode(.front)
         encoder.setRenderPipelineState(renderer.streaks)
         encoder.setDepthStencilState(renderer.depth)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<float4x4>.stride * 2, index: 0)
         encoder.setVertexBuffer(instances, offset: 0, index: 2)
         encoder.setFragmentBytes(&dimming, length: MemoryLayout<Float>.size, index: 1)
-        encoder.setFragmentTexture(showsDark ? renderer.gradients.dark : renderer.gradients.light, index: 0)
+        encoder.setFragmentTexture(renderer.gradients[look], index: 0)
         // Each hero with its own mesh, then the other streaks with theirs
         for (mesh, count, first) in [(renderer.meshes[0], 1, 0), (renderer.meshes[1], 1, 1), (renderer.meshes[2], streaks.others.count, 2)] where count > 0 {
             let submesh = mesh.submeshes[0]
