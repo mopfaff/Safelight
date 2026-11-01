@@ -200,7 +200,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // While the Control Colours panel is open, clicking in it leaves the popover open
                 popover.behavior = ControlColorsWindow.shared.isVisible ? .semitransient : .transient
                 #endif
-                // The wallpaper may have been changed in System Settings since
+                // With Show on all Spaces off, the wallpaper of the display it opens on, whose menu bar
+                // was clicked. It may have been changed in System Settings since.
+                if let screen = NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }) {
+                    WallpaperManager.shared.selectDisplay(WallpaperManager.uuid(of: screen))
+                }
                 WallpaperManager.shared.refresh()
                 popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
                 NSApp.activate(ignoringOtherApps: true)
@@ -1259,8 +1263,9 @@ final class WallpaperWindow: NSObject, ObservableObject {
 
 /// The Wallpaper window's contents, laid out the way System Settings › Wallpaper's own code lays out its
 /// pane, with its measures. Above, the wallpaper's pictures for Light and for Dark, with a ring around
-/// the one being chosen, and under them System Settings' options for its wallpaper, and Show on all
-/// Spaces. Under them, scrolling, System Settings' sections: each a row of its wallpapers
+/// the one being chosen, while Show on all Spaces is off, the display they're of, and under them System
+/// Settings' options for its wallpaper, and Show on all Spaces. Under them, scrolling, System Settings'
+/// sections: each a row of its wallpapers
 /// that scrolls sideways, until Show All shows them all, four to a row (eight colours to a row). Each
 /// wallpaper's thumbnail is of its picture for the appearance being chosen, as some have one of each,
 /// and the ring is around the one the desktop has.
@@ -1301,6 +1306,7 @@ struct WallpaperGallery: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 16)
+            displayPicker
             options
             Divider()
             ScrollView {
@@ -1351,7 +1357,7 @@ struct WallpaperGallery: View {
                         Rectangle()
                             .fill(.quaternary)
                     }
-                    if wallpaper.isChanging && wallpaper.changingIsDark == isDark {
+                    if wallpaper.isChangingShown && wallpaper.changingIsDark == isDark {
                         ZStack {
                             Rectangle()
                                 .fill(.black.opacity(0.35))
@@ -1380,6 +1386,34 @@ struct WallpaperGallery: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    /// System Settings' pop-up under its picture of the desktop, as wide as that, for the display whose
+    /// wallpaper is shown and chosen, while Show on all Spaces is off and there's more than one. A
+    /// built-in display goes by System Settings' name for it there.
+    @ViewBuilder
+    private var displayPicker: some View {
+        if !wallpaper.showsOnAllSpaces && wallpaper.displays.count > 1 {
+            let picker = Picker(SystemStrings.display, selection: Binding { wallpaper.place(for: nil) } set: { wallpaper.selectDisplay($0) }) {
+                ForEach(wallpaper.displays) { display in
+                    Text(CGDisplayIsBuiltin(display.id) != 0 ? SystemStrings.builtInDisplay : display.name)
+                        .tag(display.key as String?)
+                }
+            }
+            .labelsHidden()
+            Group {
+                // As wide as it's given, as AppKit's pop-up was before macOS 26
+                if #available(macOS 26.0, *) {
+                    picker.buttonSizing(.flexible)
+                } else {
+                    picker
+                }
+            }
+            .frame(width: Self.previewSize.width)
+            .padding(.top, 12)
+            // Until a picture chosen is on its desktop
+            .disabled(wallpaper.isChanging)
+        }
     }
 
     /// System Settings' options for the wallpaper the appearance being chosen has, in a grouped box as
@@ -1493,7 +1527,7 @@ struct WallpaperGallery: View {
         let isDark = window.isDark
         let options = wallpaper.options(isDark: isDark)
         let colors = Binding {
-            options.macintoshColors ?? WallpaperManager.macintoshColors ?? MacintoshWallpaper.defaultColors
+            options.macintoshColors ?? wallpaper.macintoshColors ?? MacintoshWallpaper.defaultColors
         } set: {
             var changed = options
             changed.macintoshColors = $0
@@ -1531,11 +1565,11 @@ struct WallpaperGallery: View {
             placement.kind
         } set: {
             var changed = options
-            changed.placement = WallpaperManager.Placement(kind: $0, color: placement.color ?? WallpaperManager.defaultFillColor)
+            changed.placement = WallpaperManager.Placement(kind: $0, color: placement.color ?? wallpaper.defaultFillColor)
             wallpaper.setOptions(changed, isDark: isDark)
         }
         let color = Binding {
-            fillColor ?? placement.color ?? WallpaperManager.defaultFillColor
+            fillColor ?? placement.color ?? wallpaper.defaultFillColor
         } set: {
             fillColor = $0
             window.setFillColor($0)
@@ -1695,7 +1729,7 @@ struct WallpaperGallery: View {
                         }
                         .overlay(alignment: .bottomTrailing) {
                             Group {
-                                if wallpaper.changingChoice == id {
+                                if wallpaper.isChangingShown && wallpaper.changingChoice == id {
                                     progress
                                         .frame(width: 13, height: 13)
                                 } else if !isDownloaded {
@@ -1758,7 +1792,7 @@ struct WallpaperGallery: View {
         } label: {
             WallpaperThumbnail(file: item.lightThumbnail)
                 .overlay {
-                    if wallpaper.changingChoice == item.id {
+                    if wallpaper.isChangingShown && wallpaper.changingChoice == item.id {
                         progress
                     }
                 }
@@ -1838,7 +1872,7 @@ struct WallpaperGallery: View {
             Circle()
                 .fill(.quaternary)
                 .overlay {
-                    if id != nil && wallpaper.changingChoice == id {
+                    if id != nil && wallpaper.isChangingShown && wallpaper.changingChoice == id {
                         progress
                     } else {
                         Image(systemName: symbol)
@@ -4034,6 +4068,13 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     @Published private(set) var changingIsDark = false
     /// While `isChanging`, the wallpaper of System Settings' whose picture it is, if it is one
     @Published private(set) var changingChoice: WallpaperItem.ID?
+    /// While `isChanging`, where it goes (`place(for:)`)
+    @Published private var changingPlace: String?
+    /// Whether the wallpaper being made goes on the display shown, as one shuffling on another display
+    /// may be made meanwhile
+    var isChangingShown: Bool {
+        isChanging && changingPlace == place(for: nil)
+    }
     /// How much of the picture has downloaded, while it's one macOS downloads when it's chosen
     @Published private(set) var downloadProgress: Double?
     /// For each wallpaper Safelight made, by the name of its folder, the wallpapers of System Settings'
@@ -4053,6 +4094,13 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     @Published private(set) var showsOnAllSpaces: Bool {
         didSet { UserDefaults.standard.set(showsOnAllSpaces, forKey: Self.showsOnAllSpacesKey) }
     }
+    /// The display whose wallpaper is shown and chosen while Show on all Spaces is off, by its UUID, as
+    /// System Settings' pop-up under its picture of the desktop chooses one: the one the popover last
+    /// opened on, or another chosen in the Wallpaper window. The main display's until then, or while it
+    /// isn't connected (`place(for:)`).
+    @Published private(set) var selectedDisplay: String?
+    /// The displays, for choosing one, kept up to date as they're connected and disconnected
+    @Published private(set) var displays = Display.connected()
     struct Thumbnails {
         var light: Thumbnail
         var dark: Thumbnail
@@ -4234,6 +4282,19 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             self?.refresh()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self?.refresh() }
         }
+        // The display chosen may have gone, and each display shuffles by itself. An iPad's name can
+        // arrive after its display.
+        for name in [NSApplication.didChangeScreenParametersNotification, Sidecar.connectedDevicesChangedNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                guard let self else { return }
+                let displays = Display.connected()
+                if displays != self.displays {
+                    self.displays = displays
+                }
+                refresh()
+                WallpaperShuffler.shared.schedule()
+            }
+        }
     }
 
     /// Whether the Mac has the Dark appearance now
@@ -4246,14 +4307,16 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         choices[Self.wallpaperFolder(of: wallpaper).lastPathComponent] ?? earlierChoices ?? Choices()
     }
 
-    /// What the desktop has, which `thumbnails` are of
+    /// What the desktop of the display shown has (`place(for:)`), which `thumbnails` are of, drawn the
+    /// shape of a display of what size, in pixels
     private var shown: Desktop?
-    /// The desktop's picture file as macOS named it when it was last looked at
-    private var lastRead: URL?
-    /// A wallpaper just put on the desktop, and the desktop's picture files before it, which macOS can
-    /// still name for a second or so, though they may have been taken away: until it names the new one,
-    /// for a few seconds at most
-    private var justPut: (wallpaper: URL, before: Set<URL>, until: Date)?
+    private var shownSize = CGSize.zero
+    /// Each display's picture file as macOS named it when it was last looked at, by the display's UUID
+    private var lastRead: [String: URL] = [:]
+    /// For each display a wallpaper was just put on, by its UUID, its file there, and the display's
+    /// picture files before it, which macOS can still name for a second or so, though they may have been
+    /// taken away: until it names the new one, for a few seconds at most
+    private var justPut: [String: (wallpaper: URL, before: Set<URL>, until: Date)] = [:]
     /// The files macOS has downloaded that it's showing, as the desktop or the screen saver
     @Published private var downloadsInUse: Set<URL> = []
     /// Those of the files macOS downloads System Settings' wallpapers into that are on the Mac, nil
@@ -4289,66 +4352,144 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     private static let allSpacesOption = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "NSWorkspaceDesktopImageAllSpacesKey") // RTLD_DEFAULT
         .map { NSWorkspace.DesktopImageOptionKey(rawValue: $0.load(as: NSString.self) as String) }
 
-    /// Looks at the desktop's wallpaper again, as it can be changed in System Settings › Wallpaper
+    /// Looks at the wallpaper of the display shown again, as it can be changed in System Settings ›
+    /// Wallpaper, and has each display that has one of Safelight's show its file for the appearance
     func refresh() {
         let downloadsInUse = Self.downloadsInUse()
         if downloadsInUse != self.downloadsInUse {
             self.downloadsInUse = downloadsInUse
         }
-        guard let screen = NSScreen.screens.first else { return show(nil) }
-        let wallpaper = NSWorkspace.shared.desktopImageURL(for: screen)
+        let screen = screen(for: place(for: nil))
+        for other in NSScreen.screens where other != screen {
+            let read = read(other)
+            if !read.isBefore, let file = read.file, isMadeHere(file) {
+                followAppearance(showing: file, on: other)
+            }
+        }
+        guard let screen else { return show(nil, on: nil) }
+        let read = read(screen)
         // Still one from before, which may have been taken away
-        if let justPut, Date() < justPut.until, let wallpaper = wallpaper?.standardizedFileURL, wallpaper != justPut.wallpaper,
-           justPut.before.contains(wallpaper) || isMadeHere(wallpaper) {
-            return
-        }
-        justPut = nil
-        lastRead = wallpaper
-        let placement = Self.placement(on: screen)
-        if let wallpaper, isMadeHere(wallpaper) {
+        guard !read.isBefore else { return }
+        let desktop = desktop(showing: read.file, on: screen)
+        if let wallpaper = read.file, isMadeHere(wallpaper) {
             systemSettings = nil
-            followAppearance(showing: wallpaper)
-            // Its own file, with its pictures for Light and for Dark, whichever is on the desktop
-            return show(.file(Self.ownFile(beside: wallpaper), placement: placement))
+            followAppearance(showing: wallpaper, on: screen)
+        } else {
+            followSystemSettings(showing: desktop)
         }
-        var desktop = Self.desktop(showing: wallpaper, on: Self.uuid(of: screen))
+        show(desktop, on: screen)
+    }
+
+    /// The file a display's desktop has, as macOS names it, and whether that's still one from before the
+    /// wallpaper just put on the display (`justPut`). Once it names another, that one isn't waited for.
+    private func read(_ screen: NSScreen) -> (file: URL?, isBefore: Bool) {
+        let file = NSWorkspace.shared.desktopImageURL(for: screen)
+        guard let display = Self.uuid(of: screen) else { return (file, false) }
+        if let justPut = justPut[display], Date() < justPut.until, let read = file?.standardizedFileURL, read != justPut.wallpaper,
+           justPut.before.contains(read) || isMadeHere(read) {
+            return (file, true)
+        }
+        justPut[display] = nil
+        lastRead[display] = file
+        return (file, false)
+    }
+
+    /// What a display's desktop has, which shows `file`: a wallpaper Safelight made, as its own file, with
+    /// its pictures for Light and for Dark, whichever is on the desktop, or one Safelight didn't make,
+    /// when it can tell its pictures, with a picture file placed as the display's options say
+    private func desktop(showing file: URL?, on screen: NSScreen) -> Desktop? {
+        let placement = Self.placement(on: screen)
+        if let file, isMadeHere(file) {
+            return .file(Self.ownFile(beside: file), placement: placement)
+        }
+        var desktop = Self.desktop(showing: file, on: Self.uuid(of: screen))
         if case .file(let file, _)? = desktop {
             desktop = .file(file, placement: placement)
         }
-        followSystemSettings(showing: desktop)
-        show(desktop)
+        return desktop
     }
 
-    /// The file of the wallpaper on the desktop just put on in place of another for the appearance, and
-    /// until when it isn't put on again, as macOS still names the other for a second or so
-    private var followed: (file: URL, until: Date)?
+    /// Where a change for `display`, by its UUID, goes, by the UUID of the display it goes on: with Show
+    /// on all Spaces on, on every display, which have the main display's wallpaper (nil); otherwise on
+    /// `display` alone, or with none, on the one chosen (`selectedDisplay`)
+    func place(for display: String?) -> String? {
+        guard !showsOnAllSpaces else { return nil }
+        if let display {
+            return display
+        }
+        let connected = NSScreen.screens.compactMap(Self.uuid(of:))
+        return selectedDisplay.flatMap { connected.contains($0) ? $0 : nil } ?? connected.first
+    }
 
-    /// Puts on the file of the wallpaper made here, of which `file` is on the desktop, that the desktop
-    /// has in the appearance the Mac has now, when it's another (`setDesktop(_:isDark:)`). Only one with
-    /// Sequoia's looks through the day for Light has another: in Light, macOS shows the look of the time of
-    /// day from that file itself, as it does with Sequoia set to Automatic, but it does in Dark as well,
-    /// for a file an app puts on, where Sequoia shows its Dark look. Only System Settings can have it keep
-    /// to one look in Dark. So in Dark the desktop has the wallpaper's own file, with its picture for Dark.
-    private func followAppearance(showing file: URL) {
-        guard !isChanging, let screen = NSScreen.screens.first else { return }
+    /// The display whose desktop a change goes by, where it goes (`place(for:)`): the main display for
+    /// every display, nil for one that isn't connected
+    private func screen(for place: String?) -> NSScreen? {
+        guard let place else { return NSScreen.screens.first }
+        return NSScreen.screens.first { Self.uuid(of: $0) == place }
+    }
+
+    /// The displays a change goes on, where it goes (`place(for:)`)
+    private func screens(for place: String?) -> [NSScreen] {
+        place == nil ? NSScreen.screens : screen(for: place).map { [$0] } ?? []
+    }
+
+    /// What the desktop has where a change goes (`place(for:)`): the desktop shown, or another display's
+    private func desktop(at place: String?) -> Desktop? {
+        guard let screen = screen(for: place) else { return nil }
+        if screen == self.screen(for: self.place(for: nil)) {
+            return shown
+        }
+        let read = read(screen)
+        guard let display = Self.uuid(of: screen), read.isBefore, let wallpaper = justPut[display]?.wallpaper else {
+            return desktop(showing: read.file, on: screen)
+        }
+        return desktop(showing: wallpaper, on: screen)
+    }
+
+    /// Shows the wallpaper of a display, by its UUID, while Show on all Spaces is off, and chooses for
+    /// it, as System Settings' pop-up under its picture of the desktop does
+    func selectDisplay(_ display: String?) {
+        guard display != selectedDisplay else { return }
+        selectedDisplay = display
+        refresh()
+    }
+
+    /// The file of the wallpaper on each display just put on in place of another for the appearance, by
+    /// the display's UUID, and until when it isn't put on again, as macOS still names the other for a
+    /// second or so
+    private var followed: [String: (file: URL, until: Date)] = [:]
+
+    /// Puts on the file of the wallpaper made here, of which `file` is on a display's desktop, that the
+    /// desktop has in the appearance the Mac has now, when it's another (`setDesktop(_:isDark:on:)`). Only
+    /// one with Sequoia's looks through the day for Light has another: in Light, macOS shows the look of
+    /// the time of day from that file itself, as it does with Sequoia set to Automatic, but it does in
+    /// Dark as well, for a file an app puts on, where Sequoia shows its Dark look. Only System Settings
+    /// can have it keep to one look in Dark. So in Dark the desktop has the wallpaper's own file, with its
+    /// picture for Dark.
+    private func followAppearance(showing file: URL, on screen: NSScreen) {
+        guard !isChanging, let display = Self.uuid(of: screen) else { return }
         let own = Self.ownFile(beside: file)
         let wanted = Self.shownFile(of: own, for: screen, isDark: Self.isDark).standardizedFileURL
         guard wanted != file.standardizedFileURL else { return }
-        if let followed, followed.file == wanted, Date() < followed.until {
+        if let followed = followed[display], followed.file == wanted, Date() < followed.until {
             return
         }
-        followed = (wanted, Date().addingTimeInterval(5))
-        setDesktop(own)
+        followed[display] = (wanted, Date().addingTimeInterval(5))
+        setDesktop(own, on: [screen])
     }
 
-    /// Puts the wallpaper's own file back on the desktop in place of the one with Sequoia's looks through
-    /// the day, as Safelight quits, so the desktop has its picture for Dark in Dark while it isn't running
-    /// to put it on. In Light it has its own picture for Light, until Safelight puts the other on again.
+    /// Puts the wallpaper's own file back on each display in place of the one with Sequoia's looks
+    /// through the day, as Safelight quits, so the desktop has its picture for Dark in Dark while it isn't
+    /// running to put it on. In Light it has its own picture for Light, until Safelight puts the other on
+    /// again.
     func putOwnFileBack() {
-        guard let screen = NSScreen.screens.first, let file = NSWorkspace.shared.desktopImageURL(for: screen),
-              isMadeHere(file), file.lastPathComponent == Self.sunFileName else { return }
-        followed = nil
-        setDesktop(Self.ownFile(beside: file), isDark: true)
+        for screen in NSScreen.screens {
+            guard let file = NSWorkspace.shared.desktopImageURL(for: screen), isMadeHere(file), file.lastPathComponent == Self.sunFileName else { continue }
+            if let display = Self.uuid(of: screen) {
+                followed[display] = nil
+            }
+            setDesktop(Self.ownFile(beside: file), isDark: true, on: [screen])
+        }
     }
 
     /// The wallpaper of System Settings' the desktop had when Show on all Spaces was last set as System
@@ -4384,40 +4525,66 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     private static func placement(on screen: NSScreen) -> Placement {
         var placement = Placement(NSWorkspace.shared.desktopImageOptions(for: screen) ?? [:])
         if placement.color == nil {
-            placement.color = defaultFillColor
+            placement.color = defaultFillColor(on: uuid(of: screen))
         }
         return placement
     }
 
     /// Shows the pictures `wallpaper` has for Light and for Dark, or none
     func showPictures(of wallpaper: URL?) {
-        show(wallpaper.map { .file($0) })
+        show(wallpaper.map { .file($0) }, on: NSScreen.screens.first)
     }
 
-    /// Shows the pictures the desktop has for Light and for Dark, or none. They're loaded in the
-    /// background, and the ones shown before stay until they are.
-    private func show(_ desktop: Desktop?) {
-        guard desktop != shown else { return }
+    /// Shows the pictures a display's desktop has for Light and for Dark, or none, drawn the shape of the
+    /// display where they're drawn here. They're loaded in the background, and the ones shown before stay
+    /// until they are.
+    private func show(_ desktop: Desktop?, on screen: NSScreen?) {
+        let screenSize = screen.map(Self.pixelSize(of:)) ?? Self.screenSize
+        guard desktop != shown || screenSize != shownSize else { return }
         shown = desktop
+        shownSize = screenSize
         guard let desktop else {
             thumbnails = nil
             return
         }
-        let screenSize = Self.screenSize
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let thumbnails = Self.thumbnails(of: desktop, screenSize: screenSize)
             DispatchQueue.main.async {
-                guard let self, self.shown == desktop else { return }
+                guard let self, self.shown == desktop, self.shownSize == screenSize else { return }
                 self.thumbnails = thumbnails
             }
         }
     }
 
-    /// The wallpaper of System Settings' whose picture the desktop has for an appearance, or the
+    /// The wallpaper of System Settings' whose picture the desktop shown has for an appearance, or the
     /// shuffle it's from, or a picture of the user's own: the one chosen here while the wallpaper is one
     /// Safelight made, or the one System Settings has on the desktop
     func choice(isDark: Bool) -> String? {
-        switch shown {
+        choice(isDark: isDark, of: shown)
+    }
+
+    /// The choice an appearance has, as `choice(isDark:)` says, where a change for a display, by its UUID,
+    /// goes (`place(for:)`), while the desktop there has a wallpaper Safelight made, the only kind its
+    /// shuffles change
+    func ownChoice(isDark: Bool, on display: String?) -> String? {
+        ownWallpaper(at: place(for: display)).flatMap { choices(of: $0).choice(isDark: isDark) }
+    }
+
+    /// The wallpaper Safelight made the desktop has where a change goes (`place(for:)`), nil while it has
+    /// another
+    private func ownWallpaper(at place: String?) -> URL? {
+        guard let screen = screen(for: place) else { return nil }
+        if screen == self.screen(for: self.place(for: nil)) {
+            guard case .file(let wallpaper, _)? = shown, isMadeHere(wallpaper) else { return nil }
+            return wallpaper
+        }
+        let read = read(screen)
+        let file = read.isBefore ? Self.uuid(of: screen).flatMap { justPut[$0]?.wallpaper } : read.file
+        return file.flatMap { isMadeHere($0) ? Self.ownFile(beside: $0) : nil }
+    }
+
+    private func choice(isDark: Bool, of desktop: Desktop?) -> String? {
+        switch desktop {
         case .file(let wallpaper, _)? where isMadeHere(wallpaper):
             return choices(of: wallpaper).choice(isDark: isDark)
         case .item(let item, _, _)?:
@@ -4434,7 +4601,11 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// The options an appearance's choice is shown with: as they were chosen here, while the wallpaper
     /// is one Safelight made, or as System Settings has them for its own
     func options(isDark: Bool) -> PictureOptions {
-        switch shown {
+        options(isDark: isDark, of: shown)
+    }
+
+    private func options(isDark: Bool, of desktop: Desktop?) -> PictureOptions {
+        switch desktop {
         case .file(let wallpaper, _)? where isMadeHere(wallpaper):
             return choices(of: wallpaper).options(isDark: isDark)
         case .item(_, let lightShowsDark, let darkShowsDark)?:
@@ -4451,14 +4622,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// The options a picture chosen for an appearance takes: those it has now, as System Settings keeps
     /// its options from one choice to the next, while the wallpaper is one Safelight made. One of System
     /// Settings' own keeps its options to itself.
-    private func keptOptions(isDark: Bool) -> PictureOptions {
-        hasOwnWallpaper ? options(isDark: isDark) : PictureOptions()
-    }
-
-    /// Whether the desktop has a wallpaper Safelight made, the only kind its shuffles change
-    var hasOwnWallpaper: Bool {
-        guard case .file(let wallpaper, _)? = shown else { return false }
-        return isMadeHere(wallpaper)
+    private func keptOptions(isDark: Bool, of desktop: Desktop?) -> PictureOptions {
+        guard case .file(let wallpaper, _)? = desktop, isMadeHere(wallpaper) else { return PictureOptions() }
+        return options(isDark: isDark, of: desktop)
     }
 
     /// Shows an appearance's choice with other options, making the wallpaper again with them, as
@@ -4479,15 +4645,25 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
     }
 
-    /// Puts the wallpaper made here on every Space, or from now on only on the Space each display is
-    /// showing, as System Settings' Show on all Spaces does: turned on, every Space has the wallpaper
-    /// the desktop has now, while it's one of Safelight's
+    /// Puts the wallpaper made here on every Space of every display, or from now on only on the Space
+    /// the display chosen is showing, as System Settings' Show on all Spaces does: turned on, they all
+    /// have the wallpaper the display shown has now, while it's one of Safelight's, and its shuffles;
+    /// turned off, each display keeps what it has, and shuffles by itself
     func setShowsOnAllSpaces(_ showsOnAllSpaces: Bool) {
-        self.showsOnAllSpaces = showsOnAllSpaces
         refresh()
-        guard showsOnAllSpaces, Self.allSpacesOption != nil, case .file(let wallpaper, _)? = shown, isMadeHere(wallpaper) else { return }
-        setDesktop(wallpaper)
-        removeWallpapers(except: wallpaper)
+        let (display, desktop) = (place(for: nil), shown)
+        self.showsOnAllSpaces = showsOnAllSpaces
+        if showsOnAllSpaces, Self.allSpacesOption != nil, case .file(let wallpaper, _)? = desktop, isMadeHere(wallpaper) {
+            putOnDesktop(wallpaper, on: NSScreen.screens)
+            removeWallpapers(except: wallpaper)
+            if let display {
+                WallpaperShuffler.shared.join(from: display)
+            }
+        } else if !showsOnAllSpaces {
+            WallpaperShuffler.shared.split()
+        }
+        refresh()
+        WallpaperShuffler.shared.schedule()
     }
 
     /// Whether the picture of the user's own an appearance has can be placed another way: the wallpaper
@@ -4548,17 +4724,19 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// shown with `options`, or else those the appearance has. When it's a shuffle's picture, the
     /// shuffle is what's remembered as the appearance's choice. `completion` is told whether the
     /// wallpaper was made. `isQuiet` for a change nobody asked for just then, which doesn't beep when it
-    /// fails.
+    /// fails. It goes on `display`, by its UUID, or on the display chosen, or with Show on all Spaces on,
+    /// on every display (`place(for:)`).
     func choose(_ item: WallpaperItem, isDark: Bool, options: PictureOptions? = nil, from shuffle: WallpaperShuffle.ID? = nil, isQuiet: Bool = false,
-                then completion: ((_ isMade: Bool) -> Void)? = nil) {
-        let options = options ?? keptOptions(isDark: isDark)
-        let macintoshColors = options.macintoshColors ?? Self.macintoshColors
+                on display: String? = nil, then completion: ((_ isMade: Bool) -> Void)? = nil) {
+        let place = place(for: display)
+        let options = options ?? keptOptions(isDark: isDark, of: desktop(at: place))
+        let macintoshColors = options.macintoshColors ?? Self.macintoshColors(on: screen(for: place).flatMap(Self.uuid(of:)))
         let isGradient = options.isGradient == true
         // Only a picture is placed, as System Settings' image options place one
         let placement = item.isPicture ? options.placement : nil
         let chosenIsDark = isDark
         setPicture(isDark: isDark, choice: shuffle ?? item.id, item: item.id, options: options, placement: placement, hasPictureForEach: item.light != item.dark,
-                   isDrawn: Self.isDrawn(item.light, isGradient: isGradient), isQuiet: isQuiet, completion: completion) { [weak self] isDark, size, pictures in
+                   isDrawn: Self.isDrawn(item.light, isGradient: isGradient), isQuiet: isQuiet, at: place, completion: completion) { [weak self] isDark, size, pictures in
             guard let self else { throw CancellationError() }
             // Its picture for the appearance chosen for as its options say, and its own for the other
             let showsDark = isDark == chosenIsDark && item.badge == .dynamic ? options.showsDark(isDark: isDark) : isDark
@@ -4580,7 +4758,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// Makes a wallpaper all in one colour for one appearance, as `setPicture(_:isDark:)` does
     func setColor(_ color: NSColor, isDark: Bool) {
         let screenSize = Self.screenSize
-        setPicture(isDark: isDark, choice: nil, item: nil, options: keptOptions(isDark: isDark), placement: nil, hasPictureForEach: false) { isDark, _, folder in
+        setPicture(isDark: isDark, choice: nil, item: nil, options: keptOptions(isDark: isDark, of: shown), placement: nil, hasPictureForEach: false, at: place(for: nil)) { isDark, _, folder in
             (try Self.colorPicture(color.usingColorSpace(.displayP3)?.cgColor ?? color.cgColor, size: screenSize, named: "Colour", into: folder), isDark)
         }
     }
@@ -4610,8 +4788,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
 
     /// Makes a wallpaper with a photo from Photos for one appearance, as `setPicture(_:isDark:)` does
     func choose(_ photo: PhotosPickerItem, isDark: Bool) {
-        let options = keptOptions(isDark: isDark)
-        setPicture(isDark: isDark, choice: WallpaperItem.ownPicture(named: nil), item: nil, options: options, placement: options.placement, hasPictureForEach: false) { isDark, _, pictures in
+        let options = keptOptions(isDark: isDark, of: shown)
+        setPicture(isDark: isDark, choice: WallpaperItem.ownPicture(named: nil), item: nil, options: options, placement: options.placement, hasPictureForEach: false,
+                   at: place(for: nil)) { isDark, _, pictures in
             guard let data = try await photo.loadTransferable(type: Data.self) else { throw CocoaError(.fileReadUnknown) }
             let file = pictures.appendingPathComponent("Photo").appendingPathExtension(photo.supportedContentTypes.first?.preferredFilenameExtension ?? "heic")
             try data.write(to: file)
@@ -4622,17 +4801,18 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
 
     /// Makes a wallpaper with `file`'s picture for one appearance (its only picture, or for a file
     /// with a picture for each, like Sonoma's, its picture for that appearance), keeping the desktop's
-    /// picture for the other, and puts it on every display. While the desktop has a wallpaper whose
-    /// pictures Safelight can't tell, the other appearance takes `file`'s picture for it too.
+    /// picture for the other, and puts it on the display chosen, or with Show on all Spaces on, on every
+    /// display. While the desktop has a wallpaper whose pictures Safelight can't tell, the other
+    /// appearance takes `file`'s picture for it too.
     func setPicture(_ file: URL, isDark: Bool) {
-        setPicture(file, isDark: isDark, choice: WallpaperItem.ownPicture(named: file.deletingPathExtension().lastPathComponent), options: keptOptions(isDark: isDark))
+        setPicture(file, isDark: isDark, choice: WallpaperItem.ownPicture(named: file.deletingPathExtension().lastPathComponent), options: keptOptions(isDark: isDark, of: shown))
     }
 
     /// Makes a wallpaper with a picture of the user's own for one appearance, as `setPicture(_:isDark:)`
     /// does, placed as `options` say, remembered as `choice`. The picture is kept beside the wallpaper
     /// as it was, so it can be placed another way.
     private func setPicture(_ file: URL, isDark: Bool, choice: WallpaperItem.ID, options: PictureOptions) {
-        setPicture(isDark: isDark, choice: choice, item: nil, options: options, placement: options.placement, hasPictureForEach: false) { isDark, _, pictures in
+        setPicture(isDark: isDark, choice: choice, item: nil, options: options, placement: options.placement, hasPictureForEach: false, at: place(for: nil)) { isDark, _, pictures in
             try Self.keepOriginal(file, isDark: isDark, beside: pictures)
             return (file, isDark)
         }
@@ -4675,16 +4855,18 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// display has a wallpaper of its own, with the pictures placed for its size, as macOS places a
     /// picture on each display (`file(of:for:)`). So it has while either appearance has one macOS draws
     /// itself, drawn for its size, as macOS draws one on each display: the desktop's, or `picture`'s, when
-    /// `isDrawn`. Otherwise one fills them all.
+    /// `isDrawn`. Otherwise one fills them all. They're made for every display even when it goes on one
+    /// (`place`, or the display chosen, `place(for:)`), as Show on all Spaces may put it on them all.
     private func setPicture(isDark: Bool, choice: String?, item: WallpaperItem.ID?, options: PictureOptions, placement: Placement?, hasPictureForEach: Bool,
-                            isDrawn: Bool = false, isQuiet: Bool = false, completion: ((_ isMade: Bool) -> Void)? = nil,
+                            isDrawn: Bool = false, isQuiet: Bool = false, at place: String?, completion: ((_ isMade: Bool) -> Void)? = nil,
                             picture: @escaping (_ isDark: Bool, _ size: CGSize, _ folder: URL) async throws -> (file: URL, isDark: Bool)) {
-        guard !isChanging, let folder else {
+        // Nor to a display that's been disconnected since
+        guard !isChanging, let folder, place == nil || screen(for: place) != nil else {
             completion?(false)
             return
         }
         refresh()
-        let current = shown
+        let current = desktop(at: place)
         let followsSun = lightFollowsSun(isDark: isDark, choice: choice, options: options, replacing: current)
         let screenSize = Self.screenSize
         // Never none, as it's made all the same while there's no display to put it on
@@ -4694,6 +4876,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         isChanging = true
         changingIsDark = isDark
         changingChoice = choice
+        changingPlace = place
         // Away from the main thread, as fetching the picture, and writing two the size of a screen, takes a while
         Task.detached(priority: .userInitiated) {
             let isMade: Bool
@@ -4791,7 +4974,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
                 self.changingChoice = nil
                 self.downloadProgress = nil
                 if isMade {
-                    self.put(wallpaper, isDark: isDark, choice: choice, item: item, options: options, replacing: current, shuffled: shuffledID)
+                    self.put(wallpaper, isDark: isDark, choice: choice, item: item, options: options, replacing: current, at: place, shuffled: shuffledID)
                 } else {
                     NSLog("Safelight: couldn't make a wallpaper")
                     try? FileManager.default.removeItem(at: wallpaper.deletingLastPathComponent())
@@ -4850,11 +5033,12 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         return CGImageDestinationFinalize(destination)
     }
 
-    /// Puts a wallpaper just made on every display, on every Space or the one it's showing, in place of
-    /// `current`, and remembers which of System Settings' wallpapers, or which shuffle, it has the
-    /// picture for an appearance from, and with which options. `shuffled` is the picture the other
-    /// appearance took from `current`, when that's a shuffle.
-    private func put(_ wallpaper: URL, isDark: Bool, choice: String?, item: WallpaperItem.ID?, options: PictureOptions, replacing current: Desktop?, shuffled: WallpaperItem.ID? = nil) {
+    /// Puts a wallpaper just made on every display, or on one (`place`, as `place(for:)` gives it), on
+    /// every Space or the one it's showing, in place of `current`, and remembers which of System
+    /// Settings' wallpapers, or which shuffle, it has the picture for an appearance from, and with which
+    /// options. `shuffled` is the picture the other appearance took from `current`, when that's a shuffle.
+    private func put(_ wallpaper: URL, isDark: Bool, choice: String?, item: WallpaperItem.ID?, options: PictureOptions, replacing current: Desktop?, at place: String?,
+                     shuffled: WallpaperItem.ID? = nil) {
         // The other appearance kept the desktop's picture, which from a wallpaper of System Settings'
         // is that wallpaper's, as its options show it, and from one of its shuffles, the shuffle's, which
         // carries on here. From one Safelight can't tell, or a shuffle with no pictures, it took its
@@ -4871,7 +5055,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             choices = Choices(light: current.id, dark: current.id, lightOptions: options, darkOptions: options)
         case .shuffle(let shuffle, let interval)? where shuffled != nil:
             choices = Choices(light: shuffle.id, dark: shuffle.id)
-            WallpaperShuffler.shared.carryOn(shuffle.id, interval: interval, from: shuffled, isDark: !isDark)
+            WallpaperShuffler.shared.carryOn(shuffle.id, interval: interval, from: shuffled, isDark: !isDark, on: place)
         case .drawn(let drawn, let lightShowsDark, let darkShowsDark, let colors)?:
             let options = PictureOptions(appearance: AppearanceOption(lightShowsDark: lightShowsDark, darkShowsDark: darkShowsDark), macintoshColors: colors)
             choices = Choices(light: drawn.rawValue, dark: drawn.rawValue, lightOptions: options, darkOptions: options)
@@ -4884,43 +5068,54 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
         choices.set(choice, options: options, isDark: isDark)
         self.choices[Self.wallpaperFolder(of: wallpaper).lastPathComponent] = choices
-        let isDarkNow = Self.isDark
-        setDesktop(wallpaper, isDark: isDarkNow)
-        // The main display's, which is the one looked at
-        let shownFile = NSScreen.screens.first.map { Self.file(of: wallpaper, for: $0) } ?? wallpaper
-        var before = Set([lastRead?.standardizedFileURL].compactMap { $0 })
-        if let justPut, Date() < justPut.until {
-            before.formUnion(justPut.before.union([justPut.wallpaper]))
-        }
-        let putFile = NSScreen.screens.first.map { Self.shownFile(of: wallpaper, for: $0, isDark: isDarkNow) } ?? shownFile
-        justPut = (putFile.standardizedFileURL, before, Date().addingTimeInterval(5))
-        // Once macOS surely names it, or another Space's, as Spaces may have been switched meanwhile
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5.1) { [weak self] in
-            self?.refresh()
-        }
-        // Only once every Space has the new one: another Space may still show one from before
-        if showsOnAllSpaces && Self.allSpacesOption != nil {
+        let screens = screens(for: place)
+        putOnDesktop(wallpaper, on: screens)
+        // Only once every Space has the new one: another Space, or another display, may still show one
+        // from before
+        if place == nil && showsOnAllSpaces && Self.allSpacesOption != nil {
             removeWallpapers(except: wallpaper)
         } else {
             removeWallpapers(except: wallpaper, keepingThoseShown: true)
         }
         earlierChoices = nil
         UserDefaults.standard.removeObject(forKey: Self.earlierChoicesKey)
-        show(.file(shownFile))
+        if let screen = screen(for: self.place(for: nil)), screens.contains(screen) {
+            show(.file(Self.file(of: wallpaper, for: screen)), on: screen)
+        }
         YourPhotos.shared.reloadAfterSettingWallpaper()
         // A shuffle stops once the appearance has another choice
         WallpaperShuffler.shared.schedule()
     }
 
-    /// Puts one of Safelight's wallpapers on every display, its own file for each (`file(of:for:)`), on
-    /// every Space or only on the one each display is showing, as `showsOnAllSpaces` says, filling it,
-    /// as each of its pictures is placed in it. Only on the one, the other Spaces keep theirs, even
-    /// System Settings' wallpaper for every Space, which macOS's wallpaper service then gives each Space
-    /// as its own, as System Settings does with its Show on all Spaces turned off. In Light, while it has
+    /// Puts one of Safelight's wallpapers on displays (`setDesktop(_:isDark:on:)`), and until macOS
+    /// names it on each, for a few seconds at most, takes the files it had before for ones from before
+    /// (`read`)
+    private func putOnDesktop(_ wallpaper: URL, on screens: [NSScreen]) {
+        let isDark = Self.isDark
+        for screen in screens {
+            guard let display = Self.uuid(of: screen) else { continue }
+            var before = Set([lastRead[display], NSWorkspace.shared.desktopImageURL(for: screen)].compactMap { $0?.standardizedFileURL })
+            if let justPut = justPut[display], Date() < justPut.until {
+                before.formUnion(justPut.before.union([justPut.wallpaper]))
+            }
+            justPut[display] = (Self.shownFile(of: wallpaper, for: screen, isDark: isDark).standardizedFileURL, before, Date().addingTimeInterval(5))
+        }
+        setDesktop(wallpaper, isDark: isDark, on: screens)
+        // Once macOS surely names it, or another Space's, as Spaces may have been switched meanwhile
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.1) { [weak self] in
+            self?.refresh()
+        }
+    }
+
+    /// Puts one of Safelight's wallpapers on displays, its own file for each (`file(of:for:)`), on every
+    /// Space or only on the one each display is showing, as `showsOnAllSpaces` says, filling it, as each
+    /// of its pictures is placed in it. Only on the one, the other Spaces keep theirs, even System
+    /// Settings' wallpaper for every Space, which macOS's wallpaper service then gives each Space as its
+    /// own, as System Settings does with its Show on all Spaces turned off. In Light, while it has
     /// Sequoia's looks through the day for Light, it's that file that's put on (`followAppearance`).
-    private func setDesktop(_ wallpaper: URL, isDark: Bool? = nil) {
+    private func setDesktop(_ wallpaper: URL, isDark: Bool? = nil, on screens: [NSScreen]) {
         let isDark = isDark ?? Self.isDark
-        for screen in NSScreen.screens {
+        for screen in screens {
             var options = NSWorkspace.shared.desktopImageOptions(for: screen) ?? [:]
             options[.imageScaling] = NSNumber(value: NSImageScaling.scaleProportionallyUpOrDown.rawValue)
             options[.allowClipping] = NSNumber(value: true)
@@ -5149,8 +5344,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// Where macOS's wallpaper service keeps what each display and Space has on its desktop
     private static let store = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/com.apple.wallpaper/Store/Index.plist")
 
-    /// The ID macOS's wallpaper service knows a display by
-    private static func uuid(of screen: NSScreen) -> String? {
+    /// The ID macOS's wallpaper service knows a display by, its `Display.key`
+    static func uuid(of screen: NSScreen) -> String? {
         guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
               let uuid = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue() else { return nil }
         return CFUUIDCreateString(nil, uuid) as String
@@ -5265,10 +5460,16 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         return files
     }
 
-    /// Macintosh's colours as System Settings would show it chosen now: its colorScheme option as the
-    /// desktop chosen last has it, which keeps options from one choice to the next
-    static var macintoshColors: String? {
-        let desktops = storedDesktops(on: NSScreen.screens.first.flatMap(uuid(of:)))
+    /// Macintosh's colours as System Settings would show it chosen now for the display shown
+    var macintoshColors: String? {
+        Self.macintoshColors(on: screen(for: place(for: nil)).flatMap(Self.uuid(of:)))
+    }
+
+    /// Macintosh's colours as System Settings would show it chosen now for a display, by its UUID: its
+    /// colorScheme option as the display's desktop chosen last has it, which keeps options from one
+    /// choice to the next
+    private static func macintoshColors(on display: String?) -> String? {
+        let desktops = storedDesktops(on: display)
         let last = desktops.max { ($0["LastSet"] as? Date ?? .distantPast) < ($1["LastSet"] as? Date ?? .distantPast) }
         return last.flatMap(StoredDesktop.init)?.option("colorScheme", "picker")?["id"] as? String
     }
@@ -5463,9 +5664,11 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         guard let folder, let made = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return }
         var kept: Set<String> = [Self.wallpaperFolder(of: wallpaper).lastPathComponent]
         if keepingThoseShown {
-            // When it can't be told which are, none is taken away
+            // When it can't be told which are, none is taken away. Those just put on another display may
+            // not be in the wallpaper service's store yet.
             guard let shown = Self.filesShown() else { return }
-            kept.formUnion(shown.filter(isMadeHere).map { Self.wallpaperFolder(of: $0).lastPathComponent })
+            let onDisplays = NSScreen.screens.compactMap(NSWorkspace.shared.desktopImageURL(for:)) + justPut.values.map(\.wallpaper)
+            kept.formUnion((shown + onDisplays).filter(isMadeHere).map { Self.wallpaperFolder(of: $0).lastPathComponent })
         }
         for old in made where !kept.contains(old.lastPathComponent) {
             try? FileManager.default.removeItem(at: old)
@@ -5673,10 +5876,15 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         return context.makeImage()
     }
 
-    /// The colour around a picture that doesn't fill the display, until one is chosen: the one System
-    /// Settings has for it, which it keeps from one choice to the next, or else black
-    static var defaultFillColor: CGColor {
-        let desktops = storedDesktops(on: NSScreen.screens.first.flatMap(uuid(of:)))
+    /// The colour around a picture that doesn't fill the display shown, until one is chosen
+    var defaultFillColor: CGColor {
+        Self.defaultFillColor(on: screen(for: place(for: nil)).flatMap(Self.uuid(of:)))
+    }
+
+    /// The colour around a picture that doesn't fill a display, by its UUID, until one is chosen: the one
+    /// System Settings has for it, which it keeps from one choice to the next, or else black
+    private static func defaultFillColor(on display: String?) -> CGColor {
+        let desktops = storedDesktops(on: display)
         let last = desktops.max { ($0["LastSet"] as? Date ?? .distantPast) < ($1["LastSet"] as? Date ?? .distantPast) }
         return (last.flatMap(StoredDesktop.init)?.option("color", "color")?["color"] as? [String: Any]).flatMap { color($0) } ?? .black
     }
@@ -5812,7 +6020,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
 /// shuffles do. macOS's own shuffles are run by its wallpaper service, which only Apple's apps may ask,
 /// so Safelight makes a wallpaper with the next picture itself, every so often, at login or on waking,
 /// while it's running and the wallpaper is still one it made. An appearance's shuffle runs while it's
-/// that appearance's choice; choosing anything else for it stops it.
+/// that appearance's choice; choosing anything else for it stops it. With Show on all Spaces on, it
+/// changes every display's wallpaper, and with it off, each display has shuffles of its own, as macOS's
+/// wallpaper service keeps a desktop for each.
 final class WallpaperShuffler: ObservableObject {
     static let shared = WallpaperShuffler()
 
@@ -5840,63 +6050,140 @@ final class WallpaperShuffler: ObservableObject {
         }
     }
 
-    /// Kept between launches, and after another choice, so a shuffle chosen again changes as often as before
-    @Published private var shuffles: Shuffles {
+    /// Where a shuffle changes the wallpaper, as `WallpaperManager.place(for:)` gives it: on every display
+    /// (nil), or on one, by its UUID, and for which appearance
+    private struct Slot: Hashable {
+        let display: String?
+        let isDark: Bool
+    }
+
+    /// Every display's (`allDisplays`), for while Show on all Spaces is on, and each display's, by its
+    /// UUID, for while it's off. Kept between launches, and after another choice, so a shuffle chosen
+    /// again changes as often as before.
+    @Published private var shuffles: [String: Shuffles] {
         didSet { UserDefaults.standard.set(try? PropertyListEncoder().encode(shuffles), forKey: Self.shufflesKey) }
     }
 
-    private static let shufflesKey = "WallpaperShuffles"
+    private static let shufflesKey = "WallpaperShufflesByDisplay"
+    /// Where they were kept while there were only every display's
+    private static let earlierShufflesKey = "WallpaperShuffles"
+    private static let allDisplays = "AllDisplays"
     private var timer: Timer?
-    /// The appearances whose shuffles are to change, one after the other, as one wallpaper is made at a time
-    private var queue: [Bool] = []
+    /// The shuffles that are to change, one after the other, as one wallpaper is made at a time
+    private var queue: [Slot] = []
     /// When a shuffle whose picture couldn't be made tries again, with another: a minute later, as when
     /// the Mac has just woken and isn't online yet, then twice as long each time it fails, up to an hour
-    private var retries: [Bool: (date: Date, delay: TimeInterval)] = [:]
+    private var retries: [Slot: (date: Date, delay: TimeInterval)] = [:]
 
     init() {
-        shuffles = UserDefaults.standard.data(forKey: Self.shufflesKey).flatMap { try? PropertyListDecoder().decode(Shuffles.self, from: $0) } ?? Shuffles()
+        let defaults = UserDefaults.standard
+        if let data = defaults.data(forKey: Self.shufflesKey) {
+            shuffles = (try? PropertyListDecoder().decode([String: Shuffles].self, from: data)) ?? [:]
+        } else {
+            shuffles = defaults.data(forKey: Self.earlierShufflesKey).flatMap { try? PropertyListDecoder().decode(Shuffles.self, from: $0) }
+                .map { [Self.allDisplays: $0] } ?? [:]
+        }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             self?.change(at: .wake)
         }
     }
 
-    /// The shuffle an appearance has, while it's the appearance's choice in a wallpaper Safelight made.
-    /// System Settings' own shuffles are run by macOS.
+    private subscript(slot: Slot) -> Shuffle? {
+        get { shuffles[slot.display ?? Self.allDisplays]?[slot.isDark] }
+        set { shuffles[slot.display ?? Self.allDisplays, default: Shuffles()][slot.isDark] = newValue }
+    }
+
+    /// Where an appearance's shuffle changes the wallpaper shown (`WallpaperManager.place(for:)`)
+    private func shownSlot(isDark: Bool) -> Slot {
+        Slot(display: WallpaperManager.shared.place(for: nil), isDark: isDark)
+    }
+
+    /// Where shuffles change the wallpaper now: every display, or each display
+    private var slots: [Slot] {
+        let displays: [String?] = WallpaperManager.shared.showsOnAllSpaces ? [nil] : NSScreen.screens.compactMap(WallpaperManager.uuid(of:))
+        return displays.flatMap { display in [false, true].map { Slot(display: display, isDark: $0) } }
+    }
+
+    /// The shuffle an appearance has on the display shown, or every display, while it's the appearance's
+    /// choice in a wallpaper Safelight made. System Settings' own shuffles are run by macOS.
     func shuffle(isDark: Bool) -> Shuffle? {
-        guard let shuffle = shuffles[isDark], WallpaperManager.shared.hasOwnWallpaper,
-              WallpaperManager.shared.choice(isDark: isDark) == shuffle.id else { return nil }
+        shuffle(at: shownSlot(isDark: isDark))
+    }
+
+    /// The shuffle a slot has, while it's where changes go now and the appearance's choice there
+    private func shuffle(at slot: Slot) -> Shuffle? {
+        let wallpaper = WallpaperManager.shared
+        guard wallpaper.place(for: slot.display) == slot.display, let shuffle = self[slot],
+              wallpaper.ownChoice(isDark: slot.isDark, on: slot.display) == shuffle.id else { return nil }
         return shuffle
     }
 
-    /// The picture an appearance's shuffle has on the desktop now
+    /// The picture an appearance's shuffle has on the desktop shown now
     func current(isDark: Bool) -> WallpaperItem.ID? {
         shuffle(isDark: isDark)?.current
     }
 
-    /// Makes a shuffle the appearance's choice, with a picture from it now
+    /// Makes a shuffle the appearance's choice on the display shown, or every display, with a picture
+    /// from it now
     func start(_ shuffle: WallpaperShuffle, isDark: Bool) {
-        let interval = shuffles[isDark].flatMap { $0.id == shuffle.id ? $0.interval : nil } ?? WallpaperShuffle.defaultInterval(for: shuffle.id)
-        retries[isDark] = nil
-        change(Shuffle(id: shuffle.id, interval: interval), isDark: isDark, isQuiet: false)
+        let slot = shownSlot(isDark: isDark)
+        let interval = self[slot].flatMap { $0.id == shuffle.id ? $0.interval : nil } ?? WallpaperShuffle.defaultInterval(for: shuffle.id)
+        retries[slot] = nil
+        change(Shuffle(id: shuffle.id, interval: interval), at: slot, isQuiet: false)
     }
 
     /// Carries on one of System Settings' shuffles for an appearance, as often as it changed, from the
     /// picture of it the appearance has just been given, as a wallpaper of Safelight's took the
-    /// shuffle's place. Its timer is set once the wallpaper is the desktop's.
-    func carryOn(_ id: WallpaperShuffle.ID, interval: WallpaperShuffle.Interval, from current: WallpaperItem.ID?, isDark: Bool) {
-        retries[isDark] = nil
-        shuffles[isDark] = Shuffle(id: id, interval: interval, lastChange: Date(), current: current)
+    /// shuffle's place, on a display, by its UUID, or on every display (nil). Its timer is set once the
+    /// wallpaper is the desktop's.
+    func carryOn(_ id: WallpaperShuffle.ID, interval: WallpaperShuffle.Interval, from current: WallpaperItem.ID?, isDark: Bool, on display: String?) {
+        let slot = Slot(display: display, isDark: isDark)
+        retries[slot] = nil
+        self[slot] = Shuffle(id: id, interval: interval, lastChange: Date(), current: current)
     }
 
     func setInterval(_ interval: WallpaperShuffle.Interval, isDark: Bool) {
-        guard shuffle(isDark: isDark) != nil else { return }
-        shuffles[isDark]?.interval = interval
+        let slot = shownSlot(isDark: isDark)
+        guard shuffle(at: slot) != nil else { return }
+        self[slot]?.interval = interval
         schedule()
     }
 
+    /// Gives each display every display's shuffles that it shows, as Show on all Spaces is turned off,
+    /// so each carries on by itself, as macOS's wallpaper service gives each display and Space the
+    /// wallpaper it had for all of them. A display keeps a shuffle of its own of the same that has
+    /// changed since.
+    func split() {
+        guard let all = shuffles[Self.allDisplays] else { return }
+        for display in NSScreen.screens.compactMap(WallpaperManager.uuid(of:)) {
+            for isDark in [false, true] {
+                let slot = Slot(display: display, isDark: isDark)
+                guard let shuffle = all[isDark], WallpaperManager.shared.ownChoice(isDark: isDark, on: display) == shuffle.id else { continue }
+                if let own = self[slot], own.id == shuffle.id, (own.lastChange ?? .distantPast) > (shuffle.lastChange ?? .distantPast) {
+                    continue
+                }
+                self[slot] = shuffle
+            }
+        }
+    }
+
+    /// Gives every display the shuffles of the display, by its UUID, whose wallpaper they've all just been
+    /// given, as Show on all Spaces is turned on
+    func join(from display: String) {
+        for isDark in [false, true] {
+            if let shuffle = self[Slot(display: display, isDark: isDark)] {
+                self[Slot(display: nil, isDark: isDark)] = shuffle
+            }
+        }
+    }
+
     /// At launch: the shuffles that change at login do, and the others carry on where they were, or
-    /// change now if they were due while Safelight wasn't running
+    /// change now if they were due while Safelight wasn't running. Those kept for every display carry on
+    /// on each, with Show on all Spaces off, as they did before each display had its own.
     func resume() {
+        if !WallpaperManager.shared.showsOnAllSpaces {
+            split()
+        }
         change(at: .login)
     }
 
@@ -5905,8 +6192,8 @@ final class WallpaperShuffler: ObservableObject {
     private func change(at interval: WallpaperShuffle.Interval) {
         // The wallpaper may have been changed in System Settings since
         WallpaperManager.shared.refresh()
-        for isDark in [false, true] where shuffle(isDark: isDark)?.interval == interval {
-            enqueue(isDark)
+        for slot in slots where shuffle(at: slot)?.interval == interval {
+            enqueue(slot)
         }
         schedule()
     }
@@ -5915,51 +6202,57 @@ final class WallpaperShuffler: ObservableObject {
     func schedule() {
         timer?.invalidate()
         timer = nil
-        let next = [false, true].compactMap { isDark -> (isDark: Bool, date: Date)? in
-            guard let shuffle = shuffle(isDark: isDark) else { return nil }
+        let next = slots.compactMap { slot -> (slot: Slot, date: Date)? in
+            guard let shuffle = shuffle(at: slot) else { return nil }
             // Once it's due, or when it tries again after failing, even one that changes at login or on waking
             let due = shuffle.interval.next(after: shuffle.lastChange ?? .distantPast)
-            guard let date = [due, retries[isDark]?.date].compactMap({ $0 }).max() else { return nil }
-            return (isDark, date)
+            guard let date = [due, retries[slot]?.date].compactMap({ $0 }).max() else { return nil }
+            return (slot, date)
         }.min { $0.date < $1.date }
         guard let next else { return }
         let timer = Timer(fire: max(next.date, Date()), interval: 0, repeats: false) { [weak self] _ in
             WallpaperManager.shared.refresh()
-            self?.enqueue(next.isDark)
+            self?.enqueue(next.slot)
         }
         timer.tolerance = 10
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
 
-    private func enqueue(_ isDark: Bool) {
-        guard !queue.contains(isDark) else { return }
-        queue.append(isDark)
+    private func enqueue(_ slot: Slot) {
+        guard !queue.contains(slot) else { return }
+        queue.append(slot)
         if queue.count == 1 {
             changeNext()
         }
     }
 
     private func changeNext() {
-        guard let isDark = queue.first else { return }
-        guard let shuffle = shuffle(isDark: isDark) else {
+        guard let slot = queue.first else { return }
+        guard let shuffle = shuffle(at: slot) else {
             queue.removeFirst()
             changeNext()
             return
         }
-        change(shuffle, isDark: isDark, isQuiet: true) { [weak self] in
+        change(shuffle, at: slot, isQuiet: true) { [weak self] in
             self?.queue.removeFirst()
             self?.changeNext()
         }
     }
 
-    /// Makes a wallpaper with another of the shuffle's pictures for the appearance. `isQuiet` when it's
-    /// on time, not chosen just now, so it doesn't beep when the picture can't be made.
-    private func change(_ shuffle: Shuffle, isDark: Bool, isQuiet: Bool, then completion: (() -> Void)? = nil) {
-        // While a picture chosen in the Wallpaper window is being made, a little later
+    /// Makes a wallpaper with another of the shuffle's pictures for the appearance, where the slot says.
+    /// `isQuiet` when it's on time, not chosen just now, so it doesn't beep when the picture can't be made.
+    private func change(_ shuffle: Shuffle, at slot: Slot, isQuiet: Bool, then completion: (() -> Void)? = nil) {
+        // While a picture chosen in the Wallpaper window is being made, or another display's, a little
+        // later, as it is then, unless another choice has stopped it meanwhile
         guard !WallpaperManager.shared.isChanging else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-                self?.change(shuffle, isDark: isDark, isQuiet: isQuiet, then: completion)
+                guard let self else { return }
+                guard let latest = isQuiet ? self.shuffle(at: slot) : shuffle else {
+                    completion?()
+                    return
+                }
+                self.change(latest, at: slot, isQuiet: isQuiet, then: completion)
             }
             return
         }
@@ -5980,16 +6273,16 @@ final class WallpaperShuffler: ObservableObject {
                 var changed = shuffle
                 changed.current = next.id
                 changed.lastChange = Date()
-                self.shuffles[isDark] = changed
-                WallpaperManager.shared.choose(next, isDark: isDark, from: shuffle.id, isQuiet: isQuiet) { [weak self] isMade in
+                self[slot] = changed
+                WallpaperManager.shared.choose(next, isDark: slot.isDark, from: shuffle.id, isQuiet: isQuiet, on: slot.display) { [weak self] isMade in
                     guard let self else { return }
                     if isMade {
-                        self.retries[isDark] = nil
-                    } else if self.shuffles[isDark] == changed {
+                        self.retries[slot] = nil
+                    } else if self[slot] == changed {
                         // As it was, with the picture still on the desktop, until it tries again
-                        self.shuffles[isDark] = shuffle
-                        let delay = min(2 * (self.retries[isDark]?.delay ?? 30), 60 * 60)
-                        self.retries[isDark] = (Date().addingTimeInterval(delay), delay)
+                        self[slot] = shuffle
+                        let delay = min(2 * (self.retries[slot]?.delay ?? 30), 60 * 60)
+                        self.retries[slot] = (Date().addingTimeInterval(delay), delay)
                     }
                     self.schedule()
                     completion?()
@@ -7603,6 +7896,8 @@ enum SystemStrings {
     // is placed on the display, with the colour around it, which picture one with a picture for each
     // appearance shows, whether a colour is a gradient, and Macintosh's colours
     static let showOnAllSpaces = lookup("SHOW_ON_ALL_SPACES", in: wallpaperSettings, english: "Show on all Spaces")
+    // ...and its name for a built-in display, in its pop-up for the display whose wallpaper it shows
+    static let builtInDisplay = lookup("BUILT_IN_DISPLAY", in: wallpaperSettings, english: "Built-in Display")
     static let picture = lookup("PICTURE_LABEL", in: imageWallpaperSettings, english: "Picture")
     static let fillColor = lookup("COLOR_LABEL", in: imageWallpaperSettings, english: "Color")
     static let gradient = lookup("GRADIENT", in: colorWallpaperSettings, english: "Gradient")
