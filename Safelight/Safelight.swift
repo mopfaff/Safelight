@@ -4044,7 +4044,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// desktop then, until another is made
     private var earlierChoices: Choices?
     /// Whether a wallpaper made here goes on every Space, as System Settings' Show on all Spaces, or
-    /// only on the Space each display is showing. Kept between launches.
+    /// only on the Space each display is showing. Kept between launches, and set as System Settings
+    /// has its own whenever that changes, or its wallpaper does (`followSystemSettings`).
     @Published private(set) var showsOnAllSpaces: Bool {
         didSet { UserDefaults.standard.set(showsOnAllSpaces, forKey: Self.showsOnAllSpacesKey) }
     }
@@ -4284,12 +4285,43 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         lastRead = wallpaper
         let placement = Self.placement(on: screen)
         if let wallpaper, isMadeHere(wallpaper) {
-            show(.file(wallpaper, placement: placement))
-        } else if case .file(let file, _)? = Self.desktop(showing: wallpaper, on: Self.uuid(of: screen)) {
-            show(.file(file, placement: placement))
-        } else {
-            show(Self.desktop(showing: wallpaper, on: Self.uuid(of: screen)))
+            systemSettings = nil
+            return show(.file(wallpaper, placement: placement))
         }
+        var desktop = Self.desktop(showing: wallpaper, on: Self.uuid(of: screen))
+        if case .file(let file, _)? = desktop {
+            desktop = .file(file, placement: placement)
+        }
+        followSystemSettings(showing: desktop)
+        show(desktop)
+    }
+
+    /// The wallpaper of System Settings' the desktop had when Show on all Spaces was last set as System
+    /// Settings has it, and how that was, nil since the desktop has had one of Safelight's
+    private var systemSettings: (desktop: Desktop?, showsOnAllSpaces: Bool)?
+
+    /// Sets Show on all Spaces as System Settings has its own, when the desktop has a wallpaper of
+    /// System Settings' again, or another, or System Settings has changed its Show on all Spaces since,
+    /// so the next wallpaper made here goes where System Settings would put its next. System Settings has it on while its wallpaper is
+    /// the one for every Space and display, which only it can put there: once Safelight has put one on
+    /// the desktop, on every Space or not, it reads off, so Safelight's own is kept for those.
+    private func followSystemSettings(showing desktop: Desktop?) {
+        guard let isOnAllSpaces = Self.systemShowsOnAllSpaces else { return }
+        if let systemSettings, systemSettings.desktop == desktop, systemSettings.showsOnAllSpaces == isOnAllSpaces {
+            return
+        }
+        systemSettings = (desktop, isOnAllSpaces)
+        if showsOnAllSpaces != isOnAllSpaces {
+            showsOnAllSpaces = isOnAllSpaces
+        }
+    }
+
+    /// Whether System Settings › Wallpaper has Show on all Spaces on: while macOS's wallpaper service
+    /// keeps a desktop for every Space and display, nil when its store can't be read
+    private static var systemShowsOnAllSpaces: Bool? {
+        guard let data = try? Data(contentsOf: store),
+              let index = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return nil }
+        return (index["AllSpacesAndDisplays"] as? [String: Any])?["Desktop"] != nil
     }
 
     /// How the desktop's picture is placed on a display, with the colour around it that macOS fills in
@@ -4731,7 +4763,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
 
     /// Puts one of Safelight's wallpapers on every display, its own file for each (`file(of:for:)`), on
     /// every Space or only on the one each display is showing, as `showsOnAllSpaces` says, filling it,
-    /// as each of its pictures is placed in it
+    /// as each of its pictures is placed in it. Only on the one, the other Spaces keep theirs, even
+    /// System Settings' wallpaper for every Space, which macOS's wallpaper service then gives each Space
+    /// as its own, as System Settings does with its Show on all Spaces turned off.
     private func setDesktop(_ wallpaper: URL) {
         for screen in NSScreen.screens {
             var options = NSWorkspace.shared.desktopImageOptions(for: screen) ?? [:]
