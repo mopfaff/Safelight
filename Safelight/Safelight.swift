@@ -1798,7 +1798,7 @@ struct WallpaperGallery: View {
                         progress
                     }
                 }
-                .modifier(ThumbnailFrame(size: CGSize(width: Self.colorSize, height: Self.colorSize), cornerRadius: Self.colorSize / 2, isSelected: isSelected))
+                .modifier(ThumbnailFrame(size: CGSize(width: Self.colorSize, height: Self.colorSize), cornerRadius: Self.colorSize / 2, isSelected: isSelected, isOutlined: false))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -1882,7 +1882,7 @@ struct WallpaperGallery: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .modifier(ThumbnailFrame(size: CGSize(width: Self.colorSize, height: Self.colorSize), cornerRadius: Self.colorSize / 2, isSelected: isSelected))
+                .modifier(ThumbnailFrame(size: CGSize(width: Self.colorSize, height: Self.colorSize), cornerRadius: Self.colorSize / 2, isSelected: isSelected, isOutlined: false))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -1969,12 +1969,13 @@ struct ShowAllButtonStyle: ButtonStyle {
 }
 
 /// A thumbnail's frame, as System Settings draws one: the picture with its corners rounded and a faint
-/// line around its edge, or while it's the one chosen, a little smaller inside a ring in the accent
-/// colour, which turns grey while the window isn't the one in front
+/// line around its edge, which Colours' circles don't have, or while it's the one chosen, a little
+/// smaller inside a ring in the accent colour, which turns grey while the window isn't the one in front
 struct ThumbnailFrame: ViewModifier {
     let size: CGSize
     let cornerRadius: CGFloat
     let isSelected: Bool
+    var isOutlined = true
     @Environment(\.controlActiveState) private var controlActiveState
 
     private static let ringWidth: CGFloat = 2
@@ -1986,7 +1987,7 @@ struct ThumbnailFrame: ViewModifier {
             .frame(width: size.width - 2 * inset, height: size.height - 2 * inset)
             .clipShape(shape)
             .overlay {
-                if !isSelected {
+                if isOutlined && !isSelected {
                     shape.stroke(.black.opacity(0.08), lineWidth: 1)
                 }
             }
