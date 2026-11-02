@@ -1691,7 +1691,7 @@ struct WallpaperGallery: View {
                     shuffler.start(shuffle, isDark: window.isDark)
                 }
             }
-            circleButton("plus", name: SystemStrings.customColor) {
+            circleButton("plus", name: SystemStrings.customColor, id: WallpaperItem.customColor) {
                 window.chooseColor()
             }
             ForEach(items) { item in
@@ -1906,16 +1906,16 @@ struct WallpaperGallery: View {
     }
 
     /// One of Colours' first two swatches, a symbol in a grey circle, as System Settings' CircleButton
-    /// draws them: the colours' shuffle, ringed while it's chosen, and the custom colour, which opens the
-    /// Colours panel
-    private func circleButton(_ symbol: String, name: String, id: String? = nil, action: @escaping () -> Void) -> some View {
-        let isSelected = id != nil && wallpaper.choice(isDark: window.isDark) == id
+    /// draws them: the colours' shuffle, and the custom colour, which opens the Colours panel. Each is
+    /// ringed while it's chosen, the custom colour while the appearance has any colour of the user's own.
+    private func circleButton(_ symbol: String, name: String, id: String, action: @escaping () -> Void) -> some View {
+        let isSelected = wallpaper.choice(isDark: window.isDark) == id
         return Button(action: action) {
             ZStack {
                 Circle()
                     .fill(.quaternary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if id != nil && wallpaper.isChangingShown && wallpaper.changingChoice == id {
+                if wallpaper.isChangingShown && wallpaper.changingChoice == id {
                     progress
                 } else {
                     Image(systemName: symbol)
@@ -4223,7 +4223,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     @Published private(set) var downloadProgress: Double?
     /// For each wallpaper Safelight made, by the name of its folder, the wallpapers of System Settings'
     /// whose pictures it has for Light and for Dark, or the shuffles they're from, or the user's own
-    /// pictures (`WallpaperItem.ownPicture(named:)`), each nil for a colour of the user's own, and the
+    /// pictures (`WallpaperItem.ownPicture(named:)`) or colour (`WallpaperItem.customColor`), and the
     /// options each is shown with. Each wallpaper has its own, as with Show
     /// on all Spaces off, each Space can have a different one. Kept between launches.
     @Published private var choices: [String: Choices] {
@@ -4382,7 +4382,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         /// A colour of the user's own
         case color(CGColor)
         /// A colour, of the user's own or of System Settings', shown with Gradient on
-        case gradient(CGColor)
+        case gradient(CGColor, isCustom: Bool)
         /// One of System Settings' shuffles, which shows the same picture in both appearances until it
         /// changes, as often as it's set to
         case shuffle(WallpaperShuffle, interval: WallpaperShuffle.Interval)
@@ -4701,8 +4701,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     }
 
     /// The wallpaper of System Settings' whose picture the desktop shown has for an appearance, or the
-    /// shuffle it's from, or a picture of the user's own: the one chosen here while the wallpaper is one
-    /// Safelight made, or the one System Settings has on the desktop
+    /// shuffle it's from, or a picture or a colour of the user's own: the one chosen here while the
+    /// wallpaper is one Safelight made, or the one System Settings has on the desktop
     func choice(isDark: Bool) -> String? {
         choice(isDark: isDark, of: shown)
     }
@@ -4737,6 +4737,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             return shuffle.id
         case .drawn(let drawn, _, _, _)?:
             return drawn.rawValue
+        case .color?, .gradient(_, isCustom: true)?:
+            return WallpaperItem.customColor
         default:
             return nil
         }
@@ -4902,7 +4904,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// Makes a wallpaper all in one colour for one appearance, as `setPicture(_:isDark:)` does
     func setColor(_ color: NSColor, isDark: Bool) {
         let screenSize = Self.screenSize
-        setPicture(isDark: isDark, choice: nil, item: nil, options: keptOptions(isDark: isDark, of: shown), placement: nil, hasPictureForEach: false, at: place(for: nil)) { isDark, _, folder in
+        setPicture(isDark: isDark, choice: WallpaperItem.customColor, item: nil, options: keptOptions(isDark: isDark, of: shown), placement: nil, hasPictureForEach: false,
+                   at: place(for: nil)) { isDark, _, folder in
             (try Self.colorPicture(color.usingColorSpace(.displayP3)?.cgColor ?? color.cgColor, size: screenSize, named: "Colour", into: folder), isDark)
         }
     }
@@ -5184,10 +5187,10 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     private func put(_ wallpaper: URL, isDark: Bool, choice: String?, item: WallpaperItem.ID?, options: PictureOptions, replacing current: Desktop?, at place: String?,
                      shuffled: WallpaperItem.ID? = nil) {
         // The other appearance kept the desktop's picture, which from a wallpaper of System Settings'
-        // is that wallpaper's, as its options show it, and from one of its shuffles, the shuffle's, which
-        // carries on here. From one Safelight can't tell, or a shuffle with no pictures, it took its
-        // picture from the same wallpaper, with the same options but its own appearance's picture, but
-        // doesn't shuffle.
+        // is that wallpaper's, as its options show it, from one of its shuffles, the shuffle's, which
+        // carries on here, and from a colour of the user's own, that colour. From one Safelight can't
+        // tell, or a shuffle with no pictures, it took its picture from the same wallpaper, with the same
+        // options but its own appearance's picture, but doesn't shuffle.
         var choices: Choices
         switch current {
         case .file(let made, _)? where isMadeHere(made):
@@ -5203,6 +5206,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         case .drawn(let drawn, let lightShowsDark, let darkShowsDark, let colors)?:
             let options = PictureOptions(appearance: AppearanceOption(lightShowsDark: lightShowsDark, darkShowsDark: darkShowsDark), macintoshColors: colors)
             choices = Choices(light: drawn.rawValue, dark: drawn.rawValue, lightOptions: options, darkOptions: options)
+        case .color?, .gradient(_, isCustom: true)?:
+            choices = Choices(light: WallpaperItem.customColor, dark: WallpaperItem.customColor)
         case nil, .shuffle?:
             var other = options
             other.appearance = nil
@@ -5704,7 +5709,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             } else {
                 color = nil
             }
-            return color.map { isGradient ? .gradient($0) : .color($0) }
+            return color.map { isGradient ? .gradient($0, isCustom: type == "customColor") : .color($0) }
         default:
             return nil
         }
@@ -5751,7 +5756,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// stretched to fill the screen. Nil for any other wallpaper.
     private static func drawing(of desktop: Desktop, shows isDark: Bool) -> ((_ size: CGSize, _ folder: URL) throws -> (file: URL, isDark: Bool))? {
         switch desktop {
-        case .gradient(let color):
+        case .gradient(let color, _):
             return { size, folder in (try gradientPicture(color, size: size, into: folder), isDark) }
         case .drawn(let drawn, let lightShowsDark, let darkShowsDark, let colors):
             return { size, folder in (try drawnPicture(drawn, showsDark: isDark ? darkShowsDark : lightShowsDark, inDarkAppearance: isDark, colors: colors, size: size, into: folder), isDark) }
@@ -6072,7 +6077,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             context.setFillColor(color)
             context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
             return both(context.makeImage())
-        case .gradient(let color):
+        case .gradient(let color, _):
             // The shape of a screen, so filling a thumbnail shows all of it
             return both(gradientImage(color, size: CGSize(width: 160, height: 100)))
         case .shuffle(let shuffle, _):
@@ -7202,6 +7207,11 @@ struct WallpaperItem: Identifiable, Hashable {
     }
 
     private static let ownPicturePrefix = "own:"
+
+    /// The choice a colour of the user's own is remembered as, whichever colour it is and whether it's
+    /// shown as a gradient, as System Settings' colours extension gives every custom colour one choice,
+    /// the Custom Colour button's, keeping the colour and the gradient in its options
+    static let customColor = "color:custom"
 }
 
 /// One of System Settings › Wallpaper's shuffles: a new picture from a set every so often. Here each
