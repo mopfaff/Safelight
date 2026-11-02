@@ -1289,6 +1289,13 @@ struct WallpaperGallery: View {
     private static let margin: CGFloat = 20
     private static let sectionSpacing: CGFloat = 20
     private static let spacing: CGFloat = 10
+    /// How far below a whole pixel System Settings' list of sections starts, where the top of its pane
+    /// leaves it. SwiftUI rounds each row to the pixels from there, so the sections start as far down
+    /// here to be rounded the same way: the names, the rings and the colours' circles then fall on the
+    /// same pixels. It isn't in System Settings' code, as it follows from the height of its pane's top,
+    /// which this window doesn't share; it's the offset that makes every row match System Settings'
+    /// pixels and the frames it reports to Accessibility.
+    private static let listOffset: CGFloat = 5.0 / 16
     /// Its thumbnails, four to a row, and its colours, eight to a row
     private static let thumbnailSize = CGSize(width: 107.5, height: 71)
     private static let colorSize: CGFloat = 48.75
@@ -1313,14 +1320,21 @@ struct WallpaperGallery: View {
             // come from this one's
             let expandedSections = expandedSections
             PaneScrollView {
-                VStack(alignment: .leading, spacing: Self.sectionSpacing) {
+                // System Settings' GroupList: its sections centred, so a grid narrower than the pane's
+                // margins leave is in the middle. It takes up to 5 points off each margin for a pane
+                // narrower than 500 points, which this one never is.
+                VStack(spacing: Self.sectionSpacing) {
                     ForEach(WallpaperLibrary.shared.sections) { section in
                         group(section, isExpanded: expandedSections.contains(section.id))
                             // Until a picture chosen is on the desktop, as only one can be made at a time
                             .disabled(wallpaper.isChanging)
                     }
                 }
-                .padding(Self.margin)
+                .padding(EdgeInsets(top: Self.margin + Self.listOffset, leading: Self.margin, bottom: Self.margin - Self.listOffset, trailing: Self.margin))
+                // Each section as tall as it needs, as in a SwiftUI scroll view, which offers its content
+                // no height: offered the height of its frame, the sideways rows would share out what's
+                // over or short, and each draw its wallpapers in the middle of what it's given
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(width: Self.width, height: 720)
@@ -1595,17 +1609,21 @@ struct WallpaperGallery: View {
         }
     }
 
-    /// A section: its title, with Show All beside it when there's more than a row, and a row of its
-    /// wallpapers that scrolls sideways, or all of them
+    /// A section, as System Settings' GroupView lays one out: its header, its title with Show All beside
+    /// it when there's more than a row, on one baseline, and 10 points under it, a row of its wallpapers
+    /// that scrolls sideways under the margins, or all of them. A section whose wallpapers have no names
+    /// under them has 10 points more below.
     private func group(_ section: WallpaperLibrary.Section, isExpanded: Bool) -> some View {
         let columns = section.kind == .colors ? 8 : 4
         let items = section.kind == .photos ? photos.items : section.items
         let shuffles = section.kind == .photos ? Array(photos.shuffle.map { [$0] } ?? []) : section.shuffles
         // Add Photo… and the custom colour count as one of the section's
         let count = shuffles.count + items.count + (section.kind == .photos || section.kind == .colors ? 1 : 0)
-        return VStack(alignment: .leading, spacing: Self.spacing) {
-            HStack(spacing: Self.spacing) {
+        let hidesNames = !(section.kind == .pictures || section.kind == .shuffles)
+        return VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(section.title)
+                    .lineLimit(1)
                     .fontWeight(.medium)
                 Spacer()
                 if count > columns || section.row.map({ $0.count < items.count }) == true {
@@ -1619,12 +1637,14 @@ struct WallpaperGallery: View {
                     .buttonStyle(ShowAllButtonStyle())
                 }
             }
-            .fixedSize(horizontal: false, vertical: true)
+            .contentShape(Rectangle())
             if isExpanded {
                 let width = section.kind == .colors ? Self.colorSize : Self.thumbnailSize.width
                 LazyVGrid(columns: Array(repeating: GridItem(.fixed(width), spacing: Self.spacing), count: columns), alignment: .leading, spacing: Self.spacing) {
                     self.items(of: section, shuffles, items)
                 }
+                .padding(.bottom, hidesNames ? 10 : 0)
+                .padding(.top, 10)
             } else {
                 // The width of the window, scrolling under its margins
                 ScrollView(.horizontal) {
@@ -1632,15 +1652,15 @@ struct WallpaperGallery: View {
                         self.items(of: section, shuffles, section.row ?? items)
                     }
                     .scrollTargetLayout()
+                    .padding(.top, 10)
                 }
                 .padding(.horizontal, -Self.margin)
                 .contentMargins(.horizontal, Self.margin, for: .automatic)
+                .padding(.bottom, hidesNames ? 10 : 0)
                 .scrollClipDisabled()
                 .scrollIndicators(.never)
             }
         }
-        // Where the other sections have their wallpapers' names
-        .padding(.bottom, section.kind == .pictures || section.kind == .shuffles ? 0 : 10)
     }
 
     /// A section's tiles, in System Settings' order: Add Photo… and then the photos' shuffle, or the
@@ -1721,7 +1741,8 @@ struct WallpaperGallery: View {
         let thumbnail = thumbnail()
         return HoverReader { isHovering in
             Button(action: action) {
-                VStack(spacing: 3) {
+                // As System Settings' GroupItemView: SwiftUI's own spacing above the name
+                VStack {
                     thumbnail
                         // Its badges are over its rings, as System Settings has them
                         .modifier(ThumbnailFrame(size: Self.thumbnailSize, cornerRadius: Self.thumbnailCornerRadius, isSelected: isSelected))
@@ -1748,11 +1769,12 @@ struct WallpaperGallery: View {
                         Text(name)
                             .font(.caption)
                             .lineLimit(2, reservesSpace: true)
+                            .truncationMode(.middle)
                             .multilineTextAlignment(.center)
+                            .frame(maxWidth: Self.thumbnailSize.width)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .frame(width: Self.thumbnailSize.width)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -1844,21 +1866,26 @@ struct WallpaperGallery: View {
             // With their symbols, which a menu leaves out otherwise
             .labelStyle(.titleAndIcon)
         } label: {
-            VStack(spacing: 4) {
+            // As System Settings' AddPhotoButton
+            VStack(spacing: 5) {
                 Image(systemName: "photo.badge.plus")
-                    .font(.system(size: 26))
                     .foregroundStyle(.tertiary)
+                    .font(.system(size: 26))
                 Text(SystemStrings.addPhoto)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            .frame(width: Self.thumbnailSize.width, height: Self.thumbnailSize.height)
-            .background(.quinary, in: RoundedRectangle(cornerRadius: Self.thumbnailCornerRadius))
+            .padding(5)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
         }
         .menuStyle(.button)
         .menuIndicator(.hidden)
         .buttonStyle(.plain)
-        .fixedSize()
+        .frame(width: Self.thumbnailSize.width, height: Self.thumbnailSize.height)
+        .background(RoundedRectangle(cornerRadius: Self.thumbnailCornerRadius, style: .continuous).fill(.quinary))
         .task {
             await photoSets.load()
         }
