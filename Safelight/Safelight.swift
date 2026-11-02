@@ -5629,11 +5629,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
                                       space: colorSpace, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { throw CocoaError(.fileReadCorruptFile) }
         context.setFillColor(color)
         context.fill(CGRect(origin: .zero, size: CGSize(width: context.width, height: context.height)))
-        let file = folder.appendingPathComponent(name).appendingPathExtension("png")
-        guard let picture = context.makeImage(),
-              let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.png.identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
-        CGImageDestinationAddImage(destination, picture, nil)
-        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+        let file = folder.appendingPathComponent(name).appendingPathExtension("tiff")
+        guard let picture = context.makeImage() else { throw CocoaError(.fileWriteUnknown) }
+        try writeLossless(picture, to: file)
         return file
     }
 
@@ -5938,11 +5936,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
 
     /// A colour's gradient as a picture the size of the screen
     private static func gradientPicture(_ color: CGColor, size: CGSize, named name: String = "Desktop", into folder: URL) throws -> URL {
-        let file = folder.appendingPathComponent("\(name) Gradient.png")
-        guard let picture = gradientImage(color, size: size),
-              let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.png.identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
-        CGImageDestinationAddImage(destination, picture, nil)
-        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+        let file = folder.appendingPathComponent("\(name) Gradient.tiff")
+        guard let picture = gradientImage(color, size: size) else { throw CocoaError(.fileWriteUnknown) }
+        try writeLossless(picture, to: file)
         return file
     }
 
@@ -6003,6 +5999,30 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         return files
     }
 
+    /// Writes a picture drawn here, or placed from one that's lost nothing, for a wallpaper to be made
+    /// with: uncompressed, so it's written and read again in a few milliseconds, where a PNG the size of
+    /// a 5K display took a quarter of a second, and with nothing lost, so the wallpaper keeps it without
+    /// loss (`hasLostNothing`)
+    private static func writeLossless(_ picture: CGImage, to file: URL) throws {
+        guard let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.tiff.identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
+        CGImageDestinationAddImage(destination, picture, [kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFCompression: 1]] as CFDictionary) // none
+        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+    }
+
+    /// Whether a file's picture has lost nothing yet: a PNG, or an uncompressed TIFF, as the pictures
+    /// drawn here are written (`writeLossless`). One placed from a picture that had is LZW-compressed.
+    private static func hasLostNothing(_ source: CGImageSource) -> Bool {
+        switch CGImageSourceGetType(source) as String? {
+        case UTType.png.identifier?:
+            return true
+        case UTType.tiff.identifier?:
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, CGImageSourceGetPrimaryImageIndex(source), nil) as? [CFString: Any]
+            return (properties?[kCGImagePropertyTIFFDictionary] as? [CFString: Any])?[kCGImagePropertyTIFFCompression] as? Int == 1
+        default:
+            return false
+        }
+    }
+
     /// Writes a wallpaper with `light`'s picture for Light and `dark`'s for Dark, or when that's the same
     /// picture, a plain one of it. Each is a file's picture for Light or for Dark, for a file with one for
     /// each, or its only one.
@@ -6026,7 +6046,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         let made = wallpaperFolder(of: wallpaper).deletingLastPathComponent()
         func options(_ source: CGImageSource, _ file: URL) -> CFDictionary {
             let isKept = wallpaperFolder(of: file).deletingLastPathComponent().standardizedFileURL == made.standardizedFileURL
-            return [kCGImageDestinationLossyCompressionQuality: isKept || CGImageSourceGetType(source) as String? == UTType.png.identifier ? 1 : 0.95] as CFDictionary
+            return [kCGImageDestinationLossyCompressionQuality: isKept || hasLostNothing(source) ? 1 : 0.95] as CFDictionary
         }
         if isOnePicture {
             CGImageDestinationAddImage(destination, lightPicture, options(lightSource, light.file))
@@ -6075,10 +6095,14 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         guard let image = Self.picture(in: source, at: index),
               let placed = placed(image, size: size, placement: placement, screenSize: screenSize, canvas: canvas(for: size, placement: placement, screenSize: screenSize))
         else { throw CocoaError(.fileReadCorruptFile) }
-        // A PNG as one (which the wallpaper keeps without loss), others with nothing lost
-        let isPNG = CGImageSourceGetType(source) as String? == UTType.png.identifier
-        let file = folder.appendingPathComponent("\(name) Placed").appendingPathExtension(isPNG ? "png" : "tiff")
-        guard let destination = CGImageDestinationCreateWithURL(file as CFURL, (isPNG ? UTType.png : UTType.tiff).identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
+        // One that's lost nothing as one (which the wallpaper keeps without loss), others with nothing
+        // more lost
+        let file = folder.appendingPathComponent("\(name) Placed").appendingPathExtension("tiff")
+        if hasLostNothing(source) {
+            try writeLossless(placed, to: file)
+            return (file, false)
+        }
+        guard let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.tiff.identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
         CGImageDestinationAddImage(destination, placed, [kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFCompression: 5]] as CFDictionary) // LZW
         guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
         return (file, false)
@@ -6264,11 +6288,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     private static func drawnPicture(_ drawn: DrawnWallpaper, showsDark: Bool, inDarkAppearance isDark: Bool, colors: String?, size: CGSize, into folder: URL) throws -> URL {
         // Named for its appearance, apart from the other appearance's, which is drawn into the same folder
         // when both have it
-        let file = folder.appendingPathComponent("\(drawn.name) in \(isDark ? "Dark" : "Light").png")
+        let file = folder.appendingPathComponent("\(drawn.name) in \(isDark ? "Dark" : "Light").tiff")
         if let picture = drawnImage(drawn, showsDark: showsDark, inDarkAppearance: isDark, colors: colors, size: size) {
-            guard let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.png.identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
-            CGImageDestinationAddImage(destination, picture, nil)
-            guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+            try writeLossless(picture, to: file)
             return file
         }
         guard let thumbnail = thumbnail(of: drawn, isDark: showsDark),
@@ -6279,10 +6301,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         let filled = CGSize(width: CGFloat(thumbnail.width) * scale, height: CGFloat(thumbnail.height) * scale)
         context.interpolationQuality = .high
         context.draw(thumbnail, in: CGRect(x: (CGFloat(context.width) - filled.width) / 2, y: (CGFloat(context.height) - filled.height) / 2, width: filled.width, height: filled.height))
-        guard let picture = context.makeImage(),
-              let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.png.identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
-        CGImageDestinationAddImage(destination, picture, nil)
-        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+        guard let picture = context.makeImage() else { throw CocoaError(.fileWriteUnknown) }
+        try writeLossless(picture, to: file)
         return file
     }
 
