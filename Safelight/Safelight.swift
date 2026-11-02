@@ -4448,6 +4448,10 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// For each appearance, what the latest change asked for will show, until it's on the desktop, and
     /// the desktop's own pictures have been read again
     @Published private var previews: [Bool: (change: UUID, place: String?, thumbnail: Thumbnail)] = [:]
+    /// What an appearance will show once a change is made, drawn away from the main thread for a
+    /// display of a size, in pixels, from the picture the wallpaper's made with, as its picture will be
+    /// drawn then (`thumbnails(of:)`), so it looks the same once it's on the desktop
+    private typealias Preview = (_ screenSize: CGSize) async -> Thumbnail?
 
     /// A change asked for: for which appearance, where it goes (`place(for:)`), and the choice it's
     /// remembered as, with the options it's shown with
@@ -4964,17 +4968,17 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
     }
 
-    /// Shows what an appearance will have once a change just asked for is made, while it's still the
-    /// latest asked for there: `desktop` as `thumbnails(of:)` draws it, which is how the desktop would
-    /// show it if System Settings had put it there
-    private func showPreview(_ desktop: Desktop?, of change: Change) {
-        guard let desktop else { return }
+    /// Shows what an appearance will have once a change just asked for is made, as soon as `preview` has
+    /// drawn it, while it's still the latest asked for there. With none, the appearance keeps showing
+    /// what the desktop has until the change is on it.
+    private func showPreview(_ preview: Preview?, of change: Change) {
+        guard let preview else { return }
         let screenSize = shownSize
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let thumbnails = Self.thumbnails(of: desktop, screenSize: screenSize)
-            DispatchQueue.main.async {
-                guard let self, let thumbnails, self.latestChange(isDark: change.isDark, at: change.place)?.id == change.id else { return }
-                self.previews[change.isDark] = (change.id, change.place, change.isDark ? thumbnails.dark : thumbnails.light)
+        Task.detached(priority: .userInitiated) {
+            let thumbnail = await preview(screenSize)
+            await MainActor.run {
+                guard let thumbnail, self.latestChange(isDark: change.isDark, at: change.place)?.id == change.id else { return }
+                self.previews[change.isDark] = (change.id, change.place, thumbnail)
             }
         }
     }
@@ -5216,23 +5220,43 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
     }
 
-    /// What the desktop shows in an appearance with `item`'s picture for it, shown with `options` and
-    /// placed as `placement` says, as System Settings' own wallpaper would show: its picture for the
-    /// appearance its options pick, drawn, or in its colour or that colour's gradient
-    private static func preview(of item: WallpaperItem, isDark: Bool, options: PictureOptions, placement: Placement?, macintoshColors: String?) -> Desktop? {
+    /// What the desktop shows in an appearance once a wallpaper with `item`'s picture for it is made,
+    /// shown with `options` and placed as `placement` says: its picture for the appearance its options
+    /// pick, drawn, in its colour or that colour's gradient, or an aerial's first frame, from the picture
+    /// the wallpaper's made with, not from System Settings' thumbnail of it, which is cropped otherwise.
+    /// None for a picture that's still to be fetched, which can't be shown any sooner than the wallpaper.
+    private static func preview(of item: WallpaperItem, isDark: Bool, options: PictureOptions, placement: Placement?, macintoshColors: String?) -> Preview? {
         let showsDark = item.badge == .dynamic ? options.showsDark(isDark: isDark) : isDark
         switch showsDark ? item.dark : item.light {
         case .drawn(let drawn, _):
-            return .drawn(drawn, lightShowsDark: showsDark, darkShowsDark: showsDark, colors: macintoshColors)
+            return preview(of: .drawn(drawn, lightShowsDark: showsDark, darkShowsDark: showsDark, colors: macintoshColors), isDark: isDark)
         case .color(let swatch):
-            return swatchColor(swatch).map { options.isGradient == true ? .gradient($0, isCustom: false) : .color($0) }
+            return swatchColor(swatch).map { preview(of: options.isGradient == true ? .gradient($0, isCustom: false) : .color($0), isDark: isDark) }
         case .file(let file):
-            if let placement, placement.kind != .fill {
-                return .file(file, placement: placement)
-            }
-            return .item(item, lightShowsDark: showsDark, darkShowsDark: showsDark)
-        case .download, .aerial, .asset:
-            return .item(item, lightShowsDark: showsDark, darkShowsDark: showsDark)
+            return preview(of: (file, showsDark), placement: placement)
+        case .download(_, let file):
+            return FileManager.default.isReadableFile(atPath: file.path) ? preview(of: (file, showsDark), placement: placement) : nil
+        case .aerial(let id, _):
+            // From its video on the Mac, as Apple's would take as long as the wallpaper
+            guard let video = WallpaperLibrary.videoOnMac(ofAerial: id) else { return nil }
+            return { _ in (try? await firstFrame(of: video, maxPixelSize: 400)).map { .picture($0) } }
+        case .asset:
+            return nil
+        }
+    }
+
+    /// What `desktop` shows in an appearance, as `thumbnails(of:screenSize:)` draws it
+    private static func preview(of desktop: Desktop, isDark: Bool) -> Preview {
+        { screenSize in thumbnails(of: desktop, screenSize: screenSize).map { isDark ? $0.dark : $0.light } }
+    }
+
+    /// What a file's picture for Light or for Dark shows once a wallpaper is made with it, placed as
+    /// `placement` says, as `thumbnails(of:placement:screenSize:)` draws it
+    private static func preview(of picture: (file: URL, isDark: Bool), placement: Placement?) -> Preview {
+        { screenSize in
+            CGImageSourceCreateWithURL(picture.file as CFURL, nil)
+                .flatMap { thumbnail(in: $0, isDark: picture.isDark, placement: placement ?? Placement(), screenSize: screenSize) }
+                .map { .picture($0) }
         }
     }
 
@@ -5252,7 +5276,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         let place = place(for: nil)
         let color = color.usingColorSpace(.displayP3)?.cgColor ?? color.cgColor
         setPicture(isDark: isDark, choice: WallpaperItem.customColor, item: nil, options: keptOptions(isDark: isDark, at: place), placement: nil, hasPictureForEach: false,
-                   preview: .color(color), at: place) { isDark, _, folder in
+                   preview: Self.preview(of: .color(color), isDark: isDark), at: place) { isDark, _, folder in
             (try Self.colorPicture(color, size: screenSize, named: "Colour", into: folder), isDark)
         }
     }
@@ -5308,7 +5332,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// as it was, so it can be placed another way.
     private func setPicture(_ file: URL, isDark: Bool, choice: WallpaperItem.ID, options: PictureOptions) {
         setPicture(isDark: isDark, choice: choice, item: nil, options: options, placement: options.placement, hasPictureForEach: false,
-                   preview: .file(file, placement: options.placement ?? Placement()), at: place(for: nil)) { isDark, _, pictures in
+                   preview: Self.preview(of: (file, isDark), placement: options.placement), at: place(for: nil)) { isDark, _, pictures in
             try Self.keepOriginal(file, isDark: isDark, beside: pictures)
             return (file, isDark)
         }
@@ -5346,8 +5370,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// with a picture for each, and it's placed on the display as `placement` says. `choice` is
     /// remembered as the appearance's choice, with the `options` it's shown with, and `item` is the
     /// wallpaper of System Settings' the picture is from. It beeps when it can't be made, unless `isQuiet`.
-    /// The appearance shows it as chosen at once, and `preview` as what it has, as System Settings shows
-    /// a wallpaper as soon as it's clicked.
+    /// The appearance shows it as chosen at once, and `preview` as what it has as soon as that's drawn,
+    /// as System Settings shows a wallpaper as soon as it's clicked.
     ///
     /// While another is being made, it's made once that one is on the desktop, as only one can be made
     /// at a time, in place of any other asked for the appearance and display meanwhile (`wait`). One
@@ -5360,7 +5384,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// `isDrawn`. Otherwise one fills them all. They're made for every display even when it goes on one
     /// (`place`, or the display chosen, `place(for:)`), as Show on all Spaces may put it on them all.
     private func setPicture(isDark: Bool, choice: String?, item: WallpaperItem.ID?, options: PictureOptions, placement: Placement?, hasPictureForEach: Bool,
-                            isDrawn: Bool = false, isQuiet: Bool = false, preview: Desktop? = nil, at place: String?, as asked: Change? = nil,
+                            isDrawn: Bool = false, isQuiet: Bool = false, preview: Preview? = nil, at place: String?, as asked: Change? = nil,
                             completion: ((_ isMade: Bool) -> Void)? = nil,
                             picture: @escaping (_ isDark: Bool, _ size: CGSize, _ folder: URL) async throws -> (file: URL, isDark: Bool)) {
         // Nor to a display that's been disconnected since
@@ -5819,16 +5843,12 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// it's downloaded, or the one it comes with, or else from Apple's, which AVFoundation reads only
     /// as much of as it needs
     private static func frame(ofAerial id: String, video: URL, into folder: URL) async throws -> URL {
-        let downloaded = WallpaperLibrary.downloadedVideo(ofAerial: id)
-        let onMac = FileManager.default.isReadableFile(atPath: downloaded.path) ? downloaded : WallpaperLibrary.shippedVideo(ofAerial: id)
-        let videos = (onMac.map { [$0] } ?? []) + [video]
+        let videos = (WallpaperLibrary.videoOnMac(ofAerial: id).map { [$0] } ?? []) + [video]
         var frame: CGImage?
         var failure: Error?
         for video in videos where frame == nil {
-            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: video))
-            generator.appliesPreferredTrackTransform = true
             do {
-                frame = try await generator.image(at: .zero).image
+                frame = try await firstFrame(of: video)
             } catch {
                 failure = error
             }
@@ -5839,6 +5859,17 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         CGImageDestinationAddImage(destination, frame, [kCGImageDestinationLossyCompressionQuality: 1.0] as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
         return file
+    }
+
+    /// The first frame of a video the right way up, at its full size, or scaled down to fit
+    /// `maxPixelSize` each way
+    private static func firstFrame(of video: URL, maxPixelSize: Int? = nil) async throws -> CGImage {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: video))
+        generator.appliesPreferredTrackTransform = true
+        if let maxPixelSize {
+            generator.maximumSize = CGSize(width: maxPixelSize, height: maxPixelSize)
+        }
+        return try await generator.image(at: .zero).image
     }
 
     /// One of System Settings' colours, as a picture the size of the screen, in the colour of its swatch
@@ -6320,16 +6351,19 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// Placed otherwise than filling the display, each is drawn the shape of a display of `screenSize`,
     /// in pixels, placed on it as macOS places it (`placed(_:size:placement:screenSize:)`).
     private static func thumbnails(of wallpaper: URL, placement: Placement = Placement(), screenSize: CGSize = .zero) -> Thumbnails? {
-        guard let source = CGImageSourceCreateWithURL(wallpaper as CFURL, nil) else { return nil }
-        func thumbnail(isDark: Bool) -> CGImage? {
-            let index = index(in: source, isDark: isDark)
-            guard let picture = picture(in: source, at: index, maxPixelSize: 400) else { return nil }
-            guard placement.kind != .fill, screenSize.width > 0, screenSize.height > 0 else { return picture }
-            let canvas = CGSize(width: 400, height: max((400 * screenSize.height / screenSize.width).rounded(), 1))
-            return placed(picture, size: pixelSize(in: source, at: index), placement: placement, screenSize: screenSize, canvas: canvas)
-        }
-        guard let light = thumbnail(isDark: false), let dark = thumbnail(isDark: true) else { return nil }
+        guard let source = CGImageSourceCreateWithURL(wallpaper as CFURL, nil),
+              let light = thumbnail(in: source, isDark: false, placement: placement, screenSize: screenSize),
+              let dark = thumbnail(in: source, isDark: true, placement: placement, screenSize: screenSize) else { return nil }
         return Thumbnails(light: .picture(light), dark: .picture(dark))
+    }
+
+    /// `source`'s picture for Light or for Dark, as `thumbnails(of:placement:screenSize:)` draws it
+    private static func thumbnail(in source: CGImageSource, isDark: Bool, placement: Placement, screenSize: CGSize) -> CGImage? {
+        let index = index(in: source, isDark: isDark)
+        guard let picture = picture(in: source, at: index, maxPixelSize: 400) else { return nil }
+        guard placement.kind != .fill, screenSize.width > 0, screenSize.height > 0 else { return picture }
+        let canvas = CGSize(width: 400, height: max((400 * screenSize.height / screenSize.width).rounded(), 1))
+        return placed(picture, size: pixelSize(in: source, at: index), placement: placement, screenSize: screenSize, canvas: canvas)
     }
 
     /// One of a file's pictures as macOS places it on a display of `screenSize`, in pixels, as
@@ -8113,6 +8147,13 @@ final class WallpaperLibrary {
     /// Where macOS keeps an aerial's video once it has downloaded it
     static func downloadedVideo(ofAerial id: String) -> URL {
         aerials.appendingPathComponent("videos/\(id).mov")
+    }
+
+    /// An aerial's video that's on the Mac: the copy macOS keeps once it's downloaded it, or else the
+    /// one it comes with
+    static func videoOnMac(ofAerial id: String) -> URL? {
+        let downloaded = downloadedVideo(ofAerial: id)
+        return FileManager.default.isReadableFile(atPath: downloaded.path) ? downloaded : shippedVideo(ofAerial: id)
     }
 
     /// The video macOS comes with of an aerial: Golden Gate Sunset's, its default wallpaper, which the
