@@ -1094,7 +1094,7 @@ struct AppearanceSegments: NSViewRepresentable {
 /// the shadow of one that isn't chosen. Clicking one opens the Wallpaper window to choose its picture,
 /// and pointing at one names the wallpaper it's from. A shuffle of System Settings' shows its thumbnail,
 /// as System Settings does. While the wallpaper is one whose pictures Safelight can't tell, each is an
-/// empty frame with a + in it. Disabled, from when a picture is chosen until it's on the desktop, it dims.
+/// empty frame with a + in it. A picture chosen shows as soon as it's chosen, while it's made.
 struct WallpaperPicker: View {
     @ObservedObject var wallpaper = WallpaperManager.shared
     let choosePicture: (_ isDark: Bool) -> Void
@@ -1104,7 +1104,6 @@ struct WallpaperPicker: View {
             option(SystemStrings.light, picture: wallpaper.thumbnails?.light, isDark: false)
             option(SystemStrings.dark, picture: wallpaper.thumbnails?.dark, isDark: true)
         }
-        .disabled(wallpaper.isChanging)
     }
 
     private func option(_ name: String, picture: WallpaperManager.Thumbnail?, isDark: Bool) -> some View {
@@ -1230,15 +1229,11 @@ final class WallpaperWindow: NSObject, ObservableObject {
     func setFillColor(_ color: CGColor) {
         fillColorChange?.cancel()
         let isDark = isDark
-        let change = DispatchWorkItem { [weak self] in
+        let change = DispatchWorkItem {
             let wallpaper = WallpaperManager.shared
-            if wallpaper.isChanging {
-                self?.setFillColor(color)
-            } else {
-                var options = wallpaper.options(isDark: isDark)
-                options.placement?.color = color
-                wallpaper.setOptions(options, isDark: isDark)
-            }
+            var options = wallpaper.options(isDark: isDark)
+            options.placement?.color = color
+            wallpaper.setOptions(options, isDark: isDark)
         }
         fillColorChange = change
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: change)
@@ -1250,12 +1245,8 @@ final class WallpaperWindow: NSObject, ObservableObject {
         colorChange?.cancel()
         let color = panel.color
         let isDark = isDark
-        let change = DispatchWorkItem { [weak self] in
-            if WallpaperManager.shared.isChanging {
-                self?.colorChanged(panel)
-            } else {
-                WallpaperManager.shared.setColor(color, isDark: isDark)
-            }
+        let change = DispatchWorkItem {
+            WallpaperManager.shared.setColor(color, isDark: isDark)
         }
         colorChange = change
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: change)
@@ -1327,8 +1318,6 @@ struct WallpaperGallery: View {
                 VStack(spacing: Self.sectionSpacing) {
                     ForEach(WallpaperLibrary.shared.sections) { section in
                         group(section, isExpanded: expandedSections.contains(section.id))
-                            // Until a picture chosen is on the desktop, as only one can be made at a time
-                            .disabled(wallpaper.isChanging)
                     }
                 }
                 .padding(EdgeInsets(top: Self.margin + Self.listOffset, leading: Self.margin, bottom: Self.margin - Self.listOffset, trailing: Self.margin))
@@ -1374,14 +1363,6 @@ struct WallpaperGallery: View {
                     } else {
                         Rectangle()
                             .fill(.quaternary)
-                    }
-                    if wallpaper.isChangingShown && wallpaper.changingIsDark == isDark {
-                        ZStack {
-                            Rectangle()
-                                .fill(.black.opacity(0.35))
-                            progress
-                        }
-                        .colorScheme(.dark)
                     }
                 }
                 .frame(width: Self.previewSize.width, height: Self.previewSize.height)
@@ -1429,8 +1410,6 @@ struct WallpaperGallery: View {
             }
             .frame(width: Self.previewSize.width)
             .padding(.top, 12)
-            // Until a picture chosen is on its desktop
-            .disabled(wallpaper.isChanging)
         }
     }
 
@@ -1462,8 +1441,6 @@ struct WallpaperGallery: View {
                         EmptyView()
                     }
                 }
-                // Until a picture chosen is on the desktop, as only one can be made at a time
-                .disabled(wallpaper.isChanging)
                 Toggle(SystemStrings.showOnAllSpaces, isOn: Binding { wallpaper.showsOnAllSpaces } set: { wallpaper.setShowsOnAllSpaces($0) })
             }
         }
@@ -1761,7 +1738,9 @@ struct WallpaperGallery: View {
                         }
                         .overlay(alignment: .bottomTrailing) {
                             Group {
-                                if wallpaper.isChangingShown && wallpaper.changingChoice == id {
+                                // Only while what's being made is downloaded, as System Settings shows nothing
+                                // else while it puts a wallpaper on the desktop
+                                if wallpaper.changingChoice == id && (!isDownloaded || wallpaper.downloadProgress != nil) {
                                     progress
                                         .frame(width: 13, height: 13)
                                 } else if !isDownloaded {
@@ -1827,11 +1806,6 @@ struct WallpaperGallery: View {
                 .frame(width: Self.colorSize, height: Self.colorSize)
                 .overlay {
                     SelectionRings(shape: Circle(), isSelected: isSelected, style: .selection)
-                }
-                .overlay {
-                    if wallpaper.isChangingShown && wallpaper.changingChoice == item.id {
-                        progress
-                    }
                 }
                 .contentShape(Circle())
         }
@@ -1915,14 +1889,10 @@ struct WallpaperGallery: View {
                 Circle()
                     .fill(.quaternary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if wallpaper.isChangingShown && wallpaper.changingChoice == id {
-                    progress
-                } else {
-                    Image(systemName: symbol)
-                        .font(.system(size: 26))
-                        .fontWeight(.medium)
-                        .foregroundStyle(.secondary)
-                }
+                Image(systemName: symbol)
+                    .font(.system(size: 26))
+                    .fontWeight(.medium)
+                    .foregroundStyle(.secondary)
             }
             .frame(width: Self.colorSize, height: Self.colorSize)
             .overlay {
@@ -1936,7 +1906,8 @@ struct WallpaperGallery: View {
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    /// Over the picture being fetched: how much of it has downloaded, or a spinner until it's known
+    /// In the download badge's place on the picture being downloaded: how much of it has, or a spinner
+    /// until that's known
     private var progress: some View {
         Group {
             if let fraction = wallpaper.downloadProgress {
@@ -4204,20 +4175,59 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// The pictures the desktop has in Light and in Dark, scaled down for the popover, while Safelight
     /// can tell them (`Desktop`): for a shuffle, its thumbnail, and for a wallpaper macOS draws as it's
     /// shown, like Sequoia's, System Settings' thumbnails of it. Nil while it can't, as for a kind of
-    /// wallpaper it doesn't know.
-    @Published private(set) var thumbnails: Thumbnails?
+    /// wallpaper it doesn't know. An appearance a change has just been asked for shows what it will
+    /// have as soon as that's drawn (`previews`), as System Settings shows a wallpaper on its picture of
+    /// the desktop as soon as it's clicked.
+    var thumbnails: Thumbnails? {
+        guard var thumbnails = desktopThumbnails else { return nil }
+        guard !previews.isEmpty else { return thumbnails }
+        let place = place(for: nil)
+        for (isDark, preview) in previews where preview.place == place {
+            if isDark {
+                thumbnails.dark = preview.thumbnail
+            } else {
+                thumbnails.light = preview.thumbnail
+            }
+        }
+        return thumbnails
+    }
+    /// What the desktop shown has (`show`)
+    @Published private var desktopThumbnails: Thumbnails?
+    /// For each appearance, what the latest change asked for will show, until it's on the desktop, and
+    /// the desktop's own pictures have been read again
+    @Published private var previews: [Bool: (change: UUID, place: String?, thumbnail: Thumbnail)] = [:]
+
+    /// A change asked for: for which appearance, where it goes (`place(for:)`), and the choice it's
+    /// remembered as, with the options it's shown with
+    private struct Change {
+        let id = UUID()
+        let isDark: Bool
+        let place: String?
+        let choice: String?
+        let options: PictureOptions
+    }
+    /// The change whose wallpaper is being made, from when it's asked for until it's on the desktop
+    @Published private var changing: Change?
+    /// The changes asked for meanwhile, made one after the other once it's on the desktop, as only one
+    /// can be made at a time: for each appearance and place, the last choice asked for, and after it
+    /// the last change of its options (`wait`)
+    @Published private var waiting: [Waiting] = []
+    /// A change waiting: whether it's a choice, or a change of a choice's options, what makes it, and
+    /// what tells one asked for again meanwhile that it won't be made
+    private struct Waiting {
+        let change: Change
+        let isChoice: Bool
+        let make: () -> Void
+        let drop: () -> Void
+    }
     /// True from when a picture is chosen until the wallpaper with it is on the desktop
-    @Published private(set) var isChanging = false
-    /// While `isChanging`, whether the picture is for Dark, or for Light
-    @Published private(set) var changingIsDark = false
-    /// While `isChanging`, the wallpaper of System Settings' whose picture it is, if it is one
-    @Published private(set) var changingChoice: WallpaperItem.ID?
-    /// While `isChanging`, where it goes (`place(for:)`)
-    @Published private var changingPlace: String?
-    /// Whether the wallpaper being made goes on the display shown, as one shuffling on another display
-    /// may be made meanwhile
-    var isChangingShown: Bool {
-        isChanging && changingPlace == place(for: nil)
+    var isChanging: Bool {
+        changing != nil
+    }
+    /// While a wallpaper is being made for the display shown, the choice it's made for, as one shuffling
+    /// on another display may be made meanwhile
+    var changingChoice: WallpaperItem.ID? {
+        changing.flatMap { $0.place == place(for: nil) ? $0.choice : nil }
     }
     /// How much of the picture has downloaded, while it's one macOS downloads when it's chosen
     @Published private(set) var downloadProgress: Double?
@@ -4681,37 +4691,81 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
 
     /// Shows the pictures a display's desktop has for Light and for Dark, or none, drawn the shape of the
     /// display where they're drawn here. They're loaded in the background, and the ones shown before stay
-    /// until they are.
+    /// until they are, as do the previews of changes that are on the desktop now.
     private func show(_ desktop: Desktop?, on screen: NSScreen?) {
         let screenSize = screen.map(Self.pixelSize(of:)) ?? Self.screenSize
         guard desktop != shown || screenSize != shownSize else { return }
         shown = desktop
         shownSize = screenSize
         guard let desktop else {
-            thumbnails = nil
+            desktopThumbnails = nil
+            previews = previews.filter { isAskedFor($0.value.change) }
             return
         }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let thumbnails = Self.thumbnails(of: desktop, screenSize: screenSize)
             DispatchQueue.main.async {
                 guard let self, self.shown == desktop, self.shownSize == screenSize else { return }
-                self.thumbnails = thumbnails
+                self.desktopThumbnails = thumbnails
+                self.previews = self.previews.filter { self.isAskedFor($0.value.change) }
             }
         }
     }
 
+    /// Shows what an appearance will have once a change just asked for is made, while it's still the
+    /// latest asked for there: `desktop` as `thumbnails(of:)` draws it, which is how the desktop would
+    /// show it if System Settings had put it there
+    private func showPreview(_ desktop: Desktop?, of change: Change) {
+        guard let desktop else { return }
+        let screenSize = shownSize
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let thumbnails = Self.thumbnails(of: desktop, screenSize: screenSize)
+            DispatchQueue.main.async {
+                guard let self, let thumbnails, self.latestChange(isDark: change.isDark, at: change.place)?.id == change.id else { return }
+                self.previews[change.isDark] = (change.id, change.place, change.isDark ? thumbnails.dark : thumbnails.light)
+            }
+        }
+    }
+
+    /// The last change asked for an appearance where changes go (`place(for:)`) that isn't on the desktop
+    /// yet: one waiting, or the one being made
+    private func latestChange(isDark: Bool, at place: String?) -> Change? {
+        waiting.last(where: { $0.change.isDark == isDark && $0.change.place == place })?.change
+            ?? changing.flatMap { $0.isDark == isDark && $0.place == place ? $0 : nil }
+    }
+
+    /// The last change asked for an appearance on the desktop shown that isn't on it yet. None waits
+    /// while none is being made.
+    private func shownChange(isDark: Bool) -> Change? {
+        isChanging ? latestChange(isDark: isDark, at: place(for: nil)) : nil
+    }
+
+    /// Whether a change is still to be made, or being made
+    private func isAskedFor(_ id: UUID) -> Bool {
+        changing?.id == id || waiting.contains { $0.change.id == id }
+    }
+
     /// The wallpaper of System Settings' whose picture the desktop shown has for an appearance, or the
     /// shuffle it's from, or a picture or a colour of the user's own: the one chosen here while the
-    /// wallpaper is one Safelight made, or the one System Settings has on the desktop
+    /// wallpaper is one Safelight made, or the one System Settings has on the desktop. One chosen since
+    /// is the choice as soon as it's asked for, as System Settings has a wallpaper chosen as soon as it's
+    /// clicked, while it's made.
     func choice(isDark: Bool) -> String? {
-        choice(isDark: isDark, of: shown)
+        if let change = shownChange(isDark: isDark) {
+            return change.choice
+        }
+        return choice(isDark: isDark, of: shown)
     }
 
     /// The choice an appearance has, as `choice(isDark:)` says, where a change for a display, by its UUID,
     /// goes (`place(for:)`), while the desktop there has a wallpaper Safelight made, the only kind its
-    /// shuffles change
+    /// shuffles change, or is to have one: a shuffle is the choice as soon as it's asked for
     func ownChoice(isDark: Bool, on display: String?) -> String? {
-        ownWallpaper(at: place(for: display)).flatMap { choices(of: $0).choice(isDark: isDark) }
+        let place = place(for: display)
+        if let change = latestChange(isDark: isDark, at: place) {
+            return change.choice
+        }
+        return ownWallpaper(at: place).flatMap { choices(of: $0).choice(isDark: isDark) }
     }
 
     /// The wallpaper Safelight made the desktop has where a change goes (`place(for:)`), nil while it has
@@ -4745,9 +4799,13 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     }
 
     /// The options an appearance's choice is shown with: as they were chosen here, while the wallpaper
-    /// is one Safelight made, or as System Settings has them for its own
+    /// is one Safelight made, or as System Settings has them for its own, or those of a change asked for
+    /// since, as soon as it's asked for (`choice(isDark:)`)
     func options(isDark: Bool) -> PictureOptions {
-        options(isDark: isDark, of: shown)
+        if let change = shownChange(isDark: isDark) {
+            return change.options
+        }
+        return options(isDark: isDark, of: shown)
     }
 
     private func options(isDark: Bool, of desktop: Desktop?) -> PictureOptions {
@@ -4765,18 +4823,31 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
     }
 
-    /// The options a picture chosen for an appearance takes: those it has now, as System Settings keeps
-    /// its options from one choice to the next, while the wallpaper is one Safelight made. One of System
-    /// Settings' own keeps its options to itself.
-    private func keptOptions(isDark: Bool, of desktop: Desktop?) -> PictureOptions {
+    /// The options a picture chosen for an appearance takes where a change goes (`place(for:)`): those it
+    /// has now, as System Settings keeps its options from one choice to the next, while the wallpaper is
+    /// one Safelight made, or is to be. One of System Settings' own keeps its options to itself.
+    private func keptOptions(isDark: Bool, at place: String?) -> PictureOptions {
+        if let change = latestChange(isDark: isDark, at: place) {
+            return change.options
+        }
+        let desktop = desktop(at: place)
         guard case .file(let wallpaper, _)? = desktop, isMadeHere(wallpaper) else { return PictureOptions() }
         return options(isDark: isDark, of: desktop)
     }
 
     /// Shows an appearance's choice with other options, making the wallpaper again with them, as
     /// System Settings shows its wallpaper again when one of its options changes. A shuffle's picture
-    /// is made again with them, and its next ones have them too.
+    /// is made again with them, and its next ones have them too. While the appearance's choice is still
+    /// being made, they show at once, and it's made again with them once it's on the desktop.
     func setOptions(_ options: PictureOptions, isDark: Bool) {
+        let place = place(for: nil)
+        if let change = latestChange(isDark: isDark, at: place) {
+            wait(Change(isDark: isDark, place: place, choice: change.choice, options: options), isChoice: false) { [weak self] in
+                guard let self, self.place(for: nil) == place else { return }
+                self.setOptions(options, isDark: isDark)
+            } drop: {}
+            return
+        }
         guard let choice = choice(isDark: isDark) else { return }
         let library = WallpaperLibrary.shared
         if WallpaperItem.isOwnPicture(choice) {
@@ -4875,19 +4946,41 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     func choose(_ item: WallpaperItem, isDark: Bool, options: PictureOptions? = nil, from shuffle: WallpaperShuffle.ID? = nil, isQuiet: Bool = false,
                 on display: String? = nil, then completion: ((_ isMade: Bool) -> Void)? = nil) {
         let place = place(for: display)
-        let options = options ?? keptOptions(isDark: isDark, of: desktop(at: place))
+        let options = options ?? keptOptions(isDark: isDark, at: place)
         let macintoshColors = options.macintoshColors ?? Self.macintoshColors(on: screen(for: place).flatMap(Self.uuid(of:)))
         let isGradient = options.isGradient == true
         // Only a picture is placed, as System Settings' image options place one
         let placement = item.isPicture ? options.placement : nil
         let chosenIsDark = isDark
         setPicture(isDark: isDark, choice: shuffle ?? item.id, item: item.id, options: options, placement: placement, hasPictureForEach: item.light != item.dark,
-                   isDrawn: Self.isDrawn(item.light, isGradient: isGradient), isQuiet: isQuiet, at: place, completion: completion) { [weak self] isDark, size, pictures in
+                   isDrawn: Self.isDrawn(item.light, isGradient: isGradient), isQuiet: isQuiet,
+                   preview: Self.preview(of: item, isDark: isDark, options: options, placement: placement, macintoshColors: macintoshColors),
+                   at: place, completion: completion) { [weak self] isDark, size, pictures in
             guard let self else { throw CancellationError() }
             // Its picture for the appearance chosen for as its options say, and its own for the other
             let showsDark = isDark == chosenIsDark && item.badge == .dynamic ? options.showsDark(isDark: isDark) : isDark
             return (try await self.file(for: showsDark ? item.dark : item.light, in: pictures, screenSize: size, inDarkAppearance: isDark,
                                         macintoshColors: macintoshColors, isGradient: isGradient), showsDark)
+        }
+    }
+
+    /// What the desktop shows in an appearance with `item`'s picture for it, shown with `options` and
+    /// placed as `placement` says, as System Settings' own wallpaper would show: its picture for the
+    /// appearance its options pick, drawn, or in its colour or that colour's gradient
+    private static func preview(of item: WallpaperItem, isDark: Bool, options: PictureOptions, placement: Placement?, macintoshColors: String?) -> Desktop? {
+        let showsDark = item.badge == .dynamic ? options.showsDark(isDark: isDark) : isDark
+        switch showsDark ? item.dark : item.light {
+        case .drawn(let drawn, _):
+            return .drawn(drawn, lightShowsDark: showsDark, darkShowsDark: showsDark, colors: macintoshColors)
+        case .color(let swatch):
+            return swatchColor(swatch).map { options.isGradient == true ? .gradient($0, isCustom: false) : .color($0) }
+        case .file(let file):
+            if let placement, placement.kind != .fill {
+                return .file(file, placement: placement)
+            }
+            return .item(item, lightShowsDark: showsDark, darkShowsDark: showsDark)
+        case .download, .aerial, .asset:
+            return .item(item, lightShowsDark: showsDark, darkShowsDark: showsDark)
         }
     }
 
@@ -4904,9 +4997,11 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// Makes a wallpaper all in one colour for one appearance, as `setPicture(_:isDark:)` does
     func setColor(_ color: NSColor, isDark: Bool) {
         let screenSize = Self.screenSize
-        setPicture(isDark: isDark, choice: WallpaperItem.customColor, item: nil, options: keptOptions(isDark: isDark, of: shown), placement: nil, hasPictureForEach: false,
-                   at: place(for: nil)) { isDark, _, folder in
-            (try Self.colorPicture(color.usingColorSpace(.displayP3)?.cgColor ?? color.cgColor, size: screenSize, named: "Colour", into: folder), isDark)
+        let place = place(for: nil)
+        let color = color.usingColorSpace(.displayP3)?.cgColor ?? color.cgColor
+        setPicture(isDark: isDark, choice: WallpaperItem.customColor, item: nil, options: keptOptions(isDark: isDark, at: place), placement: nil, hasPictureForEach: false,
+                   preview: .color(color), at: place) { isDark, _, folder in
+            (try Self.colorPicture(color, size: screenSize, named: "Colour", into: folder), isDark)
         }
     }
 
@@ -4935,9 +5030,10 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
 
     /// Makes a wallpaper with a photo from Photos for one appearance, as `setPicture(_:isDark:)` does
     func choose(_ photo: PhotosPickerItem, isDark: Bool) {
-        let options = keptOptions(isDark: isDark, of: shown)
+        let place = place(for: nil)
+        let options = keptOptions(isDark: isDark, at: place)
         setPicture(isDark: isDark, choice: WallpaperItem.ownPicture(named: nil), item: nil, options: options, placement: options.placement, hasPictureForEach: false,
-                   at: place(for: nil)) { isDark, _, pictures in
+                   at: place) { isDark, _, pictures in
             guard let data = try await photo.loadTransferable(type: Data.self) else { throw CocoaError(.fileReadUnknown) }
             let file = pictures.appendingPathComponent("Photo").appendingPathExtension(photo.supportedContentTypes.first?.preferredFilenameExtension ?? "heic")
             try data.write(to: file)
@@ -4952,14 +5048,15 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// display. While the desktop has a wallpaper whose pictures Safelight can't tell, the other
     /// appearance takes `file`'s picture for it too.
     func setPicture(_ file: URL, isDark: Bool) {
-        setPicture(file, isDark: isDark, choice: WallpaperItem.ownPicture(named: file.deletingPathExtension().lastPathComponent), options: keptOptions(isDark: isDark, of: shown))
+        setPicture(file, isDark: isDark, choice: WallpaperItem.ownPicture(named: file.deletingPathExtension().lastPathComponent), options: keptOptions(isDark: isDark, at: place(for: nil)))
     }
 
     /// Makes a wallpaper with a picture of the user's own for one appearance, as `setPicture(_:isDark:)`
     /// does, placed as `options` say, remembered as `choice`. The picture is kept beside the wallpaper
     /// as it was, so it can be placed another way.
     private func setPicture(_ file: URL, isDark: Bool, choice: WallpaperItem.ID, options: PictureOptions) {
-        setPicture(isDark: isDark, choice: choice, item: nil, options: options, placement: options.placement, hasPictureForEach: false, at: place(for: nil)) { isDark, _, pictures in
+        setPicture(isDark: isDark, choice: choice, item: nil, options: options, placement: options.placement, hasPictureForEach: false,
+                   preview: .file(file, placement: options.placement ?? Placement()), at: place(for: nil)) { isDark, _, pictures in
             try Self.keepOriginal(file, isDark: isDark, beside: pictures)
             return (file, isDark)
         }
@@ -4997,6 +5094,12 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// with a picture for each, and it's placed on the display as `placement` says. `choice` is
     /// remembered as the appearance's choice, with the `options` it's shown with, and `item` is the
     /// wallpaper of System Settings' the picture is from. It beeps when it can't be made, unless `isQuiet`.
+    /// The appearance shows it as chosen at once, and `preview` as what it has, as System Settings shows
+    /// a wallpaper as soon as it's clicked.
+    ///
+    /// While another is being made, it's made once that one is on the desktop, as only one can be made
+    /// at a time, in place of any other asked for the appearance and display meanwhile (`wait`). One
+    /// that's `isQuiet`, a shuffle's on time, isn't made: its shuffle tries again later.
     ///
     /// While a picture is placed otherwise than filling the display, in either appearance, each size of
     /// display has a wallpaper of its own, with the pictures placed for its size, as macOS places a
@@ -5005,11 +5108,25 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// `isDrawn`. Otherwise one fills them all. They're made for every display even when it goes on one
     /// (`place`, or the display chosen, `place(for:)`), as Show on all Spaces may put it on them all.
     private func setPicture(isDark: Bool, choice: String?, item: WallpaperItem.ID?, options: PictureOptions, placement: Placement?, hasPictureForEach: Bool,
-                            isDrawn: Bool = false, isQuiet: Bool = false, at place: String?, completion: ((_ isMade: Bool) -> Void)? = nil,
+                            isDrawn: Bool = false, isQuiet: Bool = false, preview: Desktop? = nil, at place: String?, as asked: Change? = nil,
+                            completion: ((_ isMade: Bool) -> Void)? = nil,
                             picture: @escaping (_ isDark: Bool, _ size: CGSize, _ folder: URL) async throws -> (file: URL, isDark: Bool)) {
         // Nor to a display that's been disconnected since
-        guard !isChanging, let folder, place == nil || screen(for: place) != nil else {
+        guard let folder, place == nil || screen(for: place) != nil, !(isQuiet && isChanging) else {
             completion?(false)
+            return
+        }
+        let change = asked ?? Change(isDark: isDark, place: place, choice: choice, options: options)
+        if asked == nil {
+            showPreview(preview, of: change)
+        }
+        guard !isChanging else {
+            wait(change, isChoice: true) { [weak self] in
+                self?.setPicture(isDark: isDark, choice: choice, item: item, options: options, placement: placement, hasPictureForEach: hasPictureForEach,
+                                 isDrawn: isDrawn, isQuiet: isQuiet, at: place, as: change, completion: completion, picture: picture)
+            } drop: {
+                completion?(false)
+            }
             return
         }
         refresh()
@@ -5020,10 +5137,8 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         let displaySizes = Self.displaySizes.isEmpty ? [.zero] : Self.displaySizes
         let wallpaper = folder.appendingPathComponent(UUID().uuidString, isDirectory: true).appendingPathComponent("Safelight.heic")
         let pictures = wallpaper.deletingLastPathComponent().appendingPathComponent("Pictures", isDirectory: true)
-        isChanging = true
-        changingIsDark = isDark
-        changingChoice = choice
-        changingPlace = place
+        changing = change
+        let id = change.id
         // Away from the main thread, as fetching the picture, and writing two the size of a screen, takes a while
         Task.detached(priority: .userInitiated) {
             let isMade: Bool
@@ -5117,20 +5232,45 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             try? FileManager.default.removeItem(at: pictures)
             let shuffledID = shuffled?.id
             await MainActor.run {
-                self.isChanging = false
-                self.changingChoice = nil
+                self.changing = nil
                 self.downloadProgress = nil
                 if isMade {
                     self.put(wallpaper, isDark: isDark, choice: choice, item: item, options: options, replacing: current, at: place, shuffled: shuffledID)
                 } else {
                     NSLog("Safelight: couldn't make a wallpaper")
                     try? FileManager.default.removeItem(at: wallpaper.deletingLastPathComponent())
+                    // The appearance shows what the desktop has again
+                    if self.previews[isDark]?.change == id {
+                        self.previews[isDark] = nil
+                    }
                     if !isQuiet {
                         NSSound.beep()
                     }
                 }
                 completion?(isMade)
+                self.makeWaiting()
             }
+        }
+    }
+
+    /// Keeps a change asked for while another is being made, to be made once that one is on the desktop
+    /// (`makeWaiting`), in place of those waiting that it's asked for again: for the same appearance and
+    /// place, a choice takes the place of every change waiting, and a change of options takes the place
+    /// of an earlier change of options, which comes after the choice it's for
+    private func wait(_ change: Change, isChoice: Bool, make: @escaping () -> Void, drop: @escaping () -> Void) {
+        let isAskedAgain = { (waiting: Waiting) in
+            waiting.change.isDark == change.isDark && waiting.change.place == change.place && (isChoice || !waiting.isChoice)
+        }
+        let dropped = waiting.filter(isAskedAgain)
+        waiting.removeAll(where: isAskedAgain)
+        waiting.append(Waiting(change: change, isChoice: isChoice, make: make, drop: drop))
+        dropped.forEach { $0.drop() }
+    }
+
+    /// Makes the changes waiting, one after the other, now that none is being made
+    private func makeWaiting() {
+        while changing == nil, !waiting.isEmpty {
+            waiting.removeFirst().make()
         }
     }
 
@@ -6406,11 +6546,12 @@ final class WallpaperShuffler: ObservableObject {
     /// `isQuiet` when it's on time, not chosen just now, so it doesn't beep when the picture can't be made.
     private func change(_ shuffle: Shuffle, at slot: Slot, isQuiet: Bool, then completion: (() -> Void)? = nil) {
         // While a picture chosen in the Wallpaper window is being made, or another display's, a little
-        // later, as it is then, unless another choice has stopped it meanwhile
-        guard !WallpaperManager.shared.isChanging else {
+        // later, as it is then, unless another choice has stopped it meanwhile. One chosen just now is
+        // made as soon as that one's on the desktop, as any choice is (`WallpaperManager.choose`).
+        guard !isQuiet || !WallpaperManager.shared.isChanging else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
                 guard let self else { return }
-                guard let latest = isQuiet ? self.shuffle(at: slot) : shuffle else {
+                guard let latest = self.shuffle(at: slot) else {
                     completion?()
                     return
                 }
