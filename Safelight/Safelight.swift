@@ -11,6 +11,7 @@ import ModelIO
 import simd
 import Photos // For the Photos library's albums, which Add Photo… offers to shuffle
 import PhotosUI
+import QuickLookThumbnailing // For thumbnails of large pictures, as System Settings makes them
 #if canImport(Sparkle) // Not in scripts/screenshots.sh's copy, which leaves updates out
 import Sparkle
 #endif
@@ -1267,8 +1268,8 @@ final class WallpaperWindow: NSObject, ObservableObject {
 /// Settings' options for its wallpaper, and Show on all Spaces. Under them, scrolling, System Settings'
 /// sections: each a row of its wallpapers
 /// that scrolls sideways, until Show All shows them all, four to a row (eight colours to a row). Each
-/// wallpaper's thumbnail is of its picture for the appearance being chosen, as some have one of each,
-/// and the ring is around the one the desktop has.
+/// wallpaper's thumbnail is System Settings' own, whichever appearance is being chosen, and the ring is
+/// around the one the desktop has.
 struct WallpaperGallery: View {
     @ObservedObject var wallpaper = WallpaperManager.shared
     @ObservedObject var window = WallpaperWindow.shared
@@ -1717,7 +1718,7 @@ struct WallpaperGallery: View {
                             .foregroundStyle(.tertiary)
                     }
             } else {
-                WallpaperThumbnail(file: window.isDark ? item.darkThumbnail : item.lightThumbnail, fadesIn: photos.items.contains(item))
+                WallpaperThumbnail(file: item.thumbnail, fadesIn: photos.items.contains(item))
             }
         }
     }
@@ -2114,8 +2115,9 @@ struct ShuffleThumbnail: View {
     }
 }
 
-/// A thumbnail in the Wallpaper window, filling its frame, loaded in the background the first time it's
-/// shown and kept for the next
+/// A thumbnail in the Wallpaper window, as System Settings' ThumbnailImageView draws one: its picture
+/// filling its frame, loaded in the background the first time it's shown, as System Settings loads it,
+/// and kept for the next
 struct WallpaperThumbnail: View {
     let file: URL?
     /// Whether it's empty until its picture has loaded, which then fades in, as Your Photos' photos do in
@@ -2160,15 +2162,30 @@ struct WallpaperThumbnail: View {
         file.flatMap { cache.object(forKey: $0 as NSURL) }
     }
 
+    /// Its picture as System Settings loads it: one at least `quickLookSize` pixels each way from Quick
+    /// Look, `maxPixelSize` square, and any other (or one Quick Look can't do) from ImageIO, at its size
+    /// up to `maxPixelSize` on its longer side
     private static func image(of file: URL?) async -> CGImage? {
         guard let file else { return nil }
-        let maxPixelSize = 2 * thumbnailMaxSize
-        let image = await Task.detached(priority: .userInitiated) {
-            CGImageSourceCreateWithURL(file as CFURL, nil).flatMap {
+        let (maxPixelSize, quickLookSize) = (maxPixelSize, quickLookSize)
+        let image = await Task.detached(priority: .userInitiated) { () -> CGImage? in
+            let source = CGImageSourceCreateWithURL(file as CFURL, nil).flatMap { CGImageSourceGetCount($0) > 0 ? $0 : nil }
+            let properties = source.flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) as? [CFString: Any] }
+            let width = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
+            let height = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
+            if source == nil || (width >= quickLookSize && height >= quickLookSize) {
+                let request = QLThumbnailGenerator.Request(fileAt: file, size: CGSize(width: maxPixelSize, height: maxPixelSize), scale: 1,
+                                                           representationTypes: .thumbnail)
+                if let image = try? await QLThumbnailGenerator().generateBestRepresentation(for: request).cgImage {
+                    return image
+                }
+            }
+            let longerSide = max(width, height)
+            return source.flatMap {
                 CGImageSourceCreateThumbnailAtIndex($0, 0, [
                     kCGImageSourceCreateThumbnailFromImageAlways: true,
                     kCGImageSourceCreateThumbnailWithTransform: true,
-                    kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                    kCGImageSourceThumbnailMaxPixelSize: longerSide == 0 ? maxPixelSize : min(maxPixelSize, longerSide),
                 ] as CFDictionary)
             }
         }.value
@@ -2178,8 +2195,10 @@ struct WallpaperThumbnail: View {
         return image
     }
 
-    /// Enough for the largest thumbnail, in points
-    private static let thumbnailMaxSize = 120
+    /// The most pixels System Settings loads a picture with on a side, and the fewest each way of one it
+    /// has Quick Look load
+    private static let maxPixelSize = 512
+    private static let quickLookSize = 1024
 }
 
 // MARK: - Schedule Window
@@ -7127,6 +7146,9 @@ struct WallpaperItem: Identifiable, Hashable {
     let dark: Picture
     let lightThumbnail: URL?
     let darkThumbnail: URL?
+    /// The thumbnail System Settings › Wallpaper shows for it, in Light and in Dark alike, which its
+    /// extension gives: one with a picture for each appearance has one of both
+    let thumbnail: URL?
     var badge: Badge?
     /// What macOS downloads once it's chosen in System Settings, for those it downloads
     var download: Download?
@@ -7396,10 +7418,11 @@ final class WallpaperLibrary {
                     }
                     guard let light = variant("light"), let dark = variant("dark"), let lightVideo = light.video, let darkVideo = dark.video else { continue }
                     let name = subcategory.localizedNameKey.map { SystemStrings.aerialName($0, english: light.accessibilityLabel ?? $0) } ?? light.accessibilityLabel ?? ""
+                    // System Settings' thumbnail is the subcategory's preview, of both
                     let item = WallpaperItem(id: "aerial:\(light.id)", name: name,
                                              light: .aerial(id: light.id, video: lightVideo), dark: .aerial(id: dark.id, video: darkVideo),
-                                             lightThumbnail: Self.thumbnail(ofAerial: light.id), darkThumbnail: Self.thumbnail(ofAerial: dark.id), badge: .dynamic,
-                                             download: .aerials(aerials.map(\.id)))
+                                             lightThumbnail: Self.thumbnail(ofAerial: light.id), darkThumbnail: Self.thumbnail(ofAerial: dark.id),
+                                             thumbnail: Self.thumbnail(ofAerial: subcategory.id), badge: .dynamic, download: .aerials(aerials.map(\.id)))
                     placed.append(Placed(order: subcategory.preferredOrder ?? 0, subcategory: subcategory.id, item: item))
                     aerialItems[subcategory.id] = item.id
                 } else {
@@ -7434,7 +7457,7 @@ final class WallpaperLibrary {
                     .first { subcategory in shuffled.contains { $0.subcategory == subcategory.id } }
                 let representative = firstSubcategory?.representativeAssetID.flatMap { aerialItems[$0] }.flatMap { id in shuffled.first { $0.item.id == id } }
                 if let first = representative ?? inSubcategoryOrder.first {
-                    aerialShuffles.append((category.id, title, shuffled.map(\.item), inSubcategoryOrder.prefix(4).map(\.item.lightThumbnail), first.item))
+                    aerialShuffles.append((category.id, title, shuffled.map(\.item), inSubcategoryOrder.prefix(4).map(\.item.thumbnail), first.item))
                 }
             }
         }
@@ -7443,7 +7466,7 @@ final class WallpaperLibrary {
         var shuffles: [WallpaperShuffle] = []
         let allShuffled = aerialShuffles.flatMap(\.items)
         if !allShuffled.isEmpty {
-            shuffles.append(WallpaperShuffle(id: WallpaperShuffle.aerials, name: SystemStrings.shuffleAll, thumbnails: aerialShuffles.prefix(4).map(\.representative.lightThumbnail)))
+            shuffles.append(WallpaperShuffle(id: WallpaperShuffle.aerials, name: SystemStrings.shuffleAll, thumbnails: aerialShuffles.prefix(4).map(\.representative.thumbnail)))
             shufflePictures[WallpaperShuffle.aerials] = allShuffled
         }
         for category in aerialShuffles {
@@ -7461,22 +7484,25 @@ final class WallpaperLibrary {
         let tahoeDark = tahoe.appendingPathComponent("TahoeDark.heic")
         if fileManager.fileExists(atPath: tahoeLight.path), fileManager.fileExists(atPath: tahoeDark.path) {
             dynamic.append(Placed(order: -400, item: WallpaperItem(id: "picture:Tahoe", name: SystemStrings.tahoe, light: .file(tahoeLight), dark: .file(tahoeDark),
-                                                                   lightThumbnail: tahoeLight, darkThumbnail: tahoeDark, badge: .dynamic, download: Self.tahoeDownload)))
+                                                                   lightThumbnail: tahoeLight, darkThumbnail: tahoeDark, thumbnail: tahoe.appendingPathComponent("thumbnail.heic"),
+                                                                   badge: .dynamic, download: Self.tahoeDownload)))
         }
         let sequoiaThumbnail = URL(fileURLWithPath: Self.sequoiaExtension).appendingPathComponent("Contents/Resources/thumbnail.heic")
         if fileManager.fileExists(atPath: sequoiaThumbnail.path) {
             let sequoia = WallpaperManager.DrawnWallpaper.sequoia
             dynamic.append(Placed(order: -300, item: WallpaperItem(id: sequoia.rawValue, name: sequoia.name, light: .drawn(sequoia, isDark: false), dark: .drawn(sequoia, isDark: true),
-                                                                   lightThumbnail: sequoiaThumbnail, darkThumbnail: sequoiaThumbnail, badge: .dynamic)))
+                                                                   lightThumbnail: sequoiaThumbnail, darkThumbnail: sequoiaThumbnail, thumbnail: sequoiaThumbnail, badge: .dynamic)))
         }
         if fileManager.fileExists(atPath: Self.macintoshExtension), fileManager.fileExists(atPath: Self.macintoshThumbnail.path) {
             let macintosh = WallpaperManager.DrawnWallpaper.macintosh
             dynamic.append(Placed(order: -200, item: WallpaperItem(id: macintosh.rawValue, name: macintosh.name, light: .drawn(macintosh, isDark: false), dark: .drawn(macintosh, isDark: true),
-                                                                   lightThumbnail: Self.macintoshThumbnail, darkThumbnail: Self.macintoshThumbnail, badge: .dynamic)))
+                                                                   lightThumbnail: Self.macintoshThumbnail, darkThumbnail: Self.macintoshThumbnail, thumbnail: Self.macintoshThumbnail,
+                                                                   badge: .dynamic)))
         }
         let sonoma = Self.desktopPictures.appendingPathComponent("Sonoma.heic")
         if fileManager.fileExists(atPath: Self.sonomaExtension), fileManager.fileExists(atPath: sonoma.path) {
-            dynamic.append(Placed(order: -100, item: Self.picture(named: "Sonoma", title: SystemStrings.sonoma, picture: .file(sonoma), badge: .dynamic)))
+            dynamic.append(Placed(order: -100, item: Self.picture(named: "Sonoma", title: SystemStrings.sonoma, picture: .file(sonoma),
+                                                                  thumbnail: Self.thumbnail(ofPicture: sonoma), badge: .dynamic)))
         }
 
         // macOS's pictures, in System Settings' order and named as it names them: those with a picture
@@ -7489,9 +7515,11 @@ final class WallpaperLibrary {
             let name = file.deletingPathExtension().lastPathComponent
             let picture: WallpaperItem.Picture
             let isDynamic: Bool
+            let thumbnail: URL?
             if file.pathExtension == "madesktop" {
                 guard let descriptor = NSDictionary(contentsOf: file) else { continue }
                 isDynamic = descriptor["isDynamic"] as? Bool == true
+                thumbnail = (descriptor["thumbnailPath"] as? String).map { URL(fileURLWithPath: $0) }
                 let downloaded = Self.downloadedPictures.appendingPathComponent("\(name).heic")
                 if let id = descriptor["mobileAssetID"] as? String, downloads[id] != nil {
                     picture = .download(id: id, file: downloaded)
@@ -7504,8 +7532,9 @@ final class WallpaperLibrary {
                 guard fileManager.fileExists(atPath: file.path) else { continue }
                 isDynamic = Self.hasPictureForEachAppearance(file)
                 picture = .file(file)
+                thumbnail = Self.thumbnail(ofPicture: file)
             }
-            let item = Self.picture(named: name, title: SystemStrings.desktopPictureName(name), picture: picture, badge: isDynamic ? .dynamic : nil)
+            let item = Self.picture(named: name, title: SystemStrings.desktopPictureName(name), picture: picture, thumbnail: thumbnail, badge: isDynamic ? .dynamic : nil)
             if isDynamic {
                 dynamic.append(Placed(order: 0, item: item))
             } else {
@@ -7518,13 +7547,13 @@ final class WallpaperLibrary {
             guard fileManager.fileExists(atPath: swatch.path) else { return nil }
             let key = name.uppercased().replacingOccurrences(of: " ", with: "_")
             return WallpaperItem(id: "color:\(name)", name: SystemStrings.colorName(key, english: name),
-                                 light: .color(swatch), dark: .color(swatch), lightThumbnail: swatch, darkThumbnail: swatch)
+                                 light: .color(swatch), dark: .color(swatch), lightThumbnail: swatch, darkThumbnail: swatch, thumbnail: swatch)
         }
 
         shufflePictures[WallpaperShuffle.colors] = colors
         // Its tile is a symbol, but System Settings shows it on the desktop as the others are shown, with
         // the second, third, fourth and sixth colours
-        let colorShuffle = WallpaperShuffle(id: WallpaperShuffle.colors, name: SystemStrings.shuffle, thumbnails: [1, 2, 3, 5].map { colors.indices.contains($0) ? colors[$0].lightThumbnail : nil })
+        let colorShuffle = WallpaperShuffle(id: WallpaperShuffle.colors, name: SystemStrings.shuffle, thumbnails: [1, 2, 3, 5].map { colors.indices.contains($0) ? colors[$0].thumbnail : nil })
 
         var sections = [Section(id: "dynamic", title: SystemStrings.dynamicWallpapers, items: Self.sorted(dynamic).map(\.item)),
                         Section(id: Self.yourPhotos, title: SystemStrings.yourPhotos, kind: .photos, items: [])]
@@ -7594,7 +7623,7 @@ final class WallpaperLibrary {
     /// An aerial, as the picture of macOS's it's of when there's one, which needs no fetching
     private static func item(ofAerial aerial: AerialList.Aerial) -> WallpaperItem? {
         if let name = aerial.accessibilityLabel, case let file = desktopPictures.appendingPathComponent("\(name).heic"), FileManager.default.fileExists(atPath: file.path) {
-            var item = picture(named: name, title: SystemStrings.desktopPictureName(name), picture: .file(file))
+            var item = picture(named: name, title: SystemStrings.desktopPictureName(name), picture: .file(file), thumbnail: thumbnail(ofAerial: aerial.id))
             item.badge = .video
             item.download = .aerials([aerial.id])
             return item
@@ -7602,13 +7631,15 @@ final class WallpaperLibrary {
         guard let video = aerial.video else { return nil }
         let name = aerial.localizedNameKey.map { SystemStrings.aerialName($0, english: aerial.accessibilityLabel ?? $0) } ?? aerial.accessibilityLabel ?? ""
         return WallpaperItem(id: "aerial:\(aerial.id)", name: name, light: .aerial(id: aerial.id, video: video), dark: .aerial(id: aerial.id, video: video),
-                             lightThumbnail: thumbnail(ofAerial: aerial.id), darkThumbnail: thumbnail(ofAerial: aerial.id), badge: .video,
+                             lightThumbnail: thumbnail(ofAerial: aerial.id), darkThumbnail: thumbnail(ofAerial: aerial.id), thumbnail: thumbnail(ofAerial: aerial.id), badge: .video,
                              download: .aerials([aerial.id]))
     }
 
     /// One of macOS's pictures, with its thumbnail for Light and its thumbnail for Dark when it has a
-    /// picture for each, from the file it's in or to download
-    private static func picture(named name: String, title: String, picture: WallpaperItem.Picture, badge: WallpaperItem.Badge? = nil) -> WallpaperItem {
+    /// picture for each, from the file it's in or to download, and the one System Settings shows,
+    /// `systemSettings`, which for one with a picture for each is of both
+    private static func picture(named name: String, title: String, picture: WallpaperItem.Picture, thumbnail systemSettings: URL?,
+                                badge: WallpaperItem.Badge? = nil) -> WallpaperItem {
         let thumbnails = desktopPictures.appendingPathComponent(".thumbnails", isDirectory: true)
         let thumbnail = { (suffix: String) -> URL? in
             let thumbnail = thumbnails.appendingPathComponent("\(name)\(suffix).heic")
@@ -7617,8 +7648,15 @@ final class WallpaperLibrary {
         let file: URL? = if case .file(let file) = picture { file } else { nil }
         let download: WallpaperItem.Download? = if case .download(_, let file) = picture { .picture(file) } else { nil }
         return WallpaperItem(id: "picture:\(name)", name: title, light: picture, dark: picture,
-                             lightThumbnail: thumbnail(" Light") ?? thumbnail("") ?? file, darkThumbnail: thumbnail(" Dark") ?? thumbnail("") ?? file, badge: badge,
-                             download: download)
+                             lightThumbnail: thumbnail(" Light") ?? thumbnail("") ?? file, darkThumbnail: thumbnail(" Dark") ?? thumbnail("") ?? file,
+                             thumbnail: systemSettings.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil } ?? thumbnail("") ?? file,
+                             badge: badge, download: download)
+    }
+
+    /// System Settings' thumbnail of one of macOS's pictures in a file: the file of the same name with the
+    /// pictures' thumbnails
+    private static func thumbnail(ofPicture file: URL) -> URL {
+        desktopPictures.appendingPathComponent(".thumbnails", isDirectory: true).appendingPathComponent(file.lastPathComponent)
     }
 
     /// Whether a picture has one for Light and one for Dark, or for times of day, as macOS's dynamic
@@ -7654,7 +7692,8 @@ final class WallpaperLibrary {
         return .tahoe(landscape: [video("Light Landscape"), video("Dark Landscape")], portrait: [video("Light Portrait"), video("Dark Portrait")])
     }()
 
-    /// An aerial's thumbnail, from macOS's list, or from System Settings for those it came with
+    /// An aerial's thumbnail, or a subcategory's preview, from macOS's list, or from System Settings for
+    /// those it came with
     private static func thumbnail(ofAerial id: String) -> URL? {
         [aerials.appendingPathComponent("thumbnails/\(id).png"), aerialsExtension.appendingPathComponent("\(id).png")]
             .first { FileManager.default.fileExists(atPath: $0.path) }
@@ -7748,7 +7787,7 @@ final class YourPhotos: ObservableObject {
     /// with the newest four in its thumbnail
     var shuffle: WallpaperShuffle? {
         guard items.count >= 2 else { return nil }
-        return WallpaperShuffle(id: WallpaperShuffle.photos, name: SystemStrings.yourPhotos, thumbnails: items.prefix(4).map(\.lightThumbnail))
+        return WallpaperShuffle(id: WallpaperShuffle.photos, name: SystemStrings.yourPhotos, thumbnails: items.prefix(4).map(\.thumbnail))
     }
 
     /// The list as System Settings has it, from the preferences service, or else from its file
@@ -7770,10 +7809,10 @@ final class YourPhotos: ObservableObject {
             }
             guard let picture = [file.copyURL, bookmarked, file.originalURL].lazy.compactMap({ $0 }).first(where: { (try? $0.checkResourceIsReachable()) == true }) else {
                 return WallpaperItem(id: "photo:\(file.originalURL.path)", name: name, light: .file(file.originalURL), dark: .file(file.originalURL),
-                                     lightThumbnail: nil, darkThumbnail: nil)
+                                     lightThumbnail: nil, darkThumbnail: nil, thumbnail: nil)
             }
             return WallpaperItem(id: "photo:\(file.originalURL.path)", name: name, light: .file(picture), dark: .file(picture),
-                                 lightThumbnail: picture, darkThumbnail: picture,
+                                 lightThumbnail: picture, darkThumbnail: picture, thumbnail: picture,
                                  badge: WallpaperLibrary.hasPictureForEachAppearance(picture) ? .dynamic : nil)
         }
     }
@@ -7822,7 +7861,7 @@ enum PhotoSet {
                 UTType(filenameExtension: file.pathExtension)?.conforms(to: .image) == true && (try? file.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory != true
             }.map { file in
                 WallpaperItem(id: "photo:\(file.path)", name: file.deletingPathExtension().lastPathComponent, light: .file(file), dark: .file(file),
-                              lightThumbnail: file, darkThumbnail: file)
+                              lightThumbnail: file, darkThumbnail: file, thumbnail: file)
             }
         }
         guard let album = album(id) else { return [] }
@@ -7831,7 +7870,7 @@ enum PhotoSet {
         let assets = PHAsset.fetchAssets(in: album, options: options)
         return assets.objects(at: IndexSet(integersIn: 0..<assets.count)).map { asset in
             WallpaperItem(id: "asset:\(asset.localIdentifier)", name: "", light: .asset(asset.localIdentifier), dark: .asset(asset.localIdentifier),
-                          lightThumbnail: nil, darkThumbnail: nil)
+                          lightThumbnail: nil, darkThumbnail: nil, thumbnail: nil)
         }
     }
 
