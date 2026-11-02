@@ -1709,17 +1709,20 @@ struct WallpaperGallery: View {
                     removeDownload: removeDownload) {
             wallpaper.choose(item, isDark: window.isDark)
         } thumbnail: {
-            if isMissing(item) {
-                Rectangle()
-                    .fill(.background)
-                    .overlay {
-                        Image(systemName: "exclamationmark.icloud")
-                            .font(.system(size: 20))
-                            .foregroundStyle(.tertiary)
-                    }
-            } else {
-                WallpaperThumbnail(file: item.thumbnail, fadesIn: photos.items.contains(item))
+            Group {
+                if isMissing(item) {
+                    Rectangle()
+                        .fill(.background)
+                        .overlay {
+                            Image(systemName: "exclamationmark.icloud")
+                                .font(.system(size: 20))
+                                .foregroundStyle(.tertiary)
+                        }
+                } else {
+                    WallpaperThumbnail(file: item.thumbnail)
+                }
             }
+            .modifier(ThumbnailClip(size: Self.thumbnailSize, cornerRadius: Self.thumbnailCornerRadius))
         }
     }
 
@@ -1728,7 +1731,7 @@ struct WallpaperGallery: View {
         tile(id: shuffle.id, name: shuffle.name, showsName: showsName, badge: shuffle.isAerials ? .video : nil) {
             shuffler.start(shuffle, isDark: window.isDark)
         } thumbnail: {
-            ShuffleThumbnail(files: shuffle.thumbnails, size: Self.thumbnailSize)
+            ShuffleThumbnail(files: shuffle.thumbnails, size: Self.thumbnailSize, cornerRadius: Self.thumbnailCornerRadius)
         }
     }
 
@@ -1746,7 +1749,10 @@ struct WallpaperGallery: View {
                 VStack {
                     thumbnail
                         // Its badges are over its rings, as System Settings has them
-                        .modifier(ThumbnailFrame(size: Self.thumbnailSize, cornerRadius: Self.thumbnailCornerRadius, isSelected: isSelected))
+                        .overlay {
+                            SelectionRings(shape: RoundedRectangle(cornerRadius: Self.thumbnailCornerRadius, style: .continuous), isSelected: isSelected,
+                                           isOutlined: true, style: .selection)
+                        }
                         .overlay(alignment: .bottomLeading) {
                             if let badge {
                                 ThumbnailBadge(image: badge == .dynamic ? ThumbnailBadge.dynamic : Image(systemName: "play.rectangle.fill"))
@@ -2007,22 +2013,20 @@ struct ShowAllButtonStyle: ButtonStyle {
     }
 }
 
-/// A picture's thumbnail, as System Settings' ThumbnailView draws one: the picture at its size, its
-/// corners rounded, and over its edge a faint line, or while it's the one chosen, System Settings' rings
-struct ThumbnailFrame: ViewModifier {
+/// A thumbnail's pictures as System Settings' ThumbnailView and ShuffleImagesPreviewView frame them: at
+/// the thumbnail's size, its corners rounded, then clipped to its frame. What goes over them, a shuffle's
+/// symbol and the rings, isn't clipped.
+struct ThumbnailClip: ViewModifier {
     let size: CGSize
     let cornerRadius: CGFloat
-    let isSelected: Bool
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content
             .frame(width: size.width, height: size.height)
             .clipShape(shape)
+            .clipped()
             .contentShape(shape)
-            .overlay {
-                SelectionRings(shape: shape, isSelected: isSelected, isOutlined: true, style: .selection)
-            }
     }
 }
 
@@ -2062,100 +2066,116 @@ struct HoverReader<Content: View>: View {
     }
 }
 
-/// A symbol System Settings draws in a thumbnail's corner, white with a shadow to stand out on any picture
+/// A symbol System Settings draws in a thumbnail's corner, as its ContentBadge and DownloadBadge draw
+/// one: white, with a shadow to stand out on any picture
 struct ThumbnailBadge: View {
     let image: Image
 
-    /// A dynamic wallpaper's: macOS's symbol for Light and Dark (its name is "Light mode appearance
-    /// circle"), which isn't in the public set, so it's looked up the way AppKit looks up its own
-    static let dynamic: Image = {
-        let lookup = NSSelectorFromString("imageWithPrivateSystemSymbolName:accessibilityDescription:")
-        guard NSImage.responds(to: lookup),
-              let symbol = NSImage.perform(lookup, with: "appearance.lightmode", with: nil)?.takeUnretainedValue() as? NSImage,
-              let sized = symbol.withSymbolConfiguration(.init(pointSize: 11, weight: .medium)) else {
-            return Image(systemName: "circle.lefthalf.filled")
-        }
-        sized.isTemplate = true
-        return Image(nsImage: sized)
-    }()
+    /// A dynamic wallpaper's: macOS's symbol for Light and Dark, which isn't in the public set, so it's
+    /// named as System Settings names it
+    static let dynamic = Image(_internalSystemName: "appearance")
 
     var body: some View {
         image
-            .renderingMode(.template)
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(.primary)
+            .environment(\.colorScheme, .dark)
             .shadow(color: .black.opacity(0.65), radius: 2)
             .frame(width: 13, height: 13)
-            .colorScheme(.dark)
     }
 }
 
-/// A shuffle's thumbnail, as System Settings draws one: four of its pictures, one in each quarter, under
-/// the symbol for shuffling
+/// A shuffle's thumbnail, as System Settings' ShuffleImagesPreviewView draws one: its first two pictures
+/// side by side, and once it has four, its last two under them, each filling its share, under the
+/// symbol for shuffling
 struct ShuffleThumbnail: View {
     let files: [URL?]
     let size: CGSize
+    /// Its corners' radius as a thumbnail of System Settings', or nil where what shows it rounds them
+    var cornerRadius: CGFloat?
 
     var body: some View {
-        VStack(spacing: 0) {
-            ForEach(0..<2) { row in
-                HStack(spacing: 0) {
-                    ForEach(0..<2) { column in
-                        WallpaperThumbnail(file: files.indices.contains(2 * row + column) ? files[2 * row + column] : nil)
-                    }
+        let files = files.compactMap { $0 }
+        let hasTwoRows = files.count > 3
+        let pictures = Grid(alignment: .center, horizontalSpacing: 0, verticalSpacing: 0) {
+            GridRow {
+                ForEach(files.prefix(2), id: \.self) { cell($0, hasTwoRows: hasTwoRows) }
+            }
+            if files.count >= 4 {
+                GridRow {
+                    ForEach(files.suffix(2), id: \.self) { cell($0, hasTwoRows: hasTwoRows) }
                 }
+            }
+        }
+        Group {
+            if let cornerRadius {
+                pictures.modifier(ThumbnailClip(size: size, cornerRadius: cornerRadius))
+            } else {
+                pictures.frame(width: size.width, height: size.height)
             }
         }
         .overlay {
             Image(systemName: "arrow.triangle.2.circlepath")
-                .font(.system(size: 0.75 * min(size.width, size.height) / 2, weight: .semibold))
-                .foregroundStyle(.white)
+                .font(.system(size: min(size.width / 2, size.height / 2) * 0.75, weight: .semibold))
+                .foregroundColor(.white)
                 .shadow(color: .black.opacity(0.4), radius: 4, y: 2)
         }
     }
+
+    /// One of its pictures, half as wide as it, and half as tall when it has two rows, with no fade
+    private func cell(_ file: URL, hasTwoRows: Bool) -> some View {
+        WallpaperThumbnail(file: file, hasTransition: false)
+            .frame(width: size.width / 2, height: hasTwoRows ? size.height / 2 : size.height)
+            .clipped()
+    }
 }
 
-/// A thumbnail in the Wallpaper window, as System Settings' ThumbnailImageView draws one: its picture
-/// filling its frame, loaded in the background the first time it's shown, as System Settings loads it,
-/// and kept for the next
+/// A thumbnail in the Wallpaper window, as System Settings' ThumbnailImageView draws one: nothing until
+/// its picture has loaded in the background, as System Settings loads it, then the picture filling the
+/// thumbnail's frame (and beyond it, for whoever frames it to clip), or if it couldn't be, an iCloud
+/// symbol. A picture loaded before is kept for the next, and is there from the start.
 struct WallpaperThumbnail: View {
     let file: URL?
-    /// Whether it's empty until its picture has loaded, which then fades in, as Your Photos' photos do in
-    /// System Settings, with the same spring
-    var fadesIn = false
-    @State private var image: CGImage?
+    /// Whether the picture fades in once it has loaded: a wallpaper's does, a shuffle's pictures don't
+    var hasTransition = true
+    @State private var state: LoadState
+
+    private enum LoadState {
+        case loading, failed
+        case loaded(CGImage)
+    }
 
     private static let cache = NSCache<NSURL, CGImage>()
 
-    init(file: URL?, fadesIn: Bool = false) {
+    init(file: URL?, hasTransition: Bool = true) {
         self.file = file
-        self.fadesIn = fadesIn
-        // One loaded before is there from the start
-        _image = State(initialValue: Self.cached(file))
+        self.hasTransition = hasTransition
+        _state = State(initialValue: Self.cached(file).map(LoadState.loaded) ?? .loading)
     }
 
     var body: some View {
-        // Over its frame, so a picture of another shape, like a square one, doesn't make it larger
-        Rectangle()
-            .fill(fadesIn ? AnyShapeStyle(.clear) : AnyShapeStyle(.quaternary))
-            .overlay {
-                if let image {
-                    Image(decorative: image, scale: 1)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                }
+        Group {
+            switch state {
+            case .loading:
+                Color.clear
+            case .failed:
+                Image(systemName: "exclamationmark.icloud")
+                    .font(.system(size: 20))
+                    .opacity(0.2)
+            case .loaded(let image):
+                Image(decorative: image, scale: 1)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .transition(hasTransition ? .opacity.animation(.default) : .identity)
             }
-            .clipped()
-            .task(id: file) {
-                if let image = Self.cached(file) {
-                    self.image = image
-                    return
-                }
-                let image = await Self.image(of: file)
-                withAnimation(fadesIn ? .smooth(duration: 0.5) : nil) {
-                    self.image = image
-                }
+        }
+        .task(id: file) {
+            if let image = Self.cached(file) {
+                state = .loaded(image)
+                return
             }
+            state = await Self.image(of: file).map(LoadState.loaded) ?? .failed
+        }
     }
 
     private static func cached(_ file: URL?) -> CGImage? {
