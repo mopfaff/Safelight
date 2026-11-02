@@ -1273,6 +1273,10 @@ struct WallpaperGallery: View {
     @State private var fillColor: CGColor?
     @State private var isChoosingPhoto = false
     @State private var photo: PhotosPickerItem?
+    /// Whether the sections have the focus, as System Settings' list of them takes it when the window
+    /// becomes key and whenever a wallpaper is clicked: only there are the rings in the accent colour
+    @FocusState private var isListFocused: Bool
+    @Environment(\.appearsActive) private var appearsActive
 
     /// System Settings' pane: its width, its margins, and the room between its sections, and between
     /// a section's title and its thumbnails, and between thumbnails. Its scroll bar is over its sections
@@ -1321,6 +1325,12 @@ struct WallpaperGallery: View {
                     }
                 }
                 .padding(EdgeInsets(top: Self.margin + Self.listOffset, leading: Self.margin, bottom: Self.margin - Self.listOffset, trailing: Self.margin))
+                // Focusable with no focus ring, as System Settings' list is: SwiftUI draws the selection
+                // colour in the accent colour only in a view with the focus in the key window, and grey
+                // anywhere else
+                .focusable()
+                .focusEffectDisabled()
+                .focused($isListFocused)
                 // Each section as tall as it needs, as in a SwiftUI scroll view, which offers its content
                 // no height: offered the height of its frame, the sideways rows would share out what's
                 // over or short, and each draw its wallpapers in the middle of what it's given
@@ -1349,8 +1359,9 @@ struct WallpaperGallery: View {
     }
 
     /// The wallpaper's picture for Light or for Dark, the size of System Settings' picture of the
-    /// desktop, ringed while it's the one being chosen, as the Appearance picker's thumbnails are.
-    /// Clicking it chooses it instead.
+    /// desktop, ringed while it's the one being chosen, as the Appearance picker's thumbnails are. The
+    /// ring turns the sections' grey while the window isn't key, as theirs does; the Appearance picker's
+    /// stays in the accent colour. Clicking it chooses it instead.
     private func preview(_ name: String, picture: WallpaperManager.Thumbnail?, isDark: Bool) -> some View {
         let isSelected = window.isDark == isDark
         return Button {
@@ -1371,7 +1382,7 @@ struct WallpaperGallery: View {
                 .overlay {
                     if isSelected {
                         RoundedRectangle(cornerRadius: Self.previewCornerRadius + Self.ringPadding)
-                            .strokeBorder(Color.accentColor, lineWidth: 3)
+                            .strokeBorder(appearsActive ? Color.accentColor : Color(nsColor: .unemphasizedSelectedContentBackgroundColor), lineWidth: 3)
                     }
                 }
                 .shadow(color: .black.opacity(0.33), radius: isSelected ? 0 : 2)
@@ -1721,50 +1732,50 @@ struct WallpaperGallery: View {
         let isSelected = wallpaper.choice(isDark: window.isDark) == id
         let thumbnail = thumbnail()
         return HoverReader { isHovering in
-            Button(action: action) {
-                // As System Settings' GroupItemView: SwiftUI's own spacing above the name
-                VStack {
-                    thumbnail
-                        // Its badges are over its rings, as System Settings has them
-                        .overlay {
-                            SelectionRings(shape: RoundedRectangle(cornerRadius: Self.thumbnailCornerRadius, style: .continuous), isSelected: isSelected,
-                                           isOutlined: true, style: .selection)
-                        }
-                        .overlay(alignment: .bottomLeading) {
-                            if let badge {
-                                ThumbnailBadge(image: badge == .dynamic ? ThumbnailBadge.dynamic : Image(systemName: "play.rectangle.fill"))
-                                    .padding([.bottom, .leading], 5)
-                            }
-                        }
-                        .overlay(alignment: .bottomTrailing) {
-                            Group {
-                                // Only while what's being made is downloaded, as System Settings shows nothing
-                                // else while it puts a wallpaper on the desktop
-                                if wallpaper.changingChoice == id && (!isDownloaded || wallpaper.downloadProgress != nil) {
-                                    progress
-                                        .frame(width: 13, height: 13)
-                                } else if !isDownloaded {
-                                    ThumbnailBadge(image: Image(systemName: "arrow.down.circle"))
-                                } else if let removeDownload, isHovering, !isSelected {
-                                    removeDownloadMenu(removeDownload)
-                                }
-                            }
-                            .padding([.bottom, .trailing], 5)
-                        }
-                    if showsName {
-                        Text(name)
-                            .font(.caption)
-                            .lineLimit(2, reservesSpace: true)
-                            .truncationMode(.middle)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: Self.thumbnailSize.width)
-                            .fixedSize(horizontal: false, vertical: true)
+            // As System Settings' GroupItemView: SwiftUI's own spacing above the name
+            VStack {
+                thumbnail
+                    // Its badges are over its rings, as System Settings has them
+                    .overlay {
+                        SelectionRings(shape: RoundedRectangle(cornerRadius: Self.thumbnailCornerRadius, style: .continuous), isSelected: isSelected,
+                                       isOutlined: true, style: .selection)
                     }
+                    .overlay(alignment: .bottomLeading) {
+                        if let badge {
+                            ThumbnailBadge(image: badge == .dynamic ? ThumbnailBadge.dynamic : Image(systemName: "play.rectangle.fill"))
+                                .padding([.bottom, .leading], 5)
+                        }
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        Group {
+                            // Only while what's being made is downloaded, as System Settings shows nothing
+                            // else while it puts a wallpaper on the desktop
+                            if wallpaper.changingChoice == id && (!isDownloaded || wallpaper.downloadProgress != nil) {
+                                progress
+                                    .frame(width: 13, height: 13)
+                            } else if !isDownloaded {
+                                ThumbnailBadge(image: Image(systemName: "arrow.down.circle"))
+                            } else if let removeDownload, isHovering, !isSelected {
+                                removeDownloadMenu(removeDownload)
+                            }
+                        }
+                        .padding([.bottom, .trailing], 5)
+                    }
+                if showsName {
+                    Text(name)
+                        .font(.caption)
+                        .lineLimit(2, reservesSpace: true)
+                        .truncationMode(.middle)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: Self.thumbnailSize.width)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .choosable(name, isSelected: isSelected, focusing: $isListFocused, action: action)
+            // As it was as a button, while it can't be chosen
             .disabled(isMissing)
+            .opacity(isMissing ? 0.5 : 1)
         }
         .contextMenu {
             if let removeDownload {
@@ -1773,8 +1784,6 @@ struct WallpaperGallery: View {
             }
         }
         .help(name)
-        .accessibilityLabel(name)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     /// System Settings' … over a downloaded wallpaper, drawn as its badges are, with its one item
@@ -1798,21 +1807,17 @@ struct WallpaperGallery: View {
     /// One of System Settings' colours, as its ThumbnailView draws one: a circle filled with it
     private func swatch(_ item: WallpaperItem) -> some View {
         let isSelected = wallpaper.choice(isDark: window.isDark) == item.id
-        return Button {
-            wallpaper.choose(item, isDark: window.isDark)
-        } label: {
-            Circle()
-                .fill(Color(cgColor: item.lightThumbnail.flatMap(WallpaperManager.swatchColor) ?? .clear))
-                .frame(width: Self.colorSize, height: Self.colorSize)
-                .overlay {
-                    SelectionRings(shape: Circle(), isSelected: isSelected, style: .selection)
-                }
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .help(item.name)
-        .accessibilityLabel(item.name)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        return Circle()
+            .fill(Color(cgColor: item.lightThumbnail.flatMap(WallpaperManager.swatchColor) ?? .clear))
+            .frame(width: Self.colorSize, height: Self.colorSize)
+            .overlay {
+                SelectionRings(shape: Circle(), isSelected: isSelected, style: .selection)
+            }
+            .contentShape(Circle())
+            .choosable(item.name, isSelected: isSelected, focusing: $isListFocused) {
+                wallpaper.choose(item, isDark: window.isDark)
+            }
+            .help(item.name)
     }
 
     /// Your Photos' first tile, whose menu, as System Settings' does, offers a photo from Photos or a
@@ -2002,10 +2007,11 @@ struct ThumbnailClip: ViewModifier {
 }
 
 /// What System Settings draws over a thumbnail's edge while it's the one chosen: a ring in `style`, the
-/// selection colour, which turns grey while the window isn't the one in front, or for Colours' two
-/// buttons the accent colour, which doesn't, and under it a thinner one just inside, in white, or in
-/// black in Dark mode, which parts it from the picture. The picture keeps its size under them. Otherwise
-/// a picture has a faint line around its edge, and a colour has nothing.
+/// selection colour, the accent colour while the list it's in has the focus in the key window and grey
+/// otherwise, or for Colours' two buttons the accent colour, which doesn't turn grey, and under it a
+/// thinner one just inside, in white, or in black in Dark mode, which parts it from the picture. The
+/// picture keeps its size under them. Otherwise a picture has a faint line around its edge, and a
+/// colour has nothing.
 struct SelectionRings<S: Shape, Style: ShapeStyle>: View {
     let shape: S
     let isSelected: Bool
@@ -2023,6 +2029,25 @@ struct SelectionRings<S: Shape, Style: ShapeStyle>: View {
                 shape.stroke((colorScheme == .dark ? Color.white : .black).opacity(0.08), style: StrokeStyle(lineWidth: 1))
             }
         }
+    }
+}
+
+extension View {
+    /// One of the Wallpaper window's wallpapers, chosen with a click as System Settings' GroupItemView is:
+    /// with a tap rather than as a button, inside which SwiftUI draws the selection colour grey even while
+    /// the list has the focus. The list then takes the focus, as there. VoiceOver has it as a button.
+    func choosable(_ name: String, isSelected: Bool, focusing isListFocused: FocusState<Bool>.Binding, action: @escaping () -> Void) -> some View {
+        let choose = {
+            action()
+            isListFocused.wrappedValue = true
+        }
+        return gesture(TapGesture().onEnded(choose))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(name)
+            .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+            .accessibilityAction {
+                choose()
+            }
     }
 }
 
