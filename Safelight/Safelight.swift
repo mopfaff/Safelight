@@ -1878,7 +1878,7 @@ struct WallpaperGallery: View {
                         progress
                     } else {
                         Image(systemName: symbol)
-                            .font(.system(size: 24))
+                            .font(.system(size: 26, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
                 }
