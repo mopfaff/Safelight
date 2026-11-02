@@ -1284,8 +1284,8 @@ struct WallpaperGallery: View {
 
     /// System Settings' pane: its width, its margins, and the room between its sections, and between
     /// a section's title and its thumbnails, and between thumbnails. Its scroll bar is over its sections
-    /// even when scroll bars are always shown; here it's beside them, so they're laid out the same.
-    private static let width: CGFloat = 508 + (NSScroller.preferredScrollerStyle == .legacy ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0)
+    /// even when scroll bars are always shown, as the Wallpaper window's is.
+    private static let width: CGFloat = 508
     private static let margin: CGFloat = 20
     private static let sectionSpacing: CGFloat = 20
     private static let spacing: CGFloat = 10
@@ -1309,10 +1309,13 @@ struct WallpaperGallery: View {
             displayPicker
             options
             Divider()
-            ScrollView {
+            // Read here, as the sections are drawn by the scroll view's own hosting view, whose updates
+            // come from this one's
+            let expandedSections = expandedSections
+            PaneScrollView {
                 VStack(alignment: .leading, spacing: Self.sectionSpacing) {
                     ForEach(WallpaperLibrary.shared.sections) { section in
-                        group(section)
+                        group(section, isExpanded: expandedSections.contains(section.id))
                             // Until a picture chosen is on the desktop, as only one can be made at a time
                             .disabled(wallpaper.isChanging)
                     }
@@ -1594,8 +1597,7 @@ struct WallpaperGallery: View {
 
     /// A section: its title, with Show All beside it when there's more than a row, and a row of its
     /// wallpapers that scrolls sideways, or all of them
-    private func group(_ section: WallpaperLibrary.Section) -> some View {
-        let isExpanded = expandedSections.contains(section.id)
+    private func group(_ section: WallpaperLibrary.Section, isExpanded: Bool) -> some View {
         let columns = section.kind == .colors ? 8 : 4
         let items = section.kind == .photos ? photos.items : section.items
         let shuffles = section.kind == .photos ? Array(photos.shuffle.map { [$0] } ?? []) : section.shuffles
@@ -1902,6 +1904,59 @@ struct WallpaperGallery: View {
         .controlSize(.small)
         .colorScheme(.dark)
     }
+}
+
+/// A scroll view as System Settings' panes have: its content runs under the scroll bar even when scroll
+/// bars are always shown, and the bar's track and knob are see-through over it. System Settings asks
+/// SwiftUI for it with a modifier only Apple's own code can use, which has AppKit lay the content out as
+/// it does for scroll bars shown only while scrolling; SwiftUI's ScrollView otherwise keeps its content
+/// beside the bar. So here the scroll view is AppKit's, its content laid out that way.
+struct PaneScrollView<Content: View>: NSViewRepresentable {
+    @ViewBuilder var content: Content
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = UnderScrollerScrollView()
+        scrollView.contentView = FlippedClipView()
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.automaticallyAdjustsContentInsets = false
+        let hostingView = NSHostingView(rootView: content)
+        hostingView.sizingOptions = .intrinsicContentSize
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.documentView = hostingView
+        NSLayoutConstraint.activate([
+            hostingView.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            hostingView.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
+            hostingView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+        ])
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        (scrollView.documentView as? NSHostingView<Content>)?.rootView = content
+    }
+}
+
+/// Lays its content out under its vertical scroll bar, as AppKit does when scroll bars show only while
+/// scrolling, whichever the user has chosen
+final class UnderScrollerScrollView: NSScrollView {
+    // Scrolling up or down over a row that scrolls sideways scrolls this instead, as it did when this
+    // was SwiftUI's: a SwiftUI scroll view passes a scroll on along an axis it can't scroll only to a
+    // scroll view that asks for it
+    override func wantsForwardedScrollEvents(for axis: NSEvent.GestureAxis) -> Bool {
+        axis == .vertical
+    }
+
+    override func tile() {
+        super.tile()
+        contentView.frame = bounds
+    }
+}
+
+/// So a scroll view's content starts at its top
+final class FlippedClipView: NSClipView {
+    override var isFlipped: Bool { true }
 }
 
 /// System Settings › Wallpaper's Show All and Show Less: plain text, smaller and greyer than the title
