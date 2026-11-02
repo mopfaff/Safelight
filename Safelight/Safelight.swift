@@ -1276,7 +1276,12 @@ struct WallpaperGallery: View {
     /// Whether the sections have the focus, as System Settings' list of them takes it when the window
     /// becomes key and whenever a wallpaper is clicked: only there are the rings in the accent colour
     @FocusState private var isListFocused: Bool
+    @State private var scrolling = WallpaperScrolling()
+    /// The section a tile was last chosen in, by a click or the arrow keys, which the arrow keys move on
+    /// from: a wallpaper can be in more than one, as the Mac wallpapers are in Mac and in Pictures
+    @State private var chosenSection: String?
     @Environment(\.appearsActive) private var appearsActive
+    @Environment(\.layoutDirection) private var layoutDirection
 
     /// System Settings' pane: its width, its margins, and the room between its sections, and between
     /// a section's title and its thumbnails, and between thumbnails. Its scroll bar is over its sections
@@ -1300,6 +1305,8 @@ struct WallpaperGallery: View {
     private static let previewCornerRadius: CGFloat = 8
     /// Where a preview has room for the ring around it, as the Appearance picker's thumbnails do
     private static let ringPadding: CGFloat = 3.5
+    /// The sections' own coordinates, those of the pane's scroll view's content
+    private static let sections = "sections"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1315,7 +1322,7 @@ struct WallpaperGallery: View {
             // Read here, as the sections are drawn by the scroll view's own hosting view, whose updates
             // come from this one's
             let expandedSections = expandedSections
-            PaneScrollView {
+            PaneScrollView(didMake: { scrolling.pane = $0 }) {
                 // System Settings' GroupList: its sections centred, so a grid narrower than the pane's
                 // margins leave is in the middle. It takes up to 5 points off each margin for a pane
                 // narrower than 500 points, which this one never is.
@@ -1325,12 +1332,14 @@ struct WallpaperGallery: View {
                     }
                 }
                 .padding(EdgeInsets(top: Self.margin + Self.listOffset, leading: Self.margin, bottom: Self.margin - Self.listOffset, trailing: Self.margin))
+                .coordinateSpace(.named(Self.sections))
                 // Focusable with no focus ring, as System Settings' list is: SwiftUI draws the selection
                 // colour in the accent colour only in a view with the focus in the key window, and grey
                 // anywhere else
                 .focusable()
                 .focusEffectDisabled()
                 .focused($isListFocused)
+                .onMoveCommand(perform: move)
                 // Each section as tall as it needs, as in a SwiftUI scroll view, which offers its content
                 // no height: offered the height of its frame, the sideways rows would share out what's
                 // over or short, and each draw its wallpapers in the middle of what it's given
@@ -1603,11 +1612,8 @@ struct WallpaperGallery: View {
     /// that scrolls sideways under the margins, or all of them. A section whose wallpapers have no names
     /// under them has 10 points more below.
     private func group(_ section: WallpaperLibrary.Section, isExpanded: Bool) -> some View {
-        let columns = section.kind == .colors ? 8 : 4
-        let items = section.kind == .photos ? photos.items : section.items
-        let shuffles = section.kind == .photos ? Array(photos.shuffle.map { [$0] } ?? []) : section.shuffles
-        // Add Photo… and the custom colour count as one of the section's
-        let count = shuffles.count + items.count + (section.kind == .photos || section.kind == .colors ? 1 : 0)
+        let columns = columns(of: section)
+        let count = tiles(of: section, isExpanded: true).count
         let hidesNames = !(section.kind == .pictures || section.kind == .shuffles)
         return VStack(spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
@@ -1615,7 +1621,7 @@ struct WallpaperGallery: View {
                     .lineLimit(1)
                     .fontWeight(.medium)
                 Spacer()
-                if count > columns || section.row.map({ $0.count < items.count }) == true {
+                if count > columns || section.row.map({ $0.count < section.items.count }) == true {
                     Button(isExpanded ? SystemStrings.showLess : String(format: SystemStrings.showAll, "\(count)")) {
                         if isExpanded {
                             expandedSections.remove(section.id)
@@ -1630,7 +1636,9 @@ struct WallpaperGallery: View {
             if isExpanded {
                 let width = section.kind == .colors ? Self.colorSize : Self.thumbnailSize.width
                 LazyVGrid(columns: Array(repeating: GridItem(.fixed(width), spacing: Self.spacing), count: columns), alignment: .leading, spacing: Self.spacing) {
-                    self.items(of: section, shuffles, items)
+                    ForEach(tiles(of: section, isExpanded: true)) { tile in
+                        view(of: tile, in: section)
+                    }
                 }
                 .padding(.bottom, hidesNames ? 10 : 0)
                 .padding(.top, 10)
@@ -1638,7 +1646,9 @@ struct WallpaperGallery: View {
                 // The width of the window, scrolling under its margins
                 ScrollView(.horizontal) {
                     LazyHStack(spacing: Self.spacing) {
-                        self.items(of: section, shuffles, section.row ?? items)
+                        ForEach(tiles(of: section, isExpanded: false)) { tile in
+                            view(of: tile, in: section)
+                        }
                     }
                     .scrollTargetLayout()
                     .padding(.top, 10)
@@ -1648,54 +1658,236 @@ struct WallpaperGallery: View {
                 .padding(.bottom, hidesNames ? 10 : 0)
                 .scrollClipDisabled()
                 .scrollIndicators(.never)
+                // By the wallpaper at its leading edge, as System Settings keeps it
+                .scrollPosition(Binding { scrolling.rows[section.id] ?? ScrollPosition(idType: String.self) } set: { scrolling.rows[section.id] = $0 },
+                                anchor: .leading)
+            }
+        }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.sections)) } action: { frame in
+            scrolling.sectionFrames[section.id] = frame
+        }
+    }
+
+    /// One of a section's tiles: Add Photo…, a shuffle, the custom colour, or a wallpaper. Each goes by
+    /// its ID in its row, as the ID it's chosen by does.
+    private enum Tile: Identifiable {
+        case addPhoto
+        case shuffle(WallpaperShuffle)
+        case customColor
+        case item(WallpaperItem)
+
+        var id: String {
+            switch self {
+            case .addPhoto: "add-photo"
+            case .shuffle(let shuffle): shuffle.id
+            case .customColor: WallpaperItem.customColor
+            case .item(let item): item.id
             }
         }
     }
 
     /// A section's tiles, in System Settings' order: Add Photo… and then the photos' shuffle, or the
-    /// colours' shuffle and then the custom colour, before the wallpapers
-    @ViewBuilder
-    private func items(of section: WallpaperLibrary.Section, _ shuffles: [WallpaperShuffle], _ items: [WallpaperItem]) -> some View {
+    /// colours' shuffle and then the custom colour, before the wallpapers, those of its row or all of them
+    private func tiles(of section: WallpaperLibrary.Section, isExpanded: Bool) -> [Tile] {
+        let items = section.kind == .photos ? photos.items : section.items
+        let shown = (isExpanded ? nil : section.row) ?? items
+        let shuffles = (section.kind == .photos ? Array(photos.shuffle.map { [$0] } ?? []) : section.shuffles).map(Tile.shuffle)
         switch section.kind {
         case .pictures:
-            ForEach(items) { item in
-                thumbnail(item, showsName: true)
-            }
+            return shown.map(Tile.item)
         case .shuffles:
-            ForEach(shuffles) { shuffle in
-                thumbnail(shuffle, showsName: true)
-            }
+            return shuffles
         case .photos:
-            addPhoto
-            ForEach(shuffles) { shuffle in
-                thumbnail(shuffle, showsName: false)
-            }
-            ForEach(items) { item in
-                thumbnail(item, showsName: false)
-            }
+            return [.addPhoto] + shuffles + shown.map(Tile.item)
         case .colors:
-            ForEach(shuffles) { shuffle in
-                circleButton("arrow.triangle.2.circlepath", name: shuffle.name, id: shuffle.id) {
-                    shuffler.start(shuffle, isDark: window.isDark)
-                }
+            return shuffles + [.customColor] + shown.map(Tile.item)
+        }
+    }
+
+    /// A tile as its section draws it
+    @ViewBuilder
+    private func view(of tile: Tile, in section: WallpaperLibrary.Section) -> some View {
+        let showsName = section.kind == .pictures || section.kind == .shuffles
+        switch tile {
+        case .addPhoto:
+            addPhoto
+        case .shuffle(let shuffle) where section.kind == .colors:
+            circleButton("arrow.triangle.2.circlepath", name: shuffle.name, id: shuffle.id) {
+                choose(tile, in: section)
             }
+        case .shuffle(let shuffle):
+            thumbnail(shuffle, showsName: showsName, in: section)
+        case .customColor:
             circleButton("plus", name: SystemStrings.customColor, id: WallpaperItem.customColor) {
-                window.chooseColor()
+                choose(tile, in: section)
             }
-            ForEach(items) { item in
-                swatch(item)
+        case .item(let item) where section.kind == .colors:
+            swatch(item, in: section)
+        case .item(let item):
+            thumbnail(item, showsName: showsName, in: section)
+        }
+    }
+
+    /// Chooses a tile in a section, as clicking it does: the custom colour opens the Colours panel. Add
+    /// Photo… has a menu to be opened instead, and a photo that's gone can't be chosen.
+    private func choose(_ tile: Tile, in section: WallpaperLibrary.Section) {
+        switch tile {
+        case .addPhoto:
+            return
+        case .shuffle(let shuffle):
+            shuffler.start(shuffle, isDark: window.isDark)
+        case .customColor:
+            window.chooseColor()
+        case .item(let item):
+            guard !isMissing(item) else { return }
+            wallpaper.choose(item, isDark: window.isDark)
+        }
+        chosenSection = section.id
+    }
+
+    // MARK: Arrow keys
+
+    /// The arrow keys, as System Settings' list takes them: they choose the tile beside the one chosen,
+    /// left or right in its row, or in its row of the grid Show All shows, up or down in the grid, and
+    /// at its top or bottom, or from a row, the tile in the same place in the section above or below.
+    /// A row scrolls to the tile chosen in it, and the list to a section moved to. Nothing chosen in the
+    /// sections, they do nothing.
+    private func move(_ direction: MoveCommandDirection) {
+        var direction = direction
+        if layoutDirection == .rightToLeft {
+            direction = direction == .left ? .right : direction == .right ? .left : direction
+        }
+        guard let choice = wallpaper.choice(isDark: window.isDark) else { return }
+        let sections = WallpaperLibrary.shared.sections
+        let hasChoice = { (section: WallpaperLibrary.Section) in
+            self.tiles(of: section, isExpanded: true).contains { $0.id == choice }
+        }
+        guard let sectionIndex = sections.firstIndex(where: { $0.id == chosenSection && hasChoice($0) }) ?? sections.firstIndex(where: hasChoice) else { return }
+        let section = sections[sectionIndex]
+        let isExpanded = expandedSections.contains(section.id)
+        let tiles = tiles(of: section, isExpanded: isExpanded)
+        guard let index = tiles.firstIndex(where: { $0.id == choice }) else { return }
+        let columns = columns(of: section)
+        let (row, column) = index.quotientAndRemainder(dividingBy: columns)
+
+        /// The tile in the same place in the section above or below
+        func move(toSection otherIndex: Int) {
+            guard sections.indices.contains(otherIndex) else { return }
+            let other = sections[otherIndex]
+            let isOtherExpanded = expandedSections.contains(other.id)
+            let otherTiles = self.tiles(of: other, isExpanded: isOtherExpanded)
+            let place = isExpanded ? column : index
+            let target = if direction == .up && isOtherExpanded {
+                // In the grid's last row that has that place, or the one before
+                lastIndex(inColumn: self.index(place % columns, from: section, to: other), count: otherTiles.count, columns: self.columns(of: other))
+            } else {
+                self.index(place, from: section, to: other)
             }
+            guard otherTiles.indices.contains(target) else { return }
+            choose(otherTiles[target], in: other)
+            // Once the options above are those of the new choice, which can make the pane shorter
+            DispatchQueue.main.async {
+                scrolling.show(section: other.id)
+            }
+        }
+
+        if isExpanded {
+            let rows = Int((Double(tiles.count) / Double(columns)).rounded(.up))
+            switch direction {
+            case .left where column >= 1:
+                choose(tiles[index - 1], in: section)
+            case .right where column < columns - 1 && index + 1 < tiles.count:
+                choose(tiles[index + 1], in: section)
+            case .up where row >= 1:
+                choose(tiles[index - columns], in: section)
+            case .up:
+                move(toSection: sectionIndex - 1)
+            case .down where row < rows - 1 && index + columns < tiles.count:
+                choose(tiles[index + columns], in: section)
+            case .down:
+                move(toSection: sectionIndex + 1)
+            default:
+                break
+            }
+        } else {
+            switch direction {
+            case .left where index >= 1:
+                scrollRow(of: section, toShow: index - 1)
+                choose(tiles[index - 1], in: section)
+            case .right where index + 1 < tiles.count:
+                scrollRow(of: section, toShow: index + 1)
+                choose(tiles[index + 1], in: section)
+            case .up:
+                move(toSection: sectionIndex - 1)
+            case .down:
+                move(toSection: sectionIndex + 1)
+            default:
+                break
+            }
+        }
+    }
+
+    /// How many tiles a row of a section's grid has
+    private func columns(of section: WallpaperLibrary.Section) -> Int {
+        section.kind == .colors ? 8 : 4
+    }
+
+    /// The index of the tile a section's row is scrolled to, at its leading edge; 0 for a grid
+    private func offset(of section: WallpaperLibrary.Section) -> Int {
+        guard !expandedSections.contains(section.id), let id = scrolling.rows[section.id]?.viewID(type: String.self) else { return 0 }
+        return tiles(of: section, isExpanded: false).firstIndex { $0.id == id } ?? 0
+    }
+
+    /// A place in a section, as an index in its row, or a column of its grid, moved to the same place in
+    /// view in another section, as System Settings moves it: a colour takes half a wallpaper's place,
+    /// so a place among the colours is halved, and one moved to them doubled
+    private func index(_ place: Int, from section: WallpaperLibrary.Section, to other: WallpaperLibrary.Section) -> Int {
+        let shift = offset(of: other) - offset(of: section)
+        switch (section.kind == .colors, other.kind == .colors) {
+        case (true, false):
+            return place / 2 + shift
+        case (false, true):
+            return (place + shift) * 2
+        default:
+            return place + shift
+        }
+    }
+
+    /// The index of the last tile of a grid in a column, or the first tile if none of its rows but the
+    /// first reaches that column
+    private func lastIndex(inColumn column: Int, count: Int, columns: Int) -> Int {
+        guard count >= 2 else { return count - 1 }
+        var index = count - 1
+        while index % columns != column {
+            guard index > 1 else { return 0 }
+            index -= 1
+        }
+        return index
+    }
+
+    /// Scrolls a section's row as little as shows one of its tiles, at its leading edge or as the last of
+    /// the tiles that fit
+    private func scrollRow(of section: WallpaperLibrary.Section, toShow index: Int) {
+        let tiles = tiles(of: section, isExpanded: false)
+        let columns = columns(of: section)
+        let offset = offset(of: section)
+        let leading = index < offset ? index : index > offset + columns - 1 ? index - columns + 1 : nil
+        guard let leading else { return }
+        var position = scrolling.rows[section.id] ?? ScrollPosition(idType: String.self)
+        withAnimation(.default) {
+            position.scrollTo(id: tiles[leading].id, anchor: .leading)
+            scrolling.rows[section.id] = position
         }
     }
 
     /// A wallpaper's thumbnail, with its name under it, and badges as System Settings has: at the bottom
     /// left, whether it's dynamic or a video, and at the bottom right, whether it's yet to be downloaded,
     /// or how much of it has been. Once macOS has downloaded it, it can be taken off the Mac again.
-    private func thumbnail(_ item: WallpaperItem, showsName: Bool) -> some View {
+    private func thumbnail(_ item: WallpaperItem, showsName: Bool, in section: WallpaperLibrary.Section) -> some View {
         let removeDownload = wallpaper.canRemoveDownloads(of: item) ? { wallpaper.removeDownloads(of: item) } : nil
         return tile(id: item.id, name: item.name, showsName: showsName, badge: item.badge, isDownloaded: wallpaper.isDownloaded(item), isMissing: isMissing(item),
                     removeDownload: removeDownload) {
-            wallpaper.choose(item, isDark: window.isDark)
+            choose(.item(item), in: section)
         } thumbnail: {
             Group {
                 if isMissing(item) {
@@ -1715,9 +1907,9 @@ struct WallpaperGallery: View {
     }
 
     /// A shuffle's thumbnail: four of its pictures under the symbol for shuffling
-    private func thumbnail(_ shuffle: WallpaperShuffle, showsName: Bool) -> some View {
+    private func thumbnail(_ shuffle: WallpaperShuffle, showsName: Bool, in section: WallpaperLibrary.Section) -> some View {
         tile(id: shuffle.id, name: shuffle.name, showsName: showsName, badge: shuffle.isAerials ? .video : nil) {
-            shuffler.start(shuffle, isDark: window.isDark)
+            choose(.shuffle(shuffle), in: section)
         } thumbnail: {
             ShuffleThumbnail(files: shuffle.thumbnails, size: Self.thumbnailSize, cornerRadius: Self.thumbnailCornerRadius)
         }
@@ -1805,7 +1997,7 @@ struct WallpaperGallery: View {
     }
 
     /// One of System Settings' colours, as its ThumbnailView draws one: a circle filled with it
-    private func swatch(_ item: WallpaperItem) -> some View {
+    private func swatch(_ item: WallpaperItem, in section: WallpaperLibrary.Section) -> some View {
         let isSelected = wallpaper.choice(isDark: window.isDark) == item.id
         return Circle()
             .fill(Color(cgColor: item.lightThumbnail.flatMap(WallpaperManager.swatchColor) ?? .clear))
@@ -1815,7 +2007,7 @@ struct WallpaperGallery: View {
             }
             .contentShape(Circle())
             .choosable(item.name, isSelected: isSelected, focusing: $isListFocused) {
-                wallpaper.choose(item, isDark: window.isDark)
+                choose(.item(item), in: section)
             }
             .help(item.name)
     }
@@ -1927,12 +2119,46 @@ struct WallpaperGallery: View {
     }
 }
 
+/// Where the Wallpaper window's rows are scrolled to, each by the wallpaper at its leading edge, as
+/// System Settings keeps them, and where its sections are in the pane, whose scroll view is AppKit's,
+/// so the arrow keys can scroll to the one they move to
+@Observable final class WallpaperScrolling {
+    var rows: [String: ScrollPosition] = [:]
+    @ObservationIgnored var sectionFrames: [String: CGRect] = [:]
+    @ObservationIgnored weak var pane: NSScrollView?
+
+    /// Scrolls the pane as little as shows a section, as SwiftUI's `scrollTo(id:)` does, which System
+    /// Settings scrolls its list with, in SwiftUI's default animation of a scroll, which measures as
+    /// easing in and out over 0.21 s whatever the distance
+    func show(section id: String) {
+        guard let pane, let frame = sectionFrames[id] else { return }
+        let clipView = pane.contentView
+        var bounds = clipView.bounds
+        if frame.minY < bounds.minY || frame.height > bounds.height {
+            bounds.origin.y = frame.minY
+        } else if frame.maxY > bounds.maxY {
+            bounds.origin.y = frame.maxY - bounds.height
+        } else {
+            return
+        }
+        let origin = clipView.constrainBoundsRect(bounds).origin
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.21
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            clipView.animator().setBoundsOrigin(origin)
+        }
+        pane.reflectScrolledClipView(clipView)
+    }
+}
+
 /// A scroll view as System Settings' panes have: its content runs under the scroll bar even when scroll
 /// bars are always shown, and the bar's track and knob are see-through over it. System Settings asks
 /// SwiftUI for it with a modifier only Apple's own code can use, which has AppKit lay the content out as
 /// it does for scroll bars shown only while scrolling; SwiftUI's ScrollView otherwise keeps its content
 /// beside the bar. So here the scroll view is AppKit's, its content laid out that way.
 struct PaneScrollView<Content: View>: NSViewRepresentable {
+    /// Given the scroll view once it's made
+    var didMake: (NSScrollView) -> Void = { _ in }
     @ViewBuilder var content: Content
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -1951,6 +2177,7 @@ struct PaneScrollView<Content: View>: NSViewRepresentable {
             hostingView.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
             hostingView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
         ])
+        didMake(scrollView)
         return scrollView
     }
 
