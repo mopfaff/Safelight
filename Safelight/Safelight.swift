@@ -1723,6 +1723,8 @@ struct WallpaperGallery: View {
             Button(action: action) {
                 VStack(spacing: 3) {
                     thumbnail
+                        // Its badges are over its rings, as System Settings has them
+                        .modifier(ThumbnailFrame(size: Self.thumbnailSize, cornerRadius: Self.thumbnailCornerRadius, isSelected: isSelected))
                         .overlay(alignment: .bottomLeading) {
                             if let badge {
                                 ThumbnailBadge(image: badge == .dynamic ? ThumbnailBadge.dynamic : Image(systemName: "play.rectangle.fill"))
@@ -1742,7 +1744,6 @@ struct WallpaperGallery: View {
                             }
                             .padding([.bottom, .trailing], 5)
                         }
-                        .modifier(ThumbnailFrame(size: Self.thumbnailSize, cornerRadius: Self.thumbnailCornerRadius, isSelected: isSelected))
                     if showsName {
                         Text(name)
                             .font(.caption)
@@ -1786,19 +1787,23 @@ struct WallpaperGallery: View {
         item.lightThumbnail == nil && photos.items.contains(item)
     }
 
-    /// One of System Settings' colours, as a round swatch
+    /// One of System Settings' colours, as its ThumbnailView draws one: a circle filled with it
     private func swatch(_ item: WallpaperItem) -> some View {
         let isSelected = wallpaper.choice(isDark: window.isDark) == item.id
         return Button {
             wallpaper.choose(item, isDark: window.isDark)
         } label: {
-            WallpaperThumbnail(file: item.lightThumbnail)
+            Circle()
+                .fill(Color(cgColor: item.lightThumbnail.flatMap(WallpaperManager.swatchColor) ?? .clear))
+                .frame(width: Self.colorSize, height: Self.colorSize)
+                .overlay {
+                    SelectionRings(shape: Circle(), isSelected: isSelected, style: .selection)
+                }
                 .overlay {
                     if wallpaper.isChangingShown && wallpaper.changingChoice == item.id {
                         progress
                     }
                 }
-                .modifier(ThumbnailFrame(size: CGSize(width: Self.colorSize, height: Self.colorSize), cornerRadius: Self.colorSize / 2, isSelected: isSelected, isOutlined: false))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -1866,24 +1871,30 @@ struct WallpaperGallery: View {
         }
     }
 
-    /// One of Colours' first two swatches, a symbol in a grey circle, as in System Settings: the colours'
-    /// shuffle, ringed while it's chosen, and the custom colour, which opens the Colours panel
+    /// One of Colours' first two swatches, a symbol in a grey circle, as System Settings' CircleButton
+    /// draws them: the colours' shuffle, ringed while it's chosen, and the custom colour, which opens the
+    /// Colours panel
     private func circleButton(_ symbol: String, name: String, id: String? = nil, action: @escaping () -> Void) -> some View {
         let isSelected = id != nil && wallpaper.choice(isDark: window.isDark) == id
         return Button(action: action) {
-            Circle()
-                .fill(.quaternary)
-                .overlay {
-                    if id != nil && wallpaper.isChangingShown && wallpaper.changingChoice == id {
-                        progress
-                    } else {
-                        Image(systemName: symbol)
-                            .font(.system(size: 26, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
+            ZStack {
+                Circle()
+                    .fill(.quaternary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if id != nil && wallpaper.isChangingShown && wallpaper.changingChoice == id {
+                    progress
+                } else {
+                    Image(systemName: symbol)
+                        .font(.system(size: 26))
+                        .fontWeight(.medium)
+                        .foregroundStyle(.secondary)
                 }
-                .modifier(ThumbnailFrame(size: CGSize(width: Self.colorSize, height: Self.colorSize), cornerRadius: Self.colorSize / 2, isSelected: isSelected, isOutlined: false))
-                .contentShape(Circle())
+            }
+            .frame(width: Self.colorSize, height: Self.colorSize)
+            .overlay {
+                SelectionRings(shape: Circle(), isSelected: isSelected, style: .tint)
+            }
+            .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .help(name)
@@ -1968,36 +1979,47 @@ struct ShowAllButtonStyle: ButtonStyle {
     }
 }
 
-/// A thumbnail's frame, as System Settings draws one: the picture with its corners rounded and a faint
-/// line around its edge, which Colours' circles don't have, or while it's the one chosen, a little
-/// smaller inside a ring in the accent colour, which turns grey while the window isn't the one in front
+/// A picture's thumbnail, as System Settings' ThumbnailView draws one: the picture at its size, its
+/// corners rounded, and over its edge a faint line, or while it's the one chosen, System Settings' rings
 struct ThumbnailFrame: ViewModifier {
     let size: CGSize
     let cornerRadius: CGFloat
     let isSelected: Bool
-    var isOutlined = true
-    @Environment(\.controlActiveState) private var controlActiveState
-
-    private static let ringWidth: CGFloat = 2
 
     func body(content: Content) -> some View {
-        let inset = isSelected ? Self.ringWidth : 0
-        let shape = RoundedRectangle(cornerRadius: cornerRadius - inset)
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content
-            .frame(width: size.width - 2 * inset, height: size.height - 2 * inset)
-            .clipShape(shape)
-            .overlay {
-                if isOutlined && !isSelected {
-                    shape.stroke(.black.opacity(0.08), lineWidth: 1)
-                }
-            }
             .frame(width: size.width, height: size.height)
+            .clipShape(shape)
+            .contentShape(shape)
             .overlay {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .stroke(controlActiveState == .key ? Color.accentColor : Color(nsColor: .unemphasizedSelectedContentBackgroundColor), lineWidth: Self.ringWidth)
-                }
+                SelectionRings(shape: shape, isSelected: isSelected, isOutlined: true, style: .selection)
             }
+    }
+}
+
+/// What System Settings draws over a thumbnail's edge while it's the one chosen: a ring in `style`, the
+/// selection colour, which turns grey while the window isn't the one in front, or for Colours' two
+/// buttons the accent colour, which doesn't, and under it a thinner one just inside, in white, or in
+/// black in Dark mode, which parts it from the picture. The picture keeps its size under them. Otherwise
+/// a picture has a faint line around its edge, and a colour has nothing.
+struct SelectionRings<S: Shape, Style: ShapeStyle>: View {
+    let shape: S
+    let isSelected: Bool
+    var isOutlined = false
+    let style: Style
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        ZStack {
+            if isSelected {
+                shape.stroke(colorScheme == .dark ? Color.black : .white, style: StrokeStyle(lineWidth: 1.5))
+                    .padding(1)
+                shape.stroke(style, style: StrokeStyle(lineWidth: 2))
+            } else if isOutlined {
+                shape.stroke((colorScheme == .dark ? Color.white : .black).opacity(0.08), style: StrokeStyle(lineWidth: 1))
+            }
+        }
     }
 }
 
@@ -5361,6 +5383,19 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         guard let color = color(ofSwatch: swatch) else { throw CocoaError(.fileReadCorruptFile) }
         return try colorPicture(color, size: size, named: swatch.deletingPathExtension().lastPathComponent, into: folder)
     }
+
+    /// A colour's swatch's colour, as `color(ofSwatch:)` reads it, read once: the Wallpaper window fills
+    /// its circle with it, as System Settings fills its with the colour
+    static func swatchColor(_ swatch: URL) -> CGColor? {
+        if let color = swatchColors.object(forKey: swatch as NSURL) {
+            return color
+        }
+        let color = color(ofSwatch: swatch)
+        color.map { swatchColors.setObject($0, forKey: swatch as NSURL) }
+        return color
+    }
+
+    private static let swatchColors = NSCache<NSURL, CGColor>()
 
     /// The colour of one of System Settings' colours: its swatch's middle pixel
     private static func color(ofSwatch swatch: URL) -> CGColor? {
