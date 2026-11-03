@@ -17,10 +17,16 @@
 #      what the window server draws round the popover, taken over each picture, blended as the wallpaper
 #      is. Over all that but the pointer, while macOS shows it, its picture of the screen from when the
 #      change began, fading out: the screen as it was on the frame drawn last before.
+#      The popover's window grows and shrinks with what's in it (log.json's "window" on each frame), and
+#      what the window server draws round it is taken for each of its sizes.
 #   2. pipeline.shown() turns the whole screen into the light the display gives off with that frame's
 #      settings, as log.json has them: Color Tint's hue and intensity, and the display's brightness.
-#   3. A camera films it: a crop of the screen, moving and zooming as the scene's "camera" says, scaled
-#      in light, as a camera's sensor would take it.
+#      For a scene with "otherDisplays": true, the Mac's other displays are on the stage as well, each
+#      with its own desktop (desktop-<number>.png, which nothing on changes) and its own brightness, through
+#      its own pipeline: the Dell's gamma table, the Studio Display's backlight (Stage).
+#   3. A camera films it: a crop of the stage, moving and zooming as the scene's "camera" says, scaled
+#      in light, as a camera's sensor would take it. A camera can have panes, each a part of the video
+#      filming the stage on its own (a close view of the popover above both displays whole, say).
 #   4. pipeline.to_video() makes the colours of the video, which ffmpeg encodes at fixed settings, so
 #      the same recording gives the same files, byte for byte.
 #
@@ -28,23 +34,27 @@
 #                               9x16): <scene>-<camera>.mp4, the master, in Display P3 (HEVC, 10 bits, its
 #                               colour tagged so players show the display's own red), <scene>-<camera>-srgb.mp4
 #                               (H.264, 8 bits, sRGB, for where P3 isn't shown, its deepest reds clipped),
-#                               and stills/<camera>-NNNN.png of the first, middle and last frames, in P3
+#                               and stills/<camera>-NNNN.png of the first, middle and last frames, and any
+#                               others the scene lists in "stills", in P3
 #   compose.py check <scene>    compares the recorder's first frame, with the window server's shadow and
 #                               rims added, against the window server's own picture of the popover over the
 #                               same desktop (make-demo.sh --check records both into build/demo/<scene>/check/)
 #   compose.py verify <scene>   decodes the videos as macOS's players do (AVFoundation, colour matched to
 #                               Display P3) and compares them with the colours they were made from
 #   compose.py needs <scene>    the window server's pictures of the popover over the desktop the recording
-#                               needs, a line for each: the popover's appearance and the wallpaper's picture
-#                               under it (make-demo.sh takes them)
+#                               needs, a line for each: the popover's appearance, the wallpaper's picture
+#                               under it, and YES or NO, whether the displays are adjusted independently,
+#                               which sets the popover's size (make-demo.sh takes them)
 #   compose.py hues <scene>     for a scene that moves Tint: the masters' desktop, decoded, at red, yellow,
 #                               green, cyan, blue and magenta, against pipeline.shown() with MediaAccessibility's
 #                               matrix for the Tint slider's value on each of those frames
 #
 # A scene's camera (scenes/*.json, "camera") has, for each shape, the video's size in pixels and keys:
-# at a time, the middle of what's filmed and its height, in points on the display, kept on the display.
-# Between two keys it moves along the later one's easing (linear, easeIn, easeOut or easeInOut, as Core
-# Animation's), zooming by the same ratio each moment, about the point that's in the same place in both.
+# at a time, the middle of what's filmed and its height, in points on the stage (the popover's display's,
+# from its top left), kept on the stage. Between two keys it moves along the later one's easing (linear,
+# easeIn, easeOut or easeInOut, as Core Animation's), zooming by the same ratio each moment, about the
+# point that's in the same place in both. Or, instead of keys, "panes": each a "rect" of the video
+# (left, top, width, height, in pixels) and keys of its own; the rest of the video is black.
 #
 # Needs what pipeline.py needs, and ffmpeg with libx265 and libx264.
 import argparse, collections, json, math, multiprocessing, subprocess, sys
@@ -231,18 +241,21 @@ class Shot:
         self.fps = self.log["fps"]
         frames = self.log["frames"]
         x, y, w, h = self.canvas
-        # The desktop as one picture while it and the popover don't change, as recorded before scenes
-        # could change the appearance; in layers otherwise (desktop_state)
+        # The desktop as one picture while it and the popover's appearance don't change, as recorded before
+        # scenes could change the appearance; in layers otherwise (desktop_state)
         states = {(f["popover"], f["desktop"]["wallpaper"], f["desktop"]["menuBar"]) if "desktop" in f else None for f in frames}
         self.layered = len(states) > 1
         self.layers = {}
+        # What the window server draws round the popover, for each appearance and size it has, and its
+        # picture of the popover's edge over each picture of the wallpaper under it
+        self.window_servers, self.rings = {}, {}
         if not self.layered:
             pixels, icc = read_png(self.folder / desktop["image"])
             self.desktop = to_display(pixels, icc, self.display)
-            appearance = frames[0].get("popover") or frames[0]["system"]["appearance"]
-            self.window_servers = {appearance: WindowServerLayer(appearance, desktop["popover"][2:], self.display)}
-            # Its picture of the popover's edge has to be over this desktop, with the popover in this place
-            self.rings = {(appearance, None): self.window_servers[appearance].picture_over(pixels[y:y + h, x:x + w, :3], desktop["canvas"])}
+            for popover, size in dict.fromkeys(self.popover_state(frame) for frame in range(self.count)):
+                self.window_servers[(popover, size)] = WindowServerLayer(popover, size, self.display)
+                # Its picture of the popover's edge has to be over this desktop, with the popover in this place
+                self.rings[(popover, size, None)] = self.window_servers[(popover, size)].picture_over(pixels[y:y + h, x:x + w, :3], desktop["canvas"])
         else:
             for appearance in ("light", "dark"):
                 wallpaper, icc = read_png(self.folder / f"wallpaper-{appearance}.png")
@@ -252,35 +265,50 @@ class Shot:
                 self.layers[appearance] = (to_display(wallpaper[..., :3], icc, self.display),
                                            np.dstack([to_display(menu_bar[..., :3], menu_icc, self.display), menu_bar[..., 3:]]))
             self.desktop = self.layers["light"][0]
-            self.window_servers, self.rings = {}, {}
-            for popover, wallpaper in self.needs():
-                if popover not in self.window_servers:
-                    self.window_servers[popover] = WindowServerLayer(popover, desktop["popover"][2:], self.display)
+            for popover, wallpaper, size in self.needs():
+                if (popover, size) not in self.window_servers:
+                    self.window_servers[(popover, size)] = WindowServerLayer(popover, size, self.display)
                 backdrop = read_png(self.folder / "backdrops" / f"wallpaper-{wallpaper}-menubar-{popover}.png")[0][..., :3]
-                self.rings[(popover, wallpaper)] = self.window_servers[popover].picture_over(backdrop, desktop["canvas"])
+                self.rings[(popover, size, wallpaper)] = self.window_servers[(popover, size)].picture_over(backdrop, desktop["canvas"])
         self.pointer = Pointer(self.display, self.scale, self.log["pointer"]["hotSpot"])
+        self.stage = Stage(self)
+
+    def popover_state(self, frame):
+        """The popover's appearance on `frame`, and its window's size, in points"""
+        record = self.log["frames"][frame]
+        appearance = record.get("popover") or self.log["frames"][0]["system"]["appearance"]
+        size = tuple(record["window"][2:]) if "window" in record else tuple(self.log["desktop"]["popover"][2:])
+        return appearance, size
 
     def needs(self):
         """The window server's pictures of the popover over the desktop the frames need: for each, the
-        popover's appearance, and the wallpaper's picture under it, light or dark, while it shows any of it
-        (the menu bar has the popover's appearance, as both change when the app's told)"""
-        needed = []
-        for frame in self.log["frames"]:
+        popover's appearance, the wallpaper's picture under it, light or dark, while it shows any of it
+        (the menu bar has the popover's appearance, as both change when the app's told), and its window's
+        size, with whether the displays are adjusted independently then, which gives the popover that size"""
+        needed, independently = [], {}
+        for number, frame in enumerate(self.log["frames"]):
             popover, desktop = frame.get("popover"), frame.get("desktop")
             if not popover or not desktop:
                 continue
             if desktop["menuBar"] != popover:
                 raise SystemExit(f"Frame {frame['frame']} has the menu bar in {desktop['menuBar']} and the popover in {popover}; no picture of the window server's has that")
+            size = self.popover_state(number)[1]
+            split = frame["app"].get("adjustsDisplaysIndependently", False)
+            if independently.setdefault(size, split) != split:
+                raise SystemExit(f"The popover is {size[0]:g}×{size[1]:g} points with the displays adjusted independently and not; the window server's picture can't be taken")
             for wallpaper, shows in (("light", desktop["wallpaper"] < 1), ("dark", desktop["wallpaper"] > 0)):
-                if shows and (popover, wallpaper) not in needed:
-                    needed.append((popover, wallpaper))
+                if shows and (popover, wallpaper, size) not in needed:
+                    needed.append((popover, wallpaper, size))
+        self.independently = independently
         return needed
 
-    def settings(self, frame):
-        """Color Tint as (hue, intensity) or None, and the display's brightness, on `frame`"""
+    def settings(self, frame, display=None):
+        """Color Tint as (hue, intensity) or None, and the brightness of `display` (the popover's unless
+        another's number is given), on `frame`"""
         system = self.log["frames"][frame]["system"]
         tint = (system["hue"], system["intensity"]) if system["colorFilter"] else None
-        brightness = next(d["brightness"] for d in system["displays"] if d["id"] == self.log["desktop"]["display"])
+        display = self.log["desktop"]["display"] if display is None else display
+        brightness = next(d["brightness"] for d in system["displays"] if d["id"] == display)
         return tint, brightness
 
     def desktop_state(self, frame, region):
@@ -298,17 +326,18 @@ class Shot:
         return menu_bar[..., :3] * menu_bar[..., 3:] + (1 - menu_bar[..., 3:]) * wallpaper
 
     def ring(self, frame):
-        """The window server's picture of the popover's edge on `frame`: over the wallpaper's picture for
-        Light, for Dark, or as much of each as the wallpaper shows, as the glass shows what's under it"""
+        """The window server's picture of the popover's edge on `frame`, for its appearance and size: over
+        the wallpaper's picture for Light, for Dark, or as much of each as the wallpaper shows, as the glass
+        shows what's under it"""
+        popover, size = self.popover_state(frame)
         if not self.layered:
-            return next(iter(self.rings.values()))
-        record = self.log["frames"][frame]
-        popover, dark = record["popover"], record["desktop"]["wallpaper"]
+            return self.rings[(popover, size, None)]
+        dark = self.log["frames"][frame]["desktop"]["wallpaper"]
         if dark == 0:
-            return self.rings[(popover, "light")]
+            return self.rings[(popover, size, "light")]
         if dark == 1:
-            return self.rings[(popover, "dark")]
-        return (1 - dark) * self.rings[(popover, "light")] + dark * self.rings[(popover, "dark")]
+            return self.rings[(popover, size, "dark")]
+        return (1 - dark) * self.rings[(popover, size, "light")] + dark * self.rings[(popover, size, "dark")]
 
     def screen(self, frame, region, pointer=True):
         """The screen's encoded values, in the display's colours, in `region` (left, top, right, bottom,
@@ -326,8 +355,7 @@ class Shot:
             part = pixels[iy0 - cy:iy1 - cy, ix0 - cx:ix1 - cx, :3]
             picture[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0] = to_display(part, icc, self.display)
         record = self.log["frames"][frame]
-        window_server = self.window_servers[record["popover"]] if self.layered else next(iter(self.window_servers.values()))
-        window_server.add(picture, (x0, y0), self.window[:2], background, self.ring(frame))
+        self.window_servers[self.popover_state(frame)].add(picture, (x0, y0), self.window[:2], background, self.ring(frame))
         # macOS's picture of the screen, taken as the change began, over everything but the pointer, as
         # the window server puts it over what's under it, blending their encoded values
         if taken := record.get("screenPicture"):
@@ -342,6 +370,62 @@ class Shot:
         """What the display gives off in `region` on `frame`, with its settings then"""
         tint, brightness = self.settings(frame)
         return pipeline.shown(self.screen(frame, region), self.display, tint, brightness)
+
+
+class Stage:
+    """Every display the shot shows, where it's filmed: the popover's display at its place, in its points
+    from its top left, and for a scene with "otherDisplays": true, the Mac's others beside it, each where
+    the displays' arrangement has it and at its real size beside the first, from the size in millimetres
+    each tells macOS (from its EDID, not measured), its pixels square, at the width it gives. A display
+    beside another as arranged is put `GAP`
+    points away from it, for the room between two screens (which isn't measured); along the edge they
+    share it's as far down (or across) as arranged. Each display's desktop is lit by its own pipeline with
+    its own brightness. Light is relative to each display's own white: 1 is its white at full brightness,
+    the Dell's as the Studio Display's, though the Dell's white is dimmer than the Studio Display's 600
+    nits (by how much wasn't measured), so the shot shows how far each is dimmed from its own full
+    brightness, not how bright one looks beside the other. Around and between them it's black."""
+
+    GAP = 48
+    MARGIN = 60
+
+    def __init__(self, shot):
+        self.shot = shot
+        width, height = shot.size
+        self.displays = [StageDisplay(shot.display, (0, 0, width, height), shot.scale, None, shot.light)]
+        desktop = shot.log["desktop"]
+        others = desktop.get("others") or []
+        if others:
+            per_point = desktop["millimetres"][0] / width
+            for other in others:
+                display = pipeline.Display.live(other["display"])
+                pixels, icc = read_png(shot.folder / other["image"])
+                encoded = to_display(pixels[..., :3], icc, display)
+                x, y, w, h = other["frame"]
+                scale = other["millimetres"][0] / w / per_point
+                sw, sh = w * scale, h * scale
+                sx = -self.GAP - sw if x + w <= 0 else width + self.GAP if x >= width else x
+                sy = -self.GAP - sh if y + h <= 0 else height + self.GAP if y >= height else y
+                def light(frame, region, encoded=encoded, display=display, number=other["display"]):
+                    x0, y0, x1, y1 = region
+                    tint, brightness = shot.settings(frame, number)
+                    return pipeline.shown(encoded[y0:y1, x0:x1], display, tint, brightness)
+                self.displays.append(StageDisplay(display, (sx, sy, sw, sh), other["scale"] / scale, other["name"], light))
+            left = min(d.rect[0] for d in self.displays) - self.MARGIN
+            top = min(d.rect[1] for d in self.displays) - self.MARGIN
+            right = max(d.rect[0] + d.rect[2] for d in self.displays) + self.MARGIN
+            bottom = max(d.rect[1] + d.rect[3] for d in self.displays) + self.MARGIN
+            self.bounds = (left, top, right, bottom)
+        else:
+            self.bounds = (0, 0, width, height)
+
+
+class StageDisplay:
+    """A display on the stage: where it is (left, top, width, height, in stage points), its pixels to a
+    stage point, and the light it gives off in a region of its pixels on a frame"""
+
+    def __init__(self, display, rect, scale, name, light):
+        self.display, self.rect, self.scale, self.name, self.light = display, rect, scale, name, light
+        self.pixels = (round(rect[2] * scale), round(rect[3] * scale))
 
 
 # --- The camera -----------------------------------------------------------------------------------
@@ -366,28 +450,39 @@ EASINGS = {"linear": lambda t: t, "easeIn": lambda t: bezier(0.42, 0, 1, 1, t),
 
 
 class Camera:
-    def __init__(self, name, spec, display_size):
+    """A pane of a video filming the stage: where it is in the video (left, top, width, height, in
+    pixels) and what it films when"""
+
+    def __init__(self, name, spec, bounds, rect=None):
         self.name = name
         self.size = spec["size"]
-        self.aspect = self.size[0] / self.size[1]
-        self.display = display_size
-        self.keys = [(key["at"], self.rect(key), key.get("easing", "easeInOut")) for key in sorted(spec["keys"], key=lambda key: key["at"])]
+        self.rect = rect or (0, 0, *self.size)
+        self.aspect = self.rect[2] / self.rect[3]
+        self.bounds = bounds
+        self.keys = [(key["at"], self.view_rect(key), key.get("easing", "easeInOut")) for key in sorted(spec["keys"], key=lambda key: key["at"])]
 
-    def rect(self, key):
-        """A key's view, in the video's shape, at most the display's size, and on it: left, top, width, height"""
-        width, height = key["height"] * self.aspect, key["height"]
-        if width > self.display[0]:
-            width, height = self.display[0], self.display[0] / self.aspect
-        if height > self.display[1]:
-            width, height = self.display[1] * self.aspect, self.display[1]
-        x = min(max(key["centre"][0] - width / 2, 0), self.display[0] - width)
-        y = min(max(key["centre"][1] - height / 2, 0), self.display[1] - height)
+    @classmethod
+    def all(cls, name, spec, bounds):
+        """A video's panes: each of its "panes", or the whole of it"""
+        if "panes" not in spec:
+            return [cls(name, spec, bounds)]
+        return [cls(name, {"size": spec["size"], "keys": pane["keys"]}, bounds, tuple(pane["rect"])) for pane in spec["panes"]]
+
+    def view_rect(self, key):
+        """A key's view, in the pane's shape: left, top, width, height. At most the size that takes in the
+        whole stage, and on it, or, across which it's wider than the stage (the stage's shape not being the
+        pane's), with the stage in the middle"""
+        left, top, right, bottom = self.bounds
+        most = max(right - left, (bottom - top) * self.aspect)
+        width, height = min(key["height"] * self.aspect, most), min(key["height"], most / self.aspect)
+        x = min(max(key["centre"][0] - width / 2, left), right - width) if width <= right - left else (left + right - width) / 2
+        y = min(max(key["centre"][1] - height / 2, top), bottom - height) if height <= bottom - top else (top + bottom - height) / 2
         return x, y, width, height
 
     def view(self, time):
-        """What's filmed at `time`: left, top, right and bottom, in points on the display. Between two keys
-        the view zooms by the same ratio each moment, about the one point that's in the same place in
-        both views, so an edge they share stays put; with no zoom, it moves straight across."""
+        """What's filmed at `time`: left, top, right and bottom, in points on the stage. Between two keys
+        the view zooms by the same ratio each moment, about the one point that's in the same place in both
+        views, so an edge they share stays put; with no zoom, it moves straight across."""
         if time <= self.keys[0][0]:
             x, y, w, h = self.keys[0][1]
         elif time >= self.keys[-1][0]:
@@ -407,28 +502,69 @@ class Camera:
         return x, y, x + w, y + h
 
 
-def film(shot, camera, frame):
-    """The camera's picture of the light the screen gives off on `frame`, scaled in light with a Lanczos
-    filter, kept from ringing: each pixel between the least and the most light of the screen's pixels
-    round where it's taken from (scaled the same way from the screen's darkest and brightest in each
-    3 by 3), so sharp text gets no dark or bright halo"""
+def film(shot, cameras, frame):
+    """The video's picture of the light the stage gives off on `frame`: each of `cameras`, its panes,
+    filming its part of the video"""
+    cameras = cameras if isinstance(cameras, list) else [cameras]
+    width, height = cameras[0].size
+    picture = np.zeros((height, width, 3))
+    for camera in cameras:
+        x, y, w, h = camera.rect
+        picture[y:y + h, x:x + w] = film_pane(shot, camera, frame)
+    return picture
+
+
+def film_pane(shot, camera, frame):
+    """A pane's picture of the light the stage gives off on `frame`: each display it films scaled in
+    light with a Lanczos filter, kept from ringing: each pixel between the least and the most light of
+    the display's pixels round where it's taken from (scaled the same way from the display's darkest and
+    brightest in each 3 by 3), so sharp text gets no dark or bright halo. Where a display's edge is in the
+    picture, it's scaled with black beyond it, as the stage is there."""
     from scipy import ndimage
-    view = [v * shot.scale for v in camera.view(frame / shot.fps)]
-    reach = 3 * max(1.0, (view[2] - view[0]) / camera.size[0]) + 2
-    region = (max(int(math.floor(view[0] - reach)), 0), max(int(math.floor(view[1] - reach)), 0),
-              min(int(math.ceil(view[2] + reach)), shot.desktop.shape[1]), min(int(math.ceil(view[3] + reach)), shot.desktop.shape[0]))
-    light = shot.light(frame, region).astype(np.float32)
-    box = (view[0] - region[0], view[1] - region[1], view[2] - region[0], view[3] - region[1])
-    size = tuple(camera.size)
-    def scaled(channel, how):
-        return np.asarray(Image.fromarray(np.ascontiguousarray(channel), "F").resize(size, how, box=box))
-    channels = []
-    for c in range(3):
-        sharp = scaled(light[..., c], Image.Resampling.LANCZOS)
-        least = scaled(ndimage.minimum_filter(light[..., c], 3), Image.Resampling.BILINEAR)
-        most = scaled(ndimage.maximum_filter(light[..., c], 3), Image.Resampling.BILINEAR)
-        channels.append(np.clip(sharp, least, most))
-    return np.dstack(channels).astype(np.float64)
+    view = camera.view(frame / shot.fps)
+    width, height = camera.rect[2], camera.rect[3]
+    per_point = width / (view[2] - view[0])
+    picture = np.zeros((height, width, 3))
+    for display in shot.stage.displays:
+        dx, dy, dw, dh = display.rect
+        ix0, iy0, ix1, iy1 = max(view[0], dx), max(view[1], dy), min(view[2], dx + dw), min(view[3], dy + dh)
+        if ix0 >= ix1 or iy0 >= iy1:
+            continue
+        # The pane's pixels the display is in, and where they are on the display, in its pixels
+        u0, v0 = max(int(math.floor((ix0 - view[0]) * per_point)), 0), max(int(math.floor((iy0 - view[1]) * per_point)), 0)
+        u1, v1 = min(int(math.ceil((ix1 - view[0]) * per_point)), width), min(int(math.ceil((iy1 - view[1]) * per_point)), height)
+        k = display.scale
+        # On the stage, the pane's pixel edges: the view's own where they're the pane's
+        def across(u):
+            return view[0] if u == 0 else view[2] if u == width else view[0] + u / per_point
+        def down(v):
+            return view[1] if v == 0 else view[3] if v == height else view[1] + v / per_point
+        box = [(across(u0) - dx) * k, (down(v0) - dy) * k, (across(u1) - dx) * k, (down(v1) - dy) * k]
+        reach = 3 * max(1.0, (box[2] - box[0]) / (u1 - u0)) + 2
+        # Black beyond each edge of the display that's in the picture; elsewhere what the display has
+        # round the view, as far as it goes
+        pw, ph = display.pixels
+        beyond = [view[0] < dx - 1e-6, view[1] < dy - 1e-6, view[2] > dx + dw + 1e-6, view[3] > dy + dh + 1e-6]
+        want = [int(math.floor(box[0] - reach)), int(math.floor(box[1] - reach)), int(math.ceil(box[2] + reach)), int(math.ceil(box[3] + reach))]
+        region = [max(want[0], 0), max(want[1], 0), min(want[2], pw), min(want[3], ph)]
+        light = display.light(frame, tuple(region)).astype(np.float32)
+        pad = [region[0] - want[0] if beyond[0] else 0, region[1] - want[1] if beyond[1] else 0,
+               want[2] - region[2] if beyond[2] else 0, want[3] - region[3] if beyond[3] else 0]
+        if any(pad):
+            light = np.pad(light, ((pad[1], pad[3]), (pad[0], pad[2]), (0, 0)))
+        origin = (region[0] - pad[0], region[1] - pad[1])
+        source = (box[0] - origin[0], box[1] - origin[1], box[2] - origin[0], box[3] - origin[1])
+        size = (u1 - u0, v1 - v0)
+        def scaled(channel, how):
+            return np.asarray(Image.fromarray(np.ascontiguousarray(channel), "F").resize(size, how, box=source))
+        channels = []
+        for c in range(3):
+            sharp = scaled(light[..., c], Image.Resampling.LANCZOS)
+            least = scaled(ndimage.minimum_filter(light[..., c], 3), Image.Resampling.BILINEAR)
+            most = scaled(ndimage.maximum_filter(light[..., c], 3), Image.Resampling.BILINEAR)
+            channels.append(np.clip(sharp, least, most))
+        picture[v0:v1, u0:u1] += np.dstack(channels).astype(np.float64)
+    return picture
 
 
 # --- The videos -----------------------------------------------------------------------------------
@@ -484,9 +620,9 @@ def _open(scene, folder):
 
 
 def _render(task):
-    """One frame of one camera: its planes for each video, and its P3 values if it's kept as a still"""
-    camera, frame, still = task
-    light = film(_shot, camera, frame)
+    """One frame of one video: its planes for each kind, and its P3 values if it's kept as a still"""
+    cameras, frame, still = task
+    light = film(_shot, cameras, frame)
     videos = {}
     for suffix, (space, bits, _) in VIDEOS.items():
         values = pipeline.to_video(light, _shot.display, space, 16).astype(np.float64) / 65535
@@ -498,11 +634,12 @@ def _render(task):
 
 def compose(scene, folder, workers):
     shot = Shot(scene, folder)
-    cameras = [Camera(name, spec, shot.size) for name, spec in shot.scene["camera"].items()]
-    stills = {0, shot.count // 2, shot.count - 1}
+    videos = [Camera.all(name, spec, shot.stage.bounds) for name, spec in shot.scene["camera"].items()]
+    stills = {0, shot.count // 2, shot.count - 1} | set(shot.scene.get("stills", []))
     (shot.folder / "stills").mkdir(exist_ok=True)
     with multiprocessing.get_context("spawn").Pool(workers, _open, (scene, folder)) as pool:
-        for camera in cameras:
+        for cameras in videos:
+            camera = cameras[0]
             name = camera.name.replace(":", "x")
             encoders = {suffix: ffmpeg(shot.folder / f"{scene}-{name}{suffix}.mp4", camera, shot.fps, space, bits, settings)
                         for suffix, (space, bits, settings) in VIDEOS.items()}
@@ -517,7 +654,7 @@ def compose(scene, folder, workers):
             # Written in order, with only so many frames waiting at once
             waiting = collections.deque()
             for frame in range(shot.count):
-                waiting.append((frame, pool.apply_async(_render, ((camera, frame, frame in stills),))))
+                waiting.append((frame, pool.apply_async(_render, ((cameras, frame, frame in stills),))))
                 if len(waiting) > 2 * workers:
                     done, result = waiting.popleft()
                     write(done, result.get())
@@ -612,7 +749,7 @@ def verify(scene, folder):
     matched to Display P3, against the values it was made from, on its stills' frames"""
     shot = Shot(scene, folder)
     for name, spec in shot.scene["camera"].items():
-        camera = Camera(name, spec, shot.size)
+        camera = Camera.all(name, spec, shot.stage.bounds)
         name = name.replace(":", "x")
         for suffix, (space, bits, _) in VIDEOS.items():
             path = shot.folder / f"{scene}-{name}{suffix}.mp4"
@@ -641,7 +778,7 @@ def hues(scene, folder, size=40):
     x, y, w, h = shot.log["desktop"]["popover"]
     popover = (x - 48, y - 48, x + w + 48, y + h + 48)
     for name, spec in shot.scene["camera"].items():
-        camera = Camera(name, spec, shot.size)
+        camera = Camera(name, spec, shot.stage.bounds)
         views = {frame: camera.view(frame / shot.fps) for frame in wanted}
         left, top = max(v[0] for v in views.values()) + 4, max(max(v[1] for v in views.values()) + 4, 40)
         right, bottom = min(v[2] for v in views.values()) - 4, min(v[3] for v in views.values()) - 4
@@ -702,8 +839,8 @@ def main():
     elif args.command == "needs":
         log = Shot.__new__(Shot)
         log.log = json.loads(((Path(args.folder) if args.folder else BUILD / args.scene) / "log.json").read_text())
-        for popover, wallpaper in log.needs():
-            print(popover, wallpaper)
+        for popover, wallpaper, size in log.needs():
+            print(popover, wallpaper, "YES" if log.independently[size] else "NO")
     else:
         compose(args.scene, args.folder, args.workers)
 

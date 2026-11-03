@@ -1,0 +1,43 @@
+{
+  "about": "Adjust independently switched on, then the Dell's Brightness slider dragged down to 40% and the Studio Display's to 55%, each display dimming on its own, both on the stage as they're arranged, in Dark, the filter off",
+  "fps": 60,
+  "duration": 8.5,
+  "appearance": "dark",
+  "accentColor": "blue",
+  "language": "en-US",
+  "locale": "en_GB",
+  "desktop": true,
+  "otherDisplays": true,
+  "settings": {
+    "colorFilter": false,
+    "tint": 0,
+    "intensity": 0.6,
+    "brightness": 1
+  },
+  "pointer": [120, 520],
+  "actions": [
+    { "at": 0.3, "move": { "button": "Adjust independently" }, "duration": 0.7, "easing": "easeInOut" },
+    { "at": 1.1, "click": { "button": "Adjust independently" }, "duration": 0.1 },
+    { "at": 1.8, "move": { "control": "Brightness DELL SE2216H" }, "duration": 0.6, "easing": "easeInOut" },
+    { "at": 2.5, "drag": "Brightness DELL SE2216H", "from": 1, "to": 0.4, "duration": 2, "easing": "easeInOut" },
+    { "at": 4.8, "move": { "control": "Brightness Studio Display" }, "duration": 0.5, "easing": "easeInOut" },
+    { "at": 5.4, "drag": "Brightness Studio Display", "from": 1, "to": 0.55, "duration": 2, "easing": "easeInOut" }
+  ],
+  "camera": {
+    "16:9": {
+      "size": [3840, 2160],
+      "keys": [
+        { "at": 1.7, "centre": [1938, 350], "height": 700 },
+        { "at": 2.4, "centre": [235, 925], "height": 2700, "easing": "easeInOut" }
+      ]
+    },
+    "9:16": {
+      "size": [2160, 3840],
+      "panes": [
+        { "rect": [0, 0, 2160, 2840], "keys": [{ "at": 0, "centre": [2256, 400], "height": 800 }] },
+        { "rect": [0, 2880, 2160, 960], "keys": [{ "at": 0, "centre": [235, 925], "height": 2700 }] }
+      ]
+    }
+  },
+  "stills": [60, 100, 280, 470]
+}

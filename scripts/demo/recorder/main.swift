@@ -12,17 +12,22 @@ import Metal
 // dragged, time the mouse events by it, and work the main thread puts on the main queue runs when the
 // scene's time reaches it. So the same scene gives the same frames byte for byte. When the scene changes
 // the appearance, the app does it as on the Mac, and macOS's part is played as AppearanceTransition.swift
-// has it, which the log says frame by frame for scripts/demo/compose.py to draw.
+// has it, which the log says frame by frame for scripts/demo/compose.py to draw. AppKit's switches, which
+// SwiftUI draws in hosting views of AppKit's own, are moved on a frame at a time as well
+// (`SwitchAnimations`). The popover's window grows and shrinks from its top with what's in it (taller
+// with the displays adjusted independently), and the canvas has room for it at its largest.
 //
 // scripts/make-demo.sh builds this together with a copy of Safelight.swift, RecordedSystem.swift (the
 // system as the app sees it, which records what the app would change on each frame), Interposers.c and
 // scripts/screenshots/FixedTime.swift, and runs it with `-scene file.json -output directory`. It writes
 // directory/frames/0000.png… and directory/log.json, and for a scene on the desktop, desktop.png and its
-// layers, and the desktop round the popover in each appearance, backdrops/ (Desktop.swift). Instead of
-// recording, with `-check YES` as well it writes the window server's picture of the first frame and its
-// own (`captureOverBackdrop`), and with `-windowServer folder` it takes what the window server draws round
+// layers, and the desktop round the popover in each appearance, backdrops/, and with "otherDisplays", each
+// other display's desktop, desktop-<its number>.png (Desktop.swift). Instead of recording, with `-check
+// YES` as well it writes the window server's picture of the first frame and its own
+// (`captureOverBackdrop`), and with `-windowServer folder` it takes what the window server draws round
 // the popover, unless it has already (`captureWindowServer`), in the appearance `-appearance` gives and
-// over the wallpaper's picture for the one `-wallpaperAppearance` gives, if they're given.
+// over the wallpaper's picture for the one `-wallpaperAppearance` gives, if they're given, and at the
+// size `-adjustsDisplaysIndependently YES` or `NO` gives it (which Safelight reads as it opens).
 //
 // The popover is opened under an invisible icon on the Retina display, in an invisible window that
 // clicks go through, and drawn as the active app's popover is (`acquireKeyAppearance`), so nothing on
@@ -98,16 +103,27 @@ struct Control {
     let range: () -> ClosedRange<Double>
     let value: () -> Double
 
-    static let all: [String: Control] = [
-        "Intensity": Control(kind: .swiftUI(index: 0), range: {
-            let range = ColorFilterManager.shared.intensityRange
-            return Double(range.lowerBound)...Double(range.upperBound)
-        }, value: { Double(ColorController.shared.intensity) }),
-        // In degrees, as the app has it
-        "Tint": Control(kind: .appKit(HueSlider.self), range: { 0...360 }, value: { Double(ColorController.shared.tint) }),
-        // While the displays have one brightness
-        "Brightness": Control(kind: .swiftUI(index: 1), range: { 0...1 }, value: { Double(ColorController.shared.brightness) }),
-    ]
+    /// The sliders the popover shows now: Brightness while the displays have one brightness, and while
+    /// they're adjusted independently, one for each display instead, named after it ("Brightness DELL
+    /// SE2216H"), from the top down in the order the app lists them
+    static var all: [String: Control] {
+        let controller = ColorController.shared
+        var all = [
+            "Intensity": Control(kind: .swiftUI(index: 0), range: {
+                let range = ColorFilterManager.shared.intensityRange
+                return Double(range.lowerBound)...Double(range.upperBound)
+            }, value: { Double(controller.intensity) }),
+            // In degrees, as the app has it
+            "Tint": Control(kind: .appKit(HueSlider.self), range: { 0...360 }, value: { Double(controller.tint) }),
+        ]
+        if controller.independentDisplays.isEmpty {
+            all["Brightness"] = Control(kind: .swiftUI(index: 1), range: { 0...1 }, value: { Double(controller.brightness) })
+        }
+        for (index, display) in controller.independentDisplays.enumerated() {
+            all["Brightness \(display.name)"] = Control(kind: .swiftUI(index: 1 + index), range: { 0...1 }, value: { Double(controller[brightnessOf: display.key]) })
+        }
+        return all
+    }
 
     /// Where the slider is drawn, if it is
     func drawn(in host: NSView) -> SliderGeometry? {
@@ -137,8 +153,19 @@ struct Control {
 /// view, which is flipped. SwiftUI gives the hosting view no elements for accessibility, which would
 /// name them, while nothing asks it for them, so they're found by how they're drawn. "Light" and "Dark"
 /// are the Appearance picker's thumbnails, the first two of the popover's rounded ones the size the
-/// picker has them (the Wallpaper picker's are the same size, under them), left and right.
+/// picker has them (the Wallpaper picker's are the same size, under them), left and right. The switches,
+/// "Schedule", "Color filters" and "Adjust independently", are AppKit's (NSSwitch), from the top down,
+/// each checked to be on or off as the setting it's named after is.
 func buttonFrame(named name: String, in host: NSView) -> CGRect? {
+    let switchNames = [SystemStrings.schedule, SystemStrings.colorFilters, SystemStrings.adjustIndependently]
+    if let index = switchNames.firstIndex(of: name) {
+        func switches(in view: NSView) -> [NSSwitch] { (view as? NSSwitch).map { [$0] } ?? view.subviews.flatMap(switches) }
+        let found = switches(in: host).sorted { $0.convert($0.bounds, to: host).minY < $1.convert($1.bounds, to: host).minY }
+        let controller = ColorController.shared
+        let states = [controller.isAutoMode, controller.isColorFilterOn, controller.adjustsDisplaysIndependently]
+        guard found.count == switchNames.count, zip(found, states).allSatisfy({ ($0.state == .on) == $1 }) else { return nil }
+        return found[index].convert(found[index].bounds, to: host)
+    }
     guard let root = host.layer, let index = ["Light", "Dark"].firstIndex(of: name) else { return nil }
     var thumbnails: [CGRect] = []
     func walk(_ layer: CALayer) {
@@ -153,6 +180,26 @@ func buttonFrame(named name: String, in host: NSView) -> CGRect? {
         .sorted { ($0.minY, $0.minX) < ($1.minY, $1.minX) }
     guard distinct.count >= 2, distinct[0].minY == distinct[1].minY else { return nil }
     return distinct[index]
+}
+
+/// AppKit's switches (NSSwitch) are drawn by SwiftUI views of AppKit's own, each in a hosting view of
+/// its own (`_NSCoreHostingView`) that the popover's `_renderForTest` doesn't reach: while one animates
+/// (its knob growing as it's pressed, and sliding over with a spring when it's switched, about half a
+/// second), SwiftUI moves it on each of the display's frames from a display link, which only fires as
+/// the run loop runs. So each frame of a shot, every such hosting view in the popover is moved on by the
+/// frame's time and drawn, as the popover is (Interposers.c, `scene_render_core_host`).
+enum SwitchAnimations {
+    /// Moves on each of AppKit's own hosting views in `view` by `interval` seconds; how many there were
+    @discardableResult
+    static func render(in view: NSView, interval: Double) -> Int {
+        var rendered = 0
+        if NSStringFromClass(type(of: view)).contains("_NSCoreHostingView") {
+            let result = scene_render_core_host(Unmanaged.passUnretained(view).toOpaque(), interval)
+            guard result == 0 else { fail("Couldn't have SwiftUI draw AppKit's \(type(of: view.superview ?? view)) (\(result))") }
+            rendered += 1
+        }
+        return view.subviews.reduce(rendered) { $0 + render(in: $1, interval: interval) }
+    }
 }
 
 /// The app, which takes the mouse events of a shot from the scene while it's recorded. An AppKit
@@ -200,6 +247,7 @@ final class FrameRenderer {
     private let root = CALayer()
     /// Where the window's layer goes, at its place on the canvas
     private let place = CALayer()
+    private let canvasHeight: CGFloat
     /// The backdrop as one picture, and in layers, once the desktop changes (`showDesktop`): each
     /// appearance's wallpaper, the Dark one over the Light one, and each one's menu bar over them
     private var picture: CALayer?
@@ -209,6 +257,7 @@ final class FrameRenderer {
     init(canvas: CGSize, scale: CGFloat, windowFrame: CGRect, backdrop: CGImage?, layers: [Bool: (wallpaper: CGImage, menuBar: CGImage)] = [:]) {
         width = Int(canvas.width * scale)
         height = Int(canvas.height * scale)
+        canvasHeight = canvas.height
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { fail("There's no Metal device to draw with") }
         self.queue = queue
         let description = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
@@ -252,6 +301,15 @@ final class FrameRenderer {
         renderer.layer = root
         renderer.bounds = root.frame
         CATransaction.flush()
+    }
+
+    /// The window's place on the canvas from now on, as it grows or shrinks with what's in it
+    func moveWindow(to frame: CGRect) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        // Core Animation's y goes up from the bottom; the canvas's down from the top
+        place.frame = CGRect(x: frame.minX, y: canvasHeight - frame.maxY, width: frame.width, height: frame.height)
+        CATransaction.commit()
     }
 
     /// The desktop behind the popover from now on: the wallpaper `dark` of the way from its Light picture
@@ -348,6 +406,27 @@ struct Log: Encodable {
         let canvas: [Double]
         let popover: [Double]
         let menuBar: [MenuBarItem]
+        /// Where the display is, as the displays are arranged, in points from its own top left (so 0, 0),
+        /// and its size in millimetres, as it tells macOS
+        let frame: [Double]
+        let millimetres: [Double]
+        /// The Mac's other displays, for a scene with "otherDisplays": true, each with its own desktop
+        let others: [OtherDisplay]?
+    }
+
+    struct OtherDisplay: Encodable {
+        /// Its desktop, beside the frames, drawn as it shows it: the wallpaper, and the menu bar's items as
+        /// the menu bar of a display without the active app shows them
+        let image: String
+        let display: UInt32
+        let name: String
+        /// In points, and its pixels to the point
+        let size: [Double]
+        let scale: Int
+        /// Where it is as the displays are arranged, in points from the top left of the popover's display,
+        /// and its size in millimetres, as it tells macOS
+        let frame: [Double]
+        let millimetres: [Double]
     }
 
     struct MenuBarItem: Encodable {
@@ -386,6 +465,9 @@ struct Log: Encodable {
         let coreAnimation: [String]?
         /// The appearance the popover is drawn in
         let popover: String
+        /// Its window on the canvas, as it grows or shrinks with what's in it: x, y, width, height, in
+        /// points from the top left
+        let window: [Double]
         /// For a scene on the desktop, how the desktop is: the wallpaper, from 0, its picture for Light,
         /// to 1, its picture for Dark, and the menu bar's appearance
         let desktop: DesktopState?
@@ -420,6 +502,9 @@ struct Log: Encodable {
         let intensity: Double
         let brightness: Double
         let isDarkAppearance: Bool
+        let adjustsDisplaysIndependently: Bool
+        /// Each display's own brightness while they're adjusted independently, by its name
+        let displayBrightness: [String: Double]?
     }
 
     struct System: Encodable {
@@ -504,7 +589,8 @@ final class Recorder: NSObject, NSApplicationDelegate {
         // before it as each new item goes to the left
         if scene.desktop {
             guard scene.canvas == nil, let screen else { fail("A scene on the desktop has its canvas worked out from it, so it can't have one of its own") }
-            desktopMaker = DesktopMaker(screen: screen, isDark: isDark, wallpaperIsDark: wallpaperIsDark, wallpaper: wallpaper)
+            desktopMaker = DesktopMaker(screen: screen, isDark: isDark, wallpaperIsDark: wallpaperIsDark, wallpaper: wallpaper,
+                                        otherScreens: scene.otherDisplays ? NSScreen.screens.filter { $0 != screen } : [])
             desktopMaker?.addSystemItems()
         }
 
@@ -549,7 +635,8 @@ final class Recorder: NSObject, NSApplicationDelegate {
         // Where Safelight's icon would be in the menu bar, invisible: the popover hangs from the height
         // of the old menu bar, which the menu bar centres in its own
         let thickness = NSStatusBar.system.thickness
-        let iconWidth = appDelegate.statusItem?.button?.frame.width ?? 32
+        // As wide as its place in the menu bar, which is the same whichever display's menu bar has it
+        let iconWidth = appDelegate.statusItem?.button?.window?.frame.width ?? 32
         anchor = NSWindow(contentRect: NSRect(x: screen.frame.midX, y: screen.visibleFrame.maxY - thickness, width: iconWidth, height: thickness),
                           styleMask: .borderless, backing: .buffered, defer: false)
         anchor.isOpaque = false
@@ -608,6 +695,26 @@ final class Recorder: NSObject, NSApplicationDelegate {
     private func record(window: NSWindow, host: NSHostingView<MenuView>, arrowTipOnScreen: NSPoint) {
         guard let frameLayer = window.contentView?.superview?.layer else { fail("The popover has no layer to draw") }
         let windowSize = window.frame.size
+        // The popover at its largest in the shot, as the canvas has room for it to grow: it's taller while
+        // the displays are adjusted independently, so if the scene switches that, its size the other way,
+        // which it's switched to and back for, leaving the app and what it has set as they were
+        var largest = windowSize
+        if scene.clicks(SystemStrings.adjustIndependently) {
+            let controller = ColorController.shared
+            let (calls, gammaTables, hardwareBrightness) = (RecordedSystem.calls, RecordedSystem.gammaTables, RecordedSystem.hardwareBrightness)
+            func switched() {
+                controller.adjustsDisplaysIndependently.toggle()
+                host._renderForTest(interval: 0)
+                window.displayIfNeeded()
+            }
+            switched()
+            largest = CGSize(width: max(largest.width, window.frame.width), height: max(largest.height, window.frame.height))
+            switched()
+            RecordedSystem.calls = calls
+            guard window.frame.size == windowSize, RecordedSystem.gammaTables == gammaTables, RecordedSystem.hardwareBrightness == hardwareBrightness else {
+                fail("Switching Adjust independently and back to measure the popover didn't leave it as it was")
+            }
+        }
         // Where the arrow's tip is in the window, from its top left
         let arrowTipInWindow = window.convertPoint(fromScreen: arrowTipOnScreen)
         let arrowTip = CGPoint(x: arrowTipInWindow.x, y: windowSize.height - arrowTipInWindow.y)
@@ -622,21 +729,29 @@ final class Recorder: NSObject, NSApplicationDelegate {
         var desktopInfo: Log.DesktopInfo?
         if let desktop {
             let popover = desktop.popover(size: windowSize, arrowTip: arrowTip)
-            let canvas = desktop.canvas(around: popover)
+            let canvas = desktop.canvas(around: CGRect(origin: popover.origin, size: largest))
             (canvasSize, origin, backdrop) = (canvas.frame.size, canvas.popover, canvas.backdrop)
             desktopInfo = Log.DesktopInfo(image: "desktop.png", display: desktop.displayID, size: [desktop.size.width, desktop.size.height], scale: Int(desktop.scale),
                                           canvas: [canvas.frame.minX, canvas.frame.minY, canvas.frame.width, canvas.frame.height],
                                           popover: [popover.minX, popover.minY, popover.width, popover.height],
-                                          menuBar: desktop.menuBarItems.map { Log.MenuBarItem(name: $0.name, frame: [$0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height]) })
+                                          menuBar: desktop.menuBarItems.map { Log.MenuBarItem(name: $0.name, frame: [$0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height]) },
+                                          frame: [0, 0, desktop.size.width, desktop.size.height], millimetres: [desktop.millimetres.width, desktop.millimetres.height],
+                                          others: scene.otherDisplays ? desktop.others.map { other in
+                                              Log.OtherDisplay(image: "desktop-\(other.displayID).png", display: other.displayID, name: other.name,
+                                                               size: [other.frame.width, other.frame.height], scale: Int(other.scale),
+                                                               frame: [other.frame.minX, other.frame.minY, other.frame.width, other.frame.height],
+                                                               millimetres: [other.millimetres.width, other.millimetres.height])
+                                          } : nil)
         }
         let windowFrame = CGRect(origin: origin, size: windowSize)
         let canvasOnDesktop = desktopInfo.map { CGRect(x: $0.canvas[0], y: $0.canvas[1], width: $0.canvas[2], height: $0.canvas[3]) }
         let renderer = FrameRenderer(canvas: canvasSize, scale: CGFloat(scale), windowFrame: windowFrame, backdrop: backdrop,
                                      layers: canvasOnDesktop.flatMap { desktop?.canvasLayers($0) } ?? [:])
 
-        // Canvas points to the window's and back: the window's y goes up from its bottom
-        func inWindow(_ point: CGPoint) -> NSPoint { NSPoint(x: point.x - origin.x, y: windowSize.height - (point.y - origin.y)) }
-        func onCanvas(_ point: NSPoint) -> CGPoint { CGPoint(x: origin.x + point.x, y: origin.y + windowSize.height - point.y) }
+        // Canvas points to the window's and back: the window's y goes up from its bottom, which moves as it
+        // grows or shrinks from its top
+        func inWindow(_ point: CGPoint) -> NSPoint { NSPoint(x: point.x - origin.x, y: window.frame.height - (point.y - origin.y)) }
+        func onCanvas(_ point: NSPoint) -> CGPoint { CGPoint(x: origin.x + point.x, y: origin.y + window.frame.height - point.y) }
         func knob(_ control: String, at value: Double?) -> CGPoint {
             guard let found = Control.all[control] else { fail("There's no control called \(control)") }
             let slider = found.geometry(in: host, named: control)
@@ -802,7 +917,15 @@ final class Recorder: NSObject, NSApplicationDelegate {
             // for the scene's clock instead (Interposers.c), and what's due by now runs first.
             scene_main_queue_run(scene_clock_now())
             host._renderForTest(interval: frame == 0 ? 0 : 1 / Double(scene.fps))
+            switchFrames += SwitchAnimations.render(in: host, interval: frame == 0 ? 0 : 1 / Double(scene.fps))
             window.displayIfNeeded()
+            // The popover's window grows and shrinks with what's in it, from its top, where its arrow is
+            if window.frame.size != windowNow.size {
+                guard window.frame.maxY == windowTop, window.frame.minX == windowLeft else { fail("The popover's window moved at frame \(frame), rather than only growing or shrinking") }
+                windowNow.size = window.frame.size
+                guard windowNow.maxX <= canvasSize.width, windowNow.maxY <= canvasSize.height else { fail("The popover's window grew past the canvas at frame \(frame)") }
+                renderer.moveWindow(to: windowNow)
+            }
             let animations = Self.coreAnimationAnimations(in: frameLayer)
             // The desktop behind the glass as it is now, in layers once it's changed
             var desktopState: Log.DesktopState?
@@ -843,7 +966,10 @@ final class Recorder: NSObject, NSApplicationDelegate {
                 pointer: pointer.map { Log.PointerState(x: $0.x, y: $0.y, pressed: isPressed) },
                 sliders: sliders,
                 app: Log.App(isColorFilterOn: controller.isColorFilterOn, tint: Double(controller.tint), intensity: Double(controller.intensity),
-                             brightness: Double(controller.brightness), isDarkAppearance: controller.isDarkAppearance),
+                             brightness: Double(controller.brightness), isDarkAppearance: controller.isDarkAppearance,
+                             adjustsDisplaysIndependently: controller.adjustsDisplaysIndependently,
+                             displayBrightness: controller.independentDisplays.isEmpty ? nil
+                                 : Dictionary(controller.independentDisplays.map { ($0.name, Double(controller[brightnessOf: $0.key])) }) { first, _ in first }),
                 system: Log.System(colorFilter: RecordedSystem.colorFilterEnabled && RecordedSystem.colorFilterType == 16,
                                    hue: RecordedSystem.hue, intensity: RecordedSystem.intensity,
                                    appearance: RecordedSystem.theme == 1 ? "dark" : "light",
@@ -854,7 +980,8 @@ final class Recorder: NSObject, NSApplicationDelegate {
                                    }),
                 calls: RecordedSystem.calls,
                 coreAnimation: animations.isEmpty ? nil : animations,
-                popover: popoverAppearance, desktop: desktopState, screenPicture: screenPicture))
+                popover: popoverAppearance, window: [windowNow.minX, windowNow.minY, windowNow.width, windowNow.height],
+                desktop: desktopState, screenPicture: screenPicture))
             RecordedSystem.calls = []
             RecordedPreferenceTransition.framesDrawn = frame + 1
             frame += 1
@@ -865,6 +992,9 @@ final class Recorder: NSObject, NSApplicationDelegate {
         // The app's appearance changes as AppKit changes it when it's told, on the scene's clock, and the
         // menu bar's with it; the wallpaper changes over by itself (AppearanceTransition.swift)
         var menuBarIsDark = appearance == "dark"
+        var windowNow = windowFrame
+        var switchFrames = 0
+        let (windowTop, windowLeft) = (window.frame.maxY, window.frame.minX)
         RecordedPreferenceTransition.now = { (Double(scene_clock_now()) / 1e9 - Self.clockStart) }
         RecordedPreferenceTransition.changeAppAppearance = { isDark in
             NSApp.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
@@ -906,6 +1036,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
         guard scene_clock_readings() > 0 else { fail("Nothing read the scene's clock; see Interposers.c") }
         print("Recorded \(count) frames of \(renderer.width)×\(renderer.height) to \(frames.path)")
         print("The main queue's work: \(mainQueueWork) ran on the scene's clock, \(mainQueueLeft) still due as it ended")
+        print("AppKit's switches drawn on the scene's clock: \(switchFrames) times")
         removeSettings()
         exit(0)
     }

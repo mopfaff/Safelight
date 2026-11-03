@@ -16,13 +16,15 @@
 #   scripts/make-demo.sh --record <scene>
 #                                   only records it, without making its videos, into build/demo/recorder/
 #                                   recorded/<scene>/, leaving the shot in build/demo/<scene>/ as it was
-#   scripts/make-demo.sh --check <scene> [light|dark]
+#   scripts/make-demo.sh --check <scene> [light|dark] [independently]
 #                                   compares the recorder's first frame of a scene on the desktop, with the
 #                                   window server's shadow added, against the window server's own picture
 #                                   of the popover over the same desktop, in the scene's appearance or the
-#                                   one given (build/demo/<scene>/check-<appearance>/). The popover and the
-#                                   desktop round it are on the Retina display for a second, behind other
-#                                   windows; the displays have to be awake.
+#                                   one given (build/demo/<scene>/check-<appearance>/), and with the displays
+#                                   adjusted independently if asked, which makes the popover taller
+#                                   (check-<appearance>-independently/). The popover and the desktop round it
+#                                   are on the Retina display for a second, behind other windows; the
+#                                   displays have to be awake.
 #
 # It builds a copy of Safelight.swift into "Safelight Demo Recorder.app" with scripts/demo/recorder/,
 # whose RecordedSystem.swift stands in for the functions that change the color filter, brightness and
@@ -36,7 +38,9 @@
 # knob a tiny bit further from frame 172 of intensity-drag on (0.0004 of the way along), always the same
 # other way, so something there races with another thread; --verify finds that. Composing a recording
 # gives the same videos every time. The displays in the Brightness section are
-# this Mac's, and the scene's brightness is the one they start at.
+# this Mac's, and the scene's brightness is the one they start at. For a scene with "otherDisplays": true,
+# the Mac's other displays are drawn as well, each with its own desktop, and compose.py puts them beside
+# the popover's as they're arranged, each dimmed as it's dimmed.
 # The window server draws a shadow and rims round the popover's window, which the frames don't have.
 # For a scene on the desktop they're taken from the window server once for each appearance and size of
 # popover, and over each desktop it's on (each picture of the wallpaper the recording shows under it),
@@ -57,8 +61,8 @@ elif [[ "${1-}" == --check ]]; then
     CHECK=1
     shift
 fi
-if (( $# != 1 && !(CHECK && $# == 2) )); then
-    echo "Usage: scripts/make-demo.sh [--verify | --record] <scene> | --check <scene> [light|dark], the scene one of: ${(j:, :)${(@)${(f)$(ls scripts/demo/scenes)}:r}}" >&2
+if (( $# != 1 && !(CHECK && ($# == 2 || $# == 3)) )) || [[ $# == 3 && "${3-}" != independently ]]; then
+    echo "Usage: scripts/make-demo.sh [--verify | --record] <scene> | --check <scene> [light|dark] [independently], the scene one of: ${(j:, :)${(@)${(f)$(ls scripts/demo/scenes)}:r}}" >&2
     exit 2
 fi
 SCENE=$1
@@ -143,7 +147,9 @@ run() {
 }
 ON_DESKTOP=$(setting desktop false)
 # What the window server draws round the popover, taken unless it has been for this appearance and size,
-# over the desktop as it is in that appearance, or with the wallpaper's picture for the other one given
+# over the desktop as it is in that appearance, or with the wallpaper's picture for the other one given,
+# and with the displays adjusted independently or not, as -adjustsDisplaysIndependently YES or NO says,
+# which makes the popover taller or not (Safelight reads it as it opens)
 windowServer() {
     local scene=$1
     shift
@@ -157,13 +163,17 @@ if (( CHECK )); then
         exit 2
     fi
     APPEARANCE=${2:-$(setting appearance dark)}
+    SIZE=() SUFFIX=""
+    if [[ "${3-}" == independently ]]; then
+        SIZE=(-adjustsDisplaysIndependently YES) SUFFIX="-independently"
+    fi
     CHECK_SCENE="$BUILD_DIR/check/$SCENE.json"
     mkdir -p "$BUILD_DIR/check"
     cp "$SCENE_FILE" "$CHECK_SCENE"
     plutil -replace appearance -string "$APPEARANCE" "$CHECK_SCENE"
-    windowServer "$CHECK_SCENE"
-    CHECK_OUT="$OUT/check-$APPEARANCE"
-    run "$CHECK_SCENE" "$CHECK_OUT" "$BUILD_DIR/$SCENE-check.log" -check YES
+    windowServer "$CHECK_SCENE" "${SIZE[@]}"
+    CHECK_OUT="$OUT/check-$APPEARANCE$SUFFIX"
+    run "$CHECK_SCENE" "$CHECK_OUT" "$BUILD_DIR/$SCENE-check.log" -check YES "${SIZE[@]}"
     python3 scripts/demo/compose.py check "$SCENE" --folder "$CHECK_OUT"
     exit 0
 fi
@@ -177,10 +187,10 @@ shoot() {
     rm -rf "$out.new"
     mkdir -p "$out.new"
     run "$SCENE_FILE" "$out.new" "$BUILD_DIR/$SCENE.log"
-    grep -E '^(Recorded|The main queue)' "$BUILD_DIR/$SCENE.log"
+    grep -E '^(Recorded|The main queue|AppKit)' "$BUILD_DIR/$SCENE.log"
     if [[ "$ON_DESKTOP" == true ]] && (( !RECORD_ONLY )); then
-        python3 scripts/demo/compose.py needs "$SCENE" --folder "$out.new" | while read -r appearance wallpaper; do
-            windowServer "$SCENE_FILE" -appearance "$appearance" -wallpaperAppearance "$wallpaper"
+        python3 scripts/demo/compose.py needs "$SCENE" --folder "$out.new" | while read -r appearance wallpaper independently; do
+            windowServer "$SCENE_FILE" -appearance "$appearance" -wallpaperAppearance "$wallpaper" -adjustsDisplaysIndependently "$independently"
         done
         python3 scripts/demo/compose.py "$SCENE" --folder "$out.new"
     fi

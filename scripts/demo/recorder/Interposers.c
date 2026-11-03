@@ -316,3 +316,46 @@ __attribute__((used, section("__DATA,__interpose"))) static const struct { const
     { (const void *)scene_dispatch_after, (const void *)dispatch_after },
     { (const void *)scene_dispatch_after_f, (const void *)dispatch_after_f },
 };
+
+// --- AppKit's switches ----------------------------------------------------------------------------
+
+// An NSSwitch is drawn by a SwiftUI view of AppKit's in a hosting view of its own (_NSCoreHostingView),
+// whose graph SwiftUI moves on from a display link, which never fires while a shot is recorded, as the
+// run loop isn't run. So it's moved on a frame at a time as the popover's is (_renderForTest): with
+// SwiftUI's own ViewGraphRootValueUpdater.render(interval:updateDisplayList:targetTimestamp:), which
+// SwiftUICore exports and which the hosting view conforms to, called as SwiftUI calls it (2026-11-03,
+// from ViewGraphHost.displayLinkTimer): the interval in d0, whether to update the display list in w0,
+// the target time (an optional Time, 9 bytes, passed by address; its last byte 1 for none) in x1, the
+// hosting view's type and its conformance in x2 and x3, and the hosting view itself in x20.
+
+#include <dlfcn.h>
+#include <objc/runtime.h>
+
+int scene_render_core_host(const void *host, double interval) {
+    static const void *(*conformsToProtocol)(const void *, const void *) = NULL;
+    static const void *render = NULL, *updater = NULL;
+    if (!render) {
+        conformsToProtocol = dlsym(RTLD_DEFAULT, "swift_conformsToProtocol");
+        render = dlsym(RTLD_DEFAULT, "$s7SwiftUI25ViewGraphRootValueUpdaterPAAE6render8interval17updateDisplayList15targetTimestampySd_SbAA4TimeVSgtF");
+        updater = dlsym(RTLD_DEFAULT, "$s7SwiftUI25ViewGraphRootValueUpdaterMp");
+        if (!conformsToProtocol || !render || !updater) return -1;
+    }
+    const void *type = (const void *)object_getClass((id)host);
+    const void *conformance = conformsToProtocol(type, updater);
+    if (!conformance) return -2;
+    uint64_t noTime[2] = {0, 1};
+    register double d0 __asm__("d0") = interval;
+    register uint64_t x0 __asm__("x0") = 1;
+    register void *x1 __asm__("x1") = noTime;
+    register const void *x2 __asm__("x2") = type;
+    register const void *x3 __asm__("x3") = conformance;
+    register const void *x16 __asm__("x16") = render;
+    register const void *x20 __asm__("x20") = host;
+    __asm__ volatile("blr x16"
+                     : "+w"(d0), "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x16), "+r"(x20)
+                     :
+                     : "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x17", "x30",
+                       "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23",
+                       "v24", "v25", "v26", "v27", "v28", "v29", "v30", "v31", "memory", "cc");
+    return 0;
+}

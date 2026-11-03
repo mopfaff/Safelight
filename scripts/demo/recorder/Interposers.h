@@ -31,3 +31,7 @@ unsigned long key_appearances_kept(void);
 
 /// How many times AppKit gave a window its shadow, with its key look's rims for when it doesn't look key
 unsigned long active_shadows_given(void);
+
+/// Moves the graph of one of AppKit's own SwiftUI hosting views (an NSSwitch's _NSCoreHostingView) on by
+/// `interval` seconds and draws it, as `_renderForTest` does the popover's; 0, or less if it couldn't
+int scene_render_core_host(const void *host, double interval);

@@ -24,13 +24,16 @@ struct DemoScene: Decodable {
     /// (Desktop.swift), rather than on the canvas: the canvas is then its surroundings there, and the
     /// whole desktop is written beside the frames, for scripts/demo/compose.py to put them on
     var desktop = false
+    /// Whether the Mac's other displays are drawn as well, each with its own desktop, for compose.py to
+    /// show them beside the popover's as they're arranged (for a scene on the desktop)
+    var otherDisplays = false
     /// The Mac's settings as the shot begins, which Safelight reads as it opens
     var settings: Settings
     /// Where the pointer is to begin with, or nowhere (no pointer is drawn) if left out
     var pointer: Place?
     var actions: [Action] = []
 
-    private enum Keys: String, CodingKey { case about, fps, duration, appearance, accentColor, language, locale, canvas, desktop, settings, pointer, actions }
+    private enum Keys: String, CodingKey { case about, fps, duration, appearance, accentColor, language, locale, canvas, desktop, otherDisplays, settings, pointer, actions }
 
     init(from decoder: Decoder) throws {
         let keys = try decoder.container(keyedBy: Keys.self)
@@ -43,6 +46,7 @@ struct DemoScene: Decodable {
         locale = try keys.decodeIfPresent(String.self, forKey: .locale) ?? locale
         canvas = try keys.decodeIfPresent(Canvas.self, forKey: .canvas)
         desktop = try keys.decodeIfPresent(Bool.self, forKey: .desktop) ?? desktop
+        otherDisplays = try keys.decodeIfPresent(Bool.self, forKey: .otherDisplays) ?? otherDisplays
         settings = try keys.decode(Settings.self, forKey: .settings)
         pointer = try keys.decodeIfPresent(Place.self, forKey: .pointer)
         actions = try keys.decodeIfPresent([Action].self, forKey: .actions) ?? actions
@@ -110,7 +114,8 @@ struct DemoScene: Decodable {
     }
 
     /// A place for the pointer: a point on the canvas, a slider's knob, where it is or where it would
-    /// be at `value`, or the middle of a button, by its name as VoiceOver reads it (`{"button": "Dark"}`)
+    /// be at `value`, or the middle of a button, by its name as VoiceOver reads it (`{"button": "Dark"}`,
+    /// or a switch, `{"button": "Adjust independently"}`)
     enum Place: Decodable {
         case point(x: Double, y: Double)
         case knob(control: String, value: Double?)
@@ -163,6 +168,14 @@ struct DemoScene: Decodable {
         }
 
         var end: Double { at + duration }
+    }
+
+    /// Whether the pointer clicks the button or switch `name` at some point
+    func clicks(_ name: String) -> Bool {
+        actions.contains { action in
+            if case let .button(clicked)? = action.click { return clicked == name }
+            return false
+        }
     }
 
     /// Core Animation's timing curves, by the names it gives them
