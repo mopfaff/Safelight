@@ -9,13 +9,13 @@
 #      which screencapture tags its pictures with), blending on the encoded values. Sidecar's dark
 #      layer (GammaManager.setDimmingWindow) is a window like any other, so it's part of the frame.
 #   2. The display coprocessor (DCP) takes each value of the frame through the gamma table
-#      (CGSetDisplayTransferByTable: Safelight's software dimming, each value × brightness), and the
-#      accessibility colour matrix: MediaAccessibility's own, which universalaccessd hands to
-#      WindowServer (SLSSetAccessibilityAdjustments) and QuartzCore to the DCP
+#      (CGSetDisplayTransferByTable: Safelight's software dimming, each value × brightness), turns it
+#      into light with the profile's tone curve, and multiplies the light by the accessibility colour
+#      matrix: MediaAccessibility's own, which universalaccessd hands to WindowServer
+#      (SLSSetAccessibilityAdjustments) and QuartzCore to the DCP
 #      (IOMFBDisplay::set_framebuffer_ax_matrix → IOMobileFramebufferSwapSetColorMatrix, location 2).
-#      MATRIX_DOMAIN says whether that matrix multiplies light or encoded values. An iPad used with
-#      Sidecar is sent the frame as it is: QuartzCore's displays other than IOMFBDisplay ignore the
-#      matrix, and the gamma table never reaches it.
+#      An iPad used with Sidecar is sent the frame as it is: QuartzCore's displays other than
+#      IOMFBDisplay ignore the matrix, and the gamma table never reaches it.
 #   3. The backlight. DisplayServices' slider goes straight into the Studio Display's HID brightness
 #      (CBDisplayModuleHIDLegacy setDeviceBrightness: slider × the element's logical maximum), which
 #      is in hundredths of a nit, 400...60000, so its white gives off 600 nits × slider, at least 4.
@@ -38,7 +38,8 @@ import Quartz
 from PIL import Image
 
 # Whether the DCP multiplies light by the colour matrix ("linear"), or the encoded values ("encoded").
-# check.py eye-test tells them apart on the screen itself.
+# It's light: under Grayscale, red, green and blue matched greys of 58.4, 79.2 and 36.6 on the screen,
+# not 30, 59 and 11 (check.py eye-test, 2026-11-03). "encoded" is kept to compare the two.
 MATRIX_DOMAIN = "linear"
 
 

@@ -10,16 +10,19 @@
 #   check.py eye-test      Whether the DCP multiplies light or encoded values by the colour matrix,
 #                          seen on the screen itself, as no capture has the filter in it. Ask the user
 #                          first: it turns on Grayscale (System Settings › Accessibility › Display ›
-#                          Color Filters) for --seconds, while tiles on the main display show red, green
-#                          and blue squares on greys; the user says which tile's square disappears,
-#                          and the filter is put back as it was. Then
-#   check.py eye-test --answer RED,GREEN,BLUE   compares those tiles' numbers with both answers.
+#                          Color Filters), while tiles on the main display show red, green and blue
+#                          squares on greys numbered 10...95, until it's stopped (kill -TERM its PID) or
+#                          --seconds pass, and then puts the filter back as it was. Ask: in each row,
+#                          at which number does the square turn darker than its tile? Then
+#   check.py eye-test --answer RED,GREEN,BLUE   compares those numbers with both answers. On
+#                          2026-11-03 the user saw 60, 80, 40: light (58.4, 79.2, 36.6), not encoded
+#                          values (30, 59, 11).
 #   check.py brightness    Ask the user first: sets the main display's brightness to a few values for
 #                          a moment each, reads back what the display's HID brightness was set to, and
 #                          puts the brightness back.
 #
 # Needs what pipeline.py needs, and screen recording permission for screencapture.
-import argparse, os, subprocess, sys, tempfile, time
+import argparse, os, signal, subprocess, sys, tempfile, time
 import numpy as np
 import AppKit, Foundation, Quartz
 from PIL import Image, ImageDraw, ImageFont
@@ -240,14 +243,18 @@ def check_eye_test(args):
     display = pipeline.Display.live(display_id)
     expected = predictions(display)
     if args.answer:
-        answers = [float(a) / 100 for a in args.answer.split(",")]
-        print(f"{display.name}, tiles numbered ×100:")
-        for (name, (encoded, light)), answer in zip(expected.items(), answers):
-            print(f"  {name:5}  seen {answer * 100:3.0f}   encoded values {encoded * 100:5.1f}   light {light * 100:5.1f}")
-        off_encoded = max(abs(a - e[0]) for a, e in zip(answers, expected.values()))
-        off_light = max(abs(a - e[1]) for a, e in zip(answers, expected.values()))
-        print(f"most off: {off_encoded * 100:.1f} if encoded, {off_light * 100:.1f} if light → the matrix multiplies "
-              f"{'light' if off_light < off_encoded else 'encoded values'}")
+        # Each answer is the first tile whose square is darker, so the square matches a grey between
+        # the tile before it and that one
+        answers = [round(float(a)) for a in args.answer.split(",")]
+        print(f"{display.name}, the first tile (×100) whose square is darker than it:")
+        fits = {"encoded values": 0, "light": 0}
+        for (name, predicted), answer in zip(expected.items(), answers):
+            first = [next((round(v * 100) for v in STEPS if v > p - 1e-9), None) for p in predicted]
+            for kind, tile in zip(fits, first):
+                fits[kind] += tile == answer
+            print(f"  {name:5}  seen {answer:3d}   if encoded values {first[0]} (matches {predicted[0] * 100:.1f})"
+                  f"   if light {first[1]} (matches {predicted[1] * 100:.1f})")
+        print("rows that fit: " + ", ".join(f"{n} of {len(answers)} if {kind}" for kind, n in fits.items()))
         return
     screen = screen_of(display_id)
     scale = int(screen.backingScaleFactor())
@@ -264,11 +271,18 @@ def check_eye_test(args):
         return
     filters = ColorFilters()
     before = filters.state()
+    # Stopping it (Control-C, or kill with its PID) ends the wait, and the filter's put back
+    stop = []
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stop.append(True))
     try:
         filters.set_type(filters.COLOR, filters.GRAYSCALE)
         filters.set_enabled(filters.COLOR, True)
-        print(f"Grayscale is on for {args.seconds:.0f} s: in each row, which tile's square disappears?", flush=True)
-        run_for(args.seconds)
+        print(f"Grayscale is on for up to {args.seconds:.0f} s, until stopped (PID {os.getpid()}). In each row the square "
+              "is lighter than its tile on the left and darker on the right: at which number does it turn darker?", flush=True)
+        deadline = time.time() + args.seconds
+        while not stop and time.time() < deadline:
+            run_for(0.2)
     finally:
         filters.restore(before)
         window.close()
