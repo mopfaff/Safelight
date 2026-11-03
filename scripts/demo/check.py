@@ -20,6 +20,13 @@
 #   check.py brightness    Ask the user first: sets the main display's brightness to a few values for
 #                          a moment each, reads back what the display's HID brightness was set to, and
 #                          puts the brightness back.
+#   check.py pointer       Whether the colour filter tints the pointer, which on Apple silicon may be a
+#                          layer of its own that the display coprocessor puts over the frame, seen on
+#                          the screen. Ask the user first: it turns on Color Tint, red at full
+#                          intensity, until it's stopped (kill -TERM its PID) or --seconds pass, and
+#                          then puts Color Filters back exactly as they were. Ask: is the pointer's
+#                          white outline still white, or red like everything else? On 2026-11-03 the
+#                          user saw it red: the filter tints the pointer (on the Studio Display, M4 Pro).
 #
 # Needs what pipeline.py needs, and screen recording permission for screencapture.
 import argparse, os, signal, subprocess, sys, tempfile, time
@@ -217,25 +224,34 @@ class ColorFilters:
         ma = ctypes.CDLL("/System/Library/Frameworks/MediaAccessibility.framework/MediaAccessibility")
         self.get_enabled, self.set_enabled = ma.MADisplayFilterPrefGetCategoryEnabled, ma.MADisplayFilterPrefSetCategoryEnabled
         self.get_type, self.set_type = ma.MADisplayFilterPrefGetType, ma.MADisplayFilterPrefSetType
+        self.get_hue, self.set_hue = ma.MADisplayFilterPrefGetSingleColorHue, ma.MADisplayFilterPrefSetSingleColorHue
+        self.get_intensity, self.set_intensity = ma.MADisplayFilterPrefGetSingleColorIntensity, ma.MADisplayFilterPrefSetSingleColorIntensity
         self.get_enabled.restype, self.get_enabled.argtypes = ctypes.c_bool, [ctypes.c_long]
         self.set_enabled.argtypes = [ctypes.c_long, ctypes.c_bool]
         self.get_type.restype, self.get_type.argtypes = ctypes.c_long, [ctypes.c_long]
         self.set_type.argtypes = [ctypes.c_long, ctypes.c_long]
+        self.get_hue.restype = self.get_intensity.restype = ctypes.c_double
+        self.set_hue.argtypes = self.set_intensity.argtypes = [ctypes.c_double]
 
-    COLOR, GRAYSCALE = 1, 1  # category 1 is Color; type 1 within it Grayscale (MADisplayFilterCopySystemFilter's bit 0)
+    COLOR, GRAYSCALE, COLOR_TINT = 1, 1, 16  # category 1 is Color; within it, type 1 Grayscale and 16 Color Tint (MADisplayFilterCopySystemFilter's bits 0 and 4)
 
     def state(self):
-        return self.get_enabled(self.COLOR), self.get_type(self.COLOR)
+        """The switch, the filter, and Color Tint's hue and intensity"""
+        return self.get_enabled(self.COLOR), self.get_type(self.COLOR), self.get_hue(), self.get_intensity()
 
     def restore(self, state):
-        # In the order that never shows the other filter for a moment
-        enabled, kind = state
+        # In the order that never shows another filter, hue or intensity for a moment
+        enabled, kind, hue, intensity = state
         if enabled:
+            self.set_hue(hue)
+            self.set_intensity(intensity)
             self.set_type(self.COLOR, kind)
             self.set_enabled(self.COLOR, True)
         else:
             self.set_enabled(self.COLOR, False)
             self.set_type(self.COLOR, kind)
+            self.set_hue(hue)
+            self.set_intensity(intensity)
 
 
 def check_eye_test(args):
@@ -290,6 +306,33 @@ def check_eye_test(args):
     print("Then: check.py eye-test --answer RED,GREEN,BLUE")
 
 
+# --- pointer --------------------------------------------------------------------------------------
+
+def check_pointer(args):
+    filters = ColorFilters()
+    before = filters.state()
+    stop = []
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stop.append(True))
+    try:
+        # Red at full intensity takes every white on the screen to red, so a white outline left alone
+        # stands out
+        filters.set_hue(0)
+        filters.set_intensity(1)
+        filters.set_type(filters.COLOR, filters.COLOR_TINT)
+        filters.set_enabled(filters.COLOR, True)
+        print(f"Color Tint is on, red at full intensity, for up to {args.seconds:.0f} s, until stopped (PID {os.getpid()}). "
+              "Is the pointer's white outline still white, or red like everything else?", flush=True)
+        deadline = time.time() + args.seconds
+        while not stop and time.time() < deadline:
+            time.sleep(0.2)
+    finally:
+        filters.restore(before)
+    after = filters.state()
+    print("Color Filters are back as they were:" if after == before else "Color Filters AREN'T back as they were:",
+          "on" if after[0] else "off", f"(type {after[1]}, hue {after[2]}, intensity {after[3]})")
+
+
 # --- brightness -----------------------------------------------------------------------------------
 
 def check_brightness(args):
@@ -328,8 +371,11 @@ def main():
     p.add_argument("--dry-run", action="store_true", help="show the tiles for a moment and check they're drawn as they are, leaving the filter alone")
     p = sub.add_parser("brightness")
     p.add_argument("--values", type=float, nargs="*", default=[0.75, 0.5, 0.25])
+    p = sub.add_parser("pointer")
+    p.add_argument("--seconds", type=float, default=300)
     args = parser.parse_args()
-    {"colour": check_colour, "dark-layer": check_dark_layer, "eye-test": check_eye_test, "brightness": check_brightness}[args.check](args)
+    {"colour": check_colour, "dark-layer": check_dark_layer, "eye-test": check_eye_test, "brightness": check_brightness,
+     "pointer": check_pointer}[args.check](args)
 
 
 if __name__ == "__main__":

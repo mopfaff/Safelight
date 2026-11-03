@@ -65,36 +65,99 @@ struct SliderGeometry {
         walk(root)
         return found.sorted { $0.frame.minY < $1.frame.minY }
     }
+
+    /// The first AppKit slider of class `type` in a hosting view, as its cell draws it: its track, as
+    /// high as its knob, and where its knob is along it
+    static func appKit(_ type: NSSlider.Type, in host: NSView) -> SliderGeometry? {
+        func find(_ view: NSView) -> NSSlider? {
+            view.isMember(of: type) ? view as? NSSlider : view.subviews.lazy.compactMap(find).first
+        }
+        guard let slider = find(host), let cell = slider.cell as? NSSliderCell else { return nil }
+        let knob = cell.knobRect(flipped: slider.isFlipped)
+        let track = cell.trackRect
+        return SliderGeometry(frame: slider.convert(CGRect(x: track.minX, y: knob.minY, width: track.width, height: knob.height), to: host),
+                              knobX: knob.minX - track.minX, knobWidth: knob.width)
+    }
 }
 
-/// A slider a scene can name: which of the popover's SwiftUI sliders it is, from the top, the range of
-/// its values, and the value it's bound to
+/// A slider a scene can name: which of the popover's sliders it is, the range of its values, and the
+/// value it's bound to
 struct Control {
-    let index: Int
+    /// One of the popover's SwiftUI sliders, by its place from the top, or an AppKit slider of its own
+    /// class, as Tint is (System Settings' hue slider)
+    enum Kind {
+        case swiftUI(index: Int)
+        case appKit(NSSlider.Type)
+    }
+    let kind: Kind
     let range: () -> ClosedRange<Double>
     let value: () -> Double
 
     static let all: [String: Control] = [
-        "Intensity": Control(index: 0, range: {
+        "Intensity": Control(kind: .swiftUI(index: 0), range: {
             let range = ColorFilterManager.shared.intensityRange
             return Double(range.lowerBound)...Double(range.upperBound)
         }, value: { Double(ColorController.shared.intensity) }),
+        // In degrees, as the app has it
+        "Tint": Control(kind: .appKit(HueSlider.self), range: { 0...360 }, value: { Double(ColorController.shared.tint) }),
         // While the displays have one brightness
-        "Brightness": Control(index: 1, range: { 0...1 }, value: { Double(ColorController.shared.brightness) }),
+        "Brightness": Control(kind: .swiftUI(index: 1), range: { 0...1 }, value: { Double(ColorController.shared.brightness) }),
     ]
+
+    /// Where the slider is drawn, if it is
+    func drawn(in host: NSView) -> SliderGeometry? {
+        switch kind {
+        case let .swiftUI(index):
+            let sliders = SliderGeometry.all(in: host)
+            return index < sliders.count ? sliders[index] : nil
+        case let .appKit(type):
+            return SliderGeometry.appKit(type, in: host)
+        }
+    }
 
     /// Where the slider is drawn, once it's checked to be this control's: its knob has to be where the
     /// control's value puts it, or another slider is where this one was
     func geometry(in host: NSView, named name: String) -> SliderGeometry {
-        let sliders = SliderGeometry.all(in: host)
-        guard index < sliders.count else { fail("There's no \(name) slider in the popover") }
-        let slider = sliders[index]
+        guard let slider = drawn(in: host) else { fail("There's no \(name) slider in the popover") }
         let range = range()
         let fraction = (value() - range.lowerBound) / (range.upperBound - range.lowerBound)
         guard abs(slider.knobFraction - fraction) * Double(slider.frame.width - slider.knobWidth) < 1 else {
-            fail("The popover's slider number \(index + 1) isn't \(name)'s: its knob is \(slider.knobFraction) of the way along, \(name) is at \(value())")
+            fail("The popover's slider that should be \(name)'s isn't: its knob is \(slider.knobFraction) of the way along, \(name) is at \(value())")
         }
         return slider
+    }
+}
+
+/// The app, which takes the mouse events of a shot from the scene while it's recorded. An AppKit
+/// control tracks the mouse while it's pressed in a loop of its own: an NSSlider's (as Tint's
+/// HueSlider overrides mouseDown) checks the button is down (`NSEvent.pressedMouseButtons`, which
+/// asks the window server), then waits for each event in turn (`nextEvent(matching:…)` with no end,
+/// in the event-tracking mode) and looks for any more already there to skip to the latest (with no
+/// date, in a coalescing mode), until the button goes up. So while a shot's recorded, the button is
+/// the scene's, and those calls are answered by `eventSource` instead, which hands over the frame's
+/// events, and once there are none left, draws the frame and starts the next, for a loop that waits.
+final class RecorderApplication: NSApplication {
+    /// The scene's events, by what's asked for, when, and whether to take it, while a shot's recorded
+    static var eventSource: ((_ mask: NSEvent.EventTypeMask, _ until: Date?, _ dequeue: Bool) -> NSEvent?)?
+    /// Whether the scene has the button down, while a shot's recorded
+    static var isPressed: (() -> Bool)?
+
+    override func nextEvent(matching mask: NSEvent.EventTypeMask, until expiration: Date?, inMode mode: RunLoop.Mode, dequeue deqFlag: Bool) -> NSEvent? {
+        if let source = Self.eventSource { return source(mask, expiration, deqFlag) }
+        return super.nextEvent(matching: mask, until: expiration, inMode: mode, dequeue: deqFlag)
+    }
+
+    /// `NSEvent.pressedMouseButtons` from the scene while it's recorded
+    static func takeButtonsFromScene() {
+        let selector = NSSelectorFromString("pressedMouseButtons")
+        guard let method = class_getClassMethod(NSEvent.self, selector) else { fail("NSEvent has no pressedMouseButtons to answer for the scene") }
+        typealias Getter = @convention(c) (AnyClass, Selector) -> Int
+        let original = unsafeBitCast(method_getImplementation(method), to: Getter.self)
+        let scene: @convention(block) (AnyClass) -> Int = { type in
+            guard let isPressed = RecorderApplication.isPressed else { return original(type, selector) }
+            return isPressed() ? 1 : 0
+        }
+        method_setImplementation(method, imp_implementationWithBlock(scene))
     }
 }
 
@@ -485,17 +548,18 @@ final class Recorder: NSObject, NSApplicationDelegate {
             }
         }
         // Mouse events as the window would be sent them, timed by the scene's clock, which every clock
-        // read on the main thread gives as well (Interposers.c). Each comes a millisecond after the one
-        // before in its frame, as no two real ones come at once.
+        // read on the main thread gives as well (Interposers.c), from when each is handled. Each comes a
+        // millisecond after the one before in its frame, as no two real ones come at once. A frame's are
+        // made first, then handled in turn (`handle`).
         var eventsThisFrame = 0
+        var pending: [(event: NSEvent, nanoseconds: UInt64)] = []
         func send(_ type: NSEvent.EventType, at point: CGPoint, time: Double) {
             let timestamp = Self.clockStart + time + 0.001 * Double(eventsThisFrame)
             eventsThisFrame += 1
             guard let event = NSEvent.mouseEvent(with: type, location: inWindow(point), modifierFlags: [], timestamp: timestamp,
                                                  windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
                                                  pressure: type == .leftMouseUp ? 0 : 1) else { fail("Couldn't make a mouse event") }
-            scene_clock_set(UInt64((timestamp * 1e9).rounded()))
-            window.sendEvent(event)
+            pending.append((event, UInt64((timestamp * 1e9).rounded())))
         }
 
         // Settled, with anything opening the popover set going over
@@ -545,12 +609,15 @@ final class Recorder: NSObject, NSApplicationDelegate {
 
         let count = Int((scene.duration * Double(scene.fps)).rounded())
         let actions = scene.actions.sorted { $0.at < $1.at }
-        for frame in 0..<count {
+        var frame = 0
+
+        /// Starts the frame: the actions that start by now, then where the running ones have the
+        /// pointer, as the frame's events
+        func begin() {
             let time = Double(frame) / Double(scene.fps)
             eventsThisFrame = 0
             scene_clock_set(UInt64(((Self.clockStart + time) * 1e9).rounded()))
 
-            // The actions that start by now, then where the running ones have the pointer
             while started < actions.count, actions[started].at <= time + 1e-9 {
                 let action = actions[started]
                 started += 1
@@ -582,7 +649,26 @@ final class Recorder: NSObject, NSApplicationDelegate {
                 send(.leftMouseUp, at: pointer ?? .zero, time: time)
             }
             running.removeAll { time >= $0.action.end - 1e-9 }
+        }
 
+        /// The first of the frame's events still to handle that's one of `mask`'s, taken if `dequeue`,
+        /// with the clock at its time, and the button down from when its press is taken till its release is
+        var isButtonDown = false
+        func take(_ mask: NSEvent.EventTypeMask = .any, dequeue: Bool = true) -> NSEvent? {
+            guard let index = pending.firstIndex(where: { mask.contains(NSEvent.EventTypeMask(type: $0.event.type)) }) else { return nil }
+            let (event, nanoseconds) = pending[index]
+            if dequeue {
+                pending.remove(at: index)
+                scene_clock_set(nanoseconds)
+                if event.type == .leftMouseDown { isButtonDown = true }
+                if event.type == .leftMouseUp { isButtonDown = false }
+            }
+            return event
+        }
+
+        /// Draws the frame and logs it, and moves on to the next
+        func finish() {
+            let time = Double(frame) / Double(scene.fps)
             guard window.value(forKey: "hasKeyAppearance") as? Bool == true else { fail("The popover stopped looking key at frame \(frame)") }
 
             // The frame SwiftUI draws a frame's time later. The run loop isn't run in between: its timers
@@ -604,10 +690,10 @@ final class Recorder: NSObject, NSApplicationDelegate {
             }
 
             var sliders: [String: Log.Slider] = [:]
-            let drawn = SliderGeometry.all(in: host)
-            for (control, found) in Control.all where found.index < drawn.count {
+            for (control, found) in Control.all {
+                guard let drawn = found.drawn(in: host) else { continue }
                 let range = found.range()
-                sliders[control] = Log.Slider(value: found.value(), knob: range.lowerBound + drawn[found.index].knobFraction * (range.upperBound - range.lowerBound))
+                sliders[control] = Log.Slider(value: found.value(), knob: range.lowerBound + drawn.knobFraction * (range.upperBound - range.lowerBound))
             }
             let controller = ColorController.shared
             log.frames.append(Log.Frame(
@@ -627,7 +713,29 @@ final class Recorder: NSObject, NSApplicationDelegate {
                 calls: RecordedSystem.calls,
                 coreAnimation: animations.isEmpty ? nil : animations))
             RecordedSystem.calls = []
+            frame += 1
         }
+
+        // While an AppKit control tracks the mouse, its loop takes the events, and once it waits for
+        // more than the frame has, the frame's drawn and the next one started
+        RecorderApplication.isPressed = { isButtonDown }
+        RecorderApplication.eventSource = { mask, until, dequeue in
+            while true {
+                if let event = take(mask, dequeue: dequeue) { return event }
+                // A loop that only looks for more gets none
+                guard let until, until > Date() else { return nil }
+                guard frame + 1 < count else { fail("The scene ends while AppKit is still tracking the mouse: let go of it before") }
+                finish()
+                begin()
+            }
+        }
+        while frame < count {
+            begin()
+            while let event = take() { window.sendEvent(event) }
+            finish()
+        }
+        RecorderApplication.eventSource = nil
+        RecorderApplication.isPressed = nil
 
         written.wait()
         let encoder = JSONEncoder()
@@ -845,7 +953,11 @@ do {
 } catch {
     fail("Couldn't read \(scenePath): \(error)")
 }
+// Made first, so it's the app, which takes a shot's events from the scene
+let application = RecorderApplication.shared
+guard application is RecorderApplication else { fail("The app was made before the recorder's could be") }
+RecorderApplication.takeButtonsFromScene()
 let recorder = Recorder(scene: scene, name: sceneURL.deletingPathExtension().lastPathComponent, output: URL(fileURLWithPath: outputPath))
-NSApplication.shared.setActivationPolicy(.accessory)
-NSApplication.shared.delegate = recorder
-NSApplication.shared.run()
+application.setActivationPolicy(.accessory)
+application.delegate = recorder
+application.run()

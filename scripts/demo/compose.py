@@ -8,8 +8,10 @@
 #      own pictures of them (build/demo/window-server/, `-windowServer` in the recorder). Outside the
 #      window's shape, which those pictures give, it's the desktop: Core Animation draws a faint
 #      shadow of the glass there (8% at most) that the window server doesn't. Then macOS's arrow,
-#      where log.json has the pointer, over everything, as the pointer is. As the window server does,
-#      this is all in the display's own colour space, blending its encoded values.
+#      where log.json has the pointer, over everything, as the pointer is: before step 2, as the colour
+#      filter tints it with the rest (red Color Tint turned its white outline red, seen on the screen,
+#      check.py pointer, 2026-11-03). As the window server does, this is all in the display's own
+#      colour space, blending its encoded values.
 #   2. pipeline.shown() turns the whole screen into the light the display gives off with that frame's
 #      settings, as log.json has them: Color Tint's hue and intensity, and the display's brightness.
 #   3. A camera films it: a crop of the screen, moving and zooming as the scene's "camera" says, scaled
@@ -27,6 +29,9 @@
 #                               same desktop (make-demo.sh --check records both into build/demo/<scene>/check/)
 #   compose.py verify <scene>   decodes the videos as macOS's players do (AVFoundation, colour matched to
 #                               Display P3) and compares them with the colours they were made from
+#   compose.py hues <scene>     for a scene that moves Tint: the masters' desktop, decoded, at red, yellow,
+#                               green, cyan, blue and magenta, against pipeline.shown() with MediaAccessibility's
+#                               matrix for the Tint slider's value on each of those frames
 #
 # A scene's camera (scenes/*.json, "camera") has, for each shape, the video's size in pixels and keys:
 # at a time, the middle of what's filmed and its height, in points on the display, kept on the display.
@@ -148,7 +153,8 @@ class WindowServerLayer:
 
 class Pointer:
     """macOS's arrow, drawn as the recorder draws it (NSCursor.arrow's picture, its hot spot at the
-    pointer), in the display's colours"""
+    pointer), in the display's colours, into the screen the colour filter's applied to, as it tints
+    the pointer too"""
 
     def __init__(self, display, scale, hot_spot):
         import AppKit
@@ -494,41 +500,89 @@ def check(folder):
     Image.fromarray(np.clip(diff * 16, 0, 255).astype(np.uint8)).save(folder / "difference.png")
 
 
+def decode(path, count, wanted):
+    """The frames numbered in `wanted` of a video of `count` frames, decoded by AVFoundation, as QuickTime
+    Player and Safari decode them, with their colours matched to Display P3: each one's number and values"""
+    import AVFoundation, CoreMedia
+    asset = AVFoundation.AVURLAsset.URLAssetWithURL_options_(Foundation_url(path), None)
+    track = asset.tracksWithMediaType_(AVFoundation.AVMediaTypeVideo)[0]
+    settings = {Quartz.kCVPixelBufferPixelFormatTypeKey: Quartz.kCVPixelFormatType_64RGBAHalf,
+                AVFoundation.AVVideoColorPropertiesKey: {
+                    AVFoundation.AVVideoColorPrimariesKey: AVFoundation.AVVideoColorPrimaries_P3_D65,
+                    AVFoundation.AVVideoTransferFunctionKey: AVFoundation.AVVideoTransferFunction_IEC_sRGB,
+                    AVFoundation.AVVideoYCbCrMatrixKey: AVFoundation.AVVideoYCbCrMatrix_ITU_R_709_2}}
+    reader = AVFoundation.AVAssetReader.alloc().initWithAsset_error_(asset, None)[0]
+    output = AVFoundation.AVAssetReaderTrackOutput.alloc().initWithTrack_outputSettings_(track, settings)
+    reader.addOutput_(output)
+    reader.startReading()
+    frame = 0
+    while (sample := output.copyNextSampleBuffer()) is not None:
+        if frame in wanted:
+            yield frame, pixel_buffer(CoreMedia.CMSampleBufferGetImageBuffer(sample))
+        frame += 1
+    if frame != count:
+        raise SystemExit(f"{path.name} has {frame} frames, not {count}")
+
+
 def verify(scene, folder):
     """Each video decoded by AVFoundation, as QuickTime Player and Safari decode it, with its colours
     matched to Display P3, against the values it was made from, on its stills' frames"""
-    import AVFoundation, CoreMedia
     shot = Shot(scene, folder)
     for name, spec in shot.scene["camera"].items():
         camera = Camera(name, spec, shot.size)
         name = name.replace(":", "x")
         for suffix, (space, bits, _) in VIDEOS.items():
             path = shot.folder / f"{scene}-{name}{suffix}.mp4"
-            asset = AVFoundation.AVURLAsset.URLAssetWithURL_options_(Foundation_url(path), None)
-            track = asset.tracksWithMediaType_(AVFoundation.AVMediaTypeVideo)[0]
-            settings = {Quartz.kCVPixelBufferPixelFormatTypeKey: Quartz.kCVPixelFormatType_64RGBAHalf,
-                        AVFoundation.AVVideoColorPropertiesKey: {
-                            AVFoundation.AVVideoColorPrimariesKey: AVFoundation.AVVideoColorPrimaries_P3_D65,
-                            AVFoundation.AVVideoTransferFunctionKey: AVFoundation.AVVideoTransferFunction_IEC_sRGB,
-                            AVFoundation.AVVideoYCbCrMatrixKey: AVFoundation.AVVideoYCbCrMatrix_ITU_R_709_2}}
-            reader = AVFoundation.AVAssetReader.alloc().initWithAsset_error_(asset, None)[0]
-            output = AVFoundation.AVAssetReaderTrackOutput.alloc().initWithTrack_outputSettings_(track, settings)
-            reader.addOutput_(output)
-            reader.startReading()
-            frame = 0
-            wanted = {0, shot.count // 2, shot.count - 1}
-            while (sample := output.copyNextSampleBuffer()) is not None:
-                if frame in wanted:
-                    decoded = pixel_buffer(CoreMedia.CMSampleBufferGetImageBuffer(sample))
-                    made = pipeline.to_video(film(shot, camera, frame), shot.display, "display-p3", 16).astype(np.float64) / 65535
-                    if space == "srgb":
-                        # Clipped to sRGB first, as that copy is
-                        srgb = pipeline.to_video(film(shot, camera, frame), shot.display, "srgb", 16).astype(np.float64) / 65535
-                        made = pipeline.cg_convert(srgb, bytes(Quartz.CGColorSpaceCopyICCData(Quartz.CGColorSpaceCreateWithName(Quartz.kCGColorSpaceSRGB))), P3)
-                    report(f"{path.name} frame {frame}", np.round(decoded * 255), np.round(np.clip(made, 0, 1) * 255))
-                frame += 1
-            if frame != shot.count:
-                raise SystemExit(f"{path.name} has {frame} frames, not {shot.count}")
+            for frame, decoded in decode(path, shot.count, {0, shot.count // 2, shot.count - 1}):
+                made = pipeline.to_video(film(shot, camera, frame), shot.display, "display-p3", 16).astype(np.float64) / 65535
+                if space == "srgb":
+                    # Clipped to sRGB first, as that copy is
+                    srgb = pipeline.to_video(film(shot, camera, frame), shot.display, "srgb", 16).astype(np.float64) / 65535
+                    made = pipeline.cg_convert(srgb, bytes(Quartz.CGColorSpaceCopyICCData(Quartz.CGColorSpaceCreateWithName(Quartz.kCGColorSpaceSRGB))), P3)
+                report(f"{path.name} frame {frame}", np.round(decoded * 255), np.round(np.clip(made, 0, 1) * 255))
+
+
+def hues(scene, folder, size=40):
+    """Color Tint in the masters at a few hues, against what pipeline.shown() gives from MediaAccessibility's
+    matrix at the Tint slider's value then (not the hue log.json has the system at): on the frames where
+    the slider is nearest red, yellow, green, cyan, blue, magenta and red again, the mean colour, in
+    light, of each `size`-point square of the desktop that every one of those frames films, away from
+    the popover's window and its shadow and below the menu bar"""
+    shot = Shot(scene, folder)
+    frames = shot.log["frames"]
+    if "Tint" not in frames[0]["sliders"]:
+        raise SystemExit(f"{scene}'s log has no Tint slider")
+    tint = [frame["sliders"]["Tint"]["value"] for frame in frames]
+    wanted = {min(range(shot.count), key=lambda i: abs(tint[i] - hue)): hue for hue in (0, 60, 120, 180, 240, 300, 360)}
+    p3 = pipeline.named_profile(Quartz.kCGColorSpaceDisplayP3)
+    x, y, w, h = shot.log["desktop"]["popover"]
+    popover = (x - 48, y - 48, x + w + 48, y + h + 48)
+    for name, spec in shot.scene["camera"].items():
+        camera = Camera(name, spec, shot.size)
+        views = {frame: camera.view(frame / shot.fps) for frame in wanted}
+        left, top = max(v[0] for v in views.values()) + 4, max(max(v[1] for v in views.values()) + 4, 40)
+        right, bottom = min(v[2] for v in views.values()) - 4, min(v[3] for v in views.values()) - 4
+        squares = [(sx, sy, sx + size, sy + size) for sx in np.arange(left, right - size, size) for sy in np.arange(top, bottom - size, size)
+                   if sx + size <= popover[0] or sx >= popover[2] or sy + size <= popover[1] or sy >= popover[3]]
+        path = shot.folder / f"{scene}-{name.replace(':', 'x')}.mp4"
+        print(f"{path.name}, {len(squares)} squares of {size} points:")
+        for frame, decoded in decode(path, shot.count, set(wanted)):
+            matrix = pipeline.tint_matrix(tint[frame] / 360, frames[frame]["system"]["intensity"])
+            brightness = shot.settings(frame)[1]
+            view = views[frame]
+            ours, theirs = [], []
+            for sx0, sy0, sx1, sy1 in squares:
+                region = [round(v * shot.scale) for v in (sx0, sy0, sx1, sy1)]
+                light = pipeline.shown(shot.screen(frame, region), shot.display, (tint[frame] / 360, frames[frame]["system"]["intensity"]), brightness)
+                theirs.append(pipeline.to_video(light.reshape(-1, 3).mean(0)[None, None], shot.display, "display-p3", 16)[0, 0] / 65535)
+                # The video's pixels whose middles are in the square
+                u0, u1 = [math.ceil((s - view[0]) * camera.size[0] / (view[2] - view[0]) - 0.5) for s in (sx0, sx1)]
+                v0, v1 = [math.ceil((s - view[1]) * camera.size[1] / (view[3] - view[1]) - 0.5) for s in (sy0, sy1)]
+                ours.append(p3.encode(p3.decode(decoded[v0:v1, u0:u1]).reshape(-1, 3).mean(0)[None, None])[0, 0])
+            ours, theirs = np.round(np.array(ours) * 255), np.round(np.array(theirs) * 255)
+            diff = np.abs(ours - theirs).max(axis=-1)
+            print(f"  frame {frame}, Tint {tint[frame]:.1f}° (nearest {wanted[frame]}°), matrix {np.round(np.diag(matrix), 4)}: "
+                  f"most off {diff.max():.0f} levels, mean {diff.mean():.2f}; a square {theirs[0].astype(int)} made, {ours[0].astype(int)} decoded")
 
 
 def Foundation_url(path):
@@ -551,7 +605,7 @@ def pixel_buffer(buffer):
 
 def main():
     parser = argparse.ArgumentParser(description="Makes a recorded demo shot's videos.")
-    parser.add_argument("command", nargs="?", choices=["check", "verify"])
+    parser.add_argument("command", nargs="?", choices=["check", "verify", "hues"])
     parser.add_argument("scene")
     parser.add_argument("--folder", help="where the recording is, and the videos go: build/demo/<scene>/ unless given")
     parser.add_argument("--workers", type=int, default=min(multiprocessing.cpu_count(), 8))
@@ -560,6 +614,8 @@ def main():
         check(args.folder or BUILD / args.scene / "check")
     elif args.command == "verify":
         verify(args.scene, args.folder)
+    elif args.command == "hues":
+        hues(args.scene, args.folder)
     else:
         compose(args.scene, args.folder, args.workers)
 

@@ -1,0 +1,36 @@
+{
+  "about": "Tint dragged from red round the colour wheel and back to red over 4.5 s, the filter on at 85% in Dark, while the camera pulls back from the slider to the whole screen in each hue",
+  "fps": 60,
+  "duration": 7,
+  "appearance": "dark",
+  "accentColor": "blue",
+  "language": "en-US",
+  "locale": "en_GB",
+  "desktop": true,
+  "settings": {
+    "colorFilter": true,
+    "tint": 0,
+    "intensity": 0.85,
+    "brightness": 0.68
+  },
+  "pointer": { "control": "Tint" },
+  "actions": [
+    { "at": 0.8, "drag": "Tint", "from": 0, "to": 360, "duration": 4.5, "easing": "easeInOut" }
+  ],
+  "camera": {
+    "16:9": {
+      "size": [3840, 2160],
+      "keys": [
+        { "at": 1.2, "centre": [2134, 240], "height": 480 },
+        { "at": 3.4, "centre": [1280, 720], "height": 1440, "easing": "easeInOut" }
+      ]
+    },
+    "9:16": {
+      "size": [2160, 3840],
+      "keys": [
+        { "at": 1.2, "centre": [2335, 400], "height": 800 },
+        { "at": 3.4, "centre": [2155, 720], "height": 1440, "easing": "easeInOut" }
+      ]
+    }
+  }
+}
