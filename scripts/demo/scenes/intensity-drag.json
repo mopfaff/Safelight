@@ -1,0 +1,19 @@
+{
+  "about": "Intensity dragged from Low (25%) to High (100%) over 3 s, in Dark, the filter red",
+  "fps": 60,
+  "duration": 4,
+  "appearance": "dark",
+  "accentColor": "blue",
+  "language": "en-US",
+  "locale": "en_GB",
+  "settings": {
+    "colorFilter": true,
+    "tint": 0,
+    "intensity": 0.25,
+    "brightness": 0.68
+  },
+  "pointer": { "control": "Intensity" },
+  "actions": [
+    { "at": 0.5, "drag": "Intensity", "from": 0.25, "to": 1.0, "duration": 3, "easing": "easeInOut" }
+  ]
+}
