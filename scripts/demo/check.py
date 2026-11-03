@@ -27,9 +27,20 @@
 #                          then puts Color Filters back exactly as they were. Ask: is the pointer's
 #                          white outline still white, or red like everything else? On 2026-11-03 the
 #                          user saw it red: the filter tints the pointer (on the Studio Display, M4 Pro).
+#   check.py switch        How macOS changes the screen over from Light to Dark and back, timed on the screen
+#                          (scripts/demo/film-switch.swift) for recorder/AppearanceTransition.swift. Ask the
+#                          user first: it changes the appearance to Dark and back, twice, as Safelight does,
+#                          with a 40-point square in the Retina display's bottom left corner. For the
+#                          wallpaper's dissolve, the desktop needs a wallpaper with a picture for Light and
+#                          one for Dark, which the films say nothing about otherwise. Writes
+#                          build/demo/film/switch-N.json and fits them; with --films FILE…, only fits those.
+#                          On 2026-11-03, with the dark-switch scene's wallpaper on the desktop: the fade
+#                          from 489–548 ms after the post, Core Animation's default curve over 0.5 s, in
+#                          encoded values; the wallpaper linear over 2.0 s, from 320–400 ms (to Dark).
 #
 # Needs what pipeline.py needs, and screen recording permission for screencapture.
-import argparse, os, signal, subprocess, sys, tempfile, time
+import argparse, json, os, signal, subprocess, sys, tempfile, time
+from pathlib import Path
 import numpy as np
 import AppKit, Foundation, Quartz
 from PIL import Image, ImageDraw, ImageFont
@@ -333,6 +344,64 @@ def check_pointer(args):
           "on" if after[0] else "off", f"(type {after[1]}, hue {after[2]}, intensity {after[3]})")
 
 
+# --- switch ---------------------------------------------------------------------------------------
+
+def bezier(x1, y1, x2, y2, x):
+    """The cubic Bézier from (0, 0) to (1, 1) with these control points, at times x, by bisection"""
+    x = np.clip(x, 0, 1)
+    low, high = np.zeros_like(x), np.ones_like(x)
+    point = lambda a, b, s: 3 * a * s * (1 - s) ** 2 + 3 * b * s * s * (1 - s) + s ** 3
+    for _ in range(50):
+        middle = (low + high) / 2
+        below = point(x1, x2, middle) < x
+        low, high = np.where(below, middle, low), np.where(below, high, middle)
+    return point(y1, y2, (low + high) / 2)
+
+
+def check_switch(args):
+    root = Path(__file__).resolve().parents[2]
+    folder = root / "build" / "demo" / "film"
+    films = [Path(f) for f in args.films or []]
+    if not films:
+        folder.mkdir(parents=True, exist_ok=True)
+        tool = folder / "film-switch"
+        subprocess.run(["xcrun", "swiftc", "-swift-version", "5", "-O", "-o", str(tool), str(root / "scripts" / "demo" / "film-switch.swift")], check=True)
+        for run in range(1, args.runs + 1):
+            films.append(folder / f"switch-{run}.json")
+            subprocess.run([str(tool), str(films[-1]), "--pause", str(args.pause)], check=True)
+            time.sleep(2)
+    # Core Animation's default curve, which AquaAppearanceHelper's fade has, and the sRGB tone curve, for
+    # a blend in light rather than encoded values
+    default = lambda x: bezier(0.25, 0.1, 0.25, 1, x)
+    decode = lambda v: np.where(v <= 0.04045, v / 12.92, ((v + 0.055) / 1.055) ** 2.4)
+    for path in films:
+        film = json.loads(path.read_text())
+        for change in ("toDark", "toLight"):
+            times = {key: float(value) for key, value in film[change].items()}
+            posted = times["posted"]
+            print(f"{path.name} {change}: the begin call took {(times['begun'] - times['begin']) * 1000:.0f} ms, "
+                  f"called back {(times['calledBack'] - posted) * 1000:.0f} ms after the post")
+            # Each picture taken somewhere between asking and getting it: the middle
+            samples = [s for s in film["samples"] if -0.2 < s["time"] - posted < 3.0]
+            seen = [(0.5 * (s["time"] + s["after"]) - posted, s["square"][0]) for s in samples if s.get("square")]
+            t, v = np.array([x[0] for x in seen]), np.array([x[1] for x in seen])
+            for domain, values in (("encoded values", v), ("light", decode(v))):
+                shown = (values - values[-1]) / (values[0] - values[-1])
+                start, rms = min(((st, np.sqrt(np.mean((1 - default((t - st) / 0.5) - shown) ** 2))) for st in np.arange(0.2, 1.2, 0.001)), key=lambda x: x[1])
+                print(f"  the picture, blended in {domain}: Core Animation's default curve over 0.5 s from {start * 1000:.0f} ms (rms {rms:.3f})")
+            strip = [(0.5 * (s["time"] + s["after"]) - posted, s["desktop"][:3]) for s in samples if s.get("desktop")]
+            t, d = np.array([x[0] for x in strip]), np.array([x[1] for x in strip])
+            if np.abs(d[-1] - d[0]).max() < 0.02:
+                print("  the wallpaper didn't change: it has no picture for each appearance")
+                continue
+            done = (d - d[0]) / (d[-1] - d[0])
+            middle = (done.mean(1) > 0.1) & (done.mean(1) < 0.9)
+            slope, offset = np.polyfit(t[middle], done[middle].mean(1), 1)
+            print(f"  the wallpaper: linear over {1 / slope:.2f} s from {-offset / slope * 1000:.0f} ms, its channels within "
+                  f"{np.ptp(done[middle], axis=1).max():.3f} of each other (so in encoded values), "
+                  f"rms {np.sqrt(np.mean((done[middle].mean(1) - slope * t[middle] - offset) ** 2)):.3f}")
+
+
 # --- brightness -----------------------------------------------------------------------------------
 
 def check_brightness(args):
@@ -373,9 +442,13 @@ def main():
     p.add_argument("--values", type=float, nargs="*", default=[0.75, 0.5, 0.25])
     p = sub.add_parser("pointer")
     p.add_argument("--seconds", type=float, default=300)
+    p = sub.add_parser("switch")
+    p.add_argument("--runs", type=int, default=2)
+    p.add_argument("--pause", type=float, default=4.5, help="seconds in Dark, then in Light")
+    p.add_argument("--films", nargs="*", help="fit these films rather than taking new ones")
     args = parser.parse_args()
     {"colour": check_colour, "dark-layer": check_dark_layer, "eye-test": check_eye_test, "brightness": check_brightness,
-     "pointer": check_pointer}[args.check](args)
+     "pointer": check_pointer, "switch": check_switch}[args.check](args)
 
 
 if __name__ == "__main__":

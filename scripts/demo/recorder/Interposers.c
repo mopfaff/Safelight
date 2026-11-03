@@ -16,12 +16,24 @@
 // - So the window server draws the popover's shadow as a window's that doesn't look key, whose inner
 //   rim is fainter (0.08 against 0.1). Every window of the recorder's is given its key look's shadow
 //   for both, so the window server's pictures of it have the shadow the active app's popover has.
+// - The main queue, on the scene's clock while it records. The recorder runs the frames from inside
+//   work on the main queue, and never runs the run loop between them (its timers and SwiftUI's display
+//   link would draw at the real time), so work put on the main queue would only run after the shot:
+//   SwiftUI's animation completions, and the app's own `DispatchQueue.main.async` and `asyncAfter`.
+//   While it's held, work the main thread puts on the main queue is kept here instead, due when it's
+//   put there, or for `asyncAfter`, at the scene's time it's put off till, and the recorder runs what's
+//   due as the scene's time reaches it (`scene_main_queue_run`), in the order it's due and then put
+//   there. Work other threads put there still goes to the real main queue, as when they finish depends
+//   on the real time.
 #include "Interposers.h"
+#include <Block.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <dispatch/dispatch.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -106,6 +118,130 @@ static CFAbsoluteTime scene_CFAbsoluteTimeGetCurrent(void) {
     return sceneNow(&now) ? wallClockStart - kCFAbsoluteTimeIntervalSince1970 + now / 1e9 : CFAbsoluteTimeGetCurrent();
 }
 
+uint64_t scene_clock_now(void) {
+    return sceneTime;
+}
+
+// MARK: - The main queue
+
+extern void *objc_autoreleasePoolPush(void);
+extern void objc_autoreleasePoolPop(void *pool);
+
+/// Work put on the main queue while it's held: a block, copied, or a function and its argument, due at
+/// a time on the scene's clock, in nanoseconds
+typedef struct {
+    uint64_t due;
+    uint64_t order;
+    void *block;
+    dispatch_function_t function;
+    void *context;
+} Work;
+
+static bool isHeld = false;
+static Work *held = NULL;
+static size_t heldCount = 0, heldCapacity = 0;
+static uint64_t heldSoFar = 0;
+static unsigned long workRun = 0;
+
+void scene_main_queue_hold(void) {
+    if (!timebase.denom) mach_timebase_info(&timebase);
+    isHeld = true;
+}
+
+unsigned long scene_main_queue_work_run(void) {
+    return workRun;
+}
+
+/// Whether work put on `queue` now is kept for the scene's clock
+static bool holds(dispatch_queue_t queue) {
+    return isHeld && queue == dispatch_get_main_queue() && pthread_main_np();
+}
+
+static void keep(uint64_t due, void *block, dispatch_function_t function, void *context) {
+    if (heldCount == heldCapacity) {
+        heldCapacity = heldCapacity ? 2 * heldCapacity : 64;
+        held = realloc(held, heldCapacity * sizeof(Work));
+    }
+    held[heldCount++] = (Work){ due, heldSoFar++, block, function, context };
+}
+
+/// When work put off till `when` is due on the scene's clock: `when` is in the ticks of the clock that
+/// mach_absolute_time gives, which is the scene's on the main thread while it records. Put off by the
+/// wall clock or the clock that runs on while asleep (`when` negative), it's left to the real main queue.
+static bool dueOnSceneClock(dispatch_time_t when, uint64_t *due) {
+    if (when == DISPATCH_TIME_NOW) {
+        *due = sceneTime;
+        return true;
+    }
+    if ((int64_t)when < 0) return false;
+    *due = (uint64_t)when * timebase.numer / timebase.denom;
+    if (*due < sceneTime) *due = sceneTime;
+    return true;
+}
+
+static void scene_dispatch_async(dispatch_queue_t queue, dispatch_block_t block) {
+    if (!holds(queue)) return dispatch_async(queue, block);
+    keep(sceneTime, Block_copy(block), NULL, NULL);
+}
+
+static void scene_dispatch_async_f(dispatch_queue_t queue, void *context, dispatch_function_t function) {
+    if (!holds(queue)) return dispatch_async_f(queue, context, function);
+    keep(sceneTime, NULL, function, context);
+}
+
+static void scene_dispatch_after(dispatch_time_t when, dispatch_queue_t queue, dispatch_block_t block) {
+    uint64_t due;
+    if (!holds(queue) || !dueOnSceneClock(when, &due)) return dispatch_after(when, queue, block);
+    keep(due, Block_copy(block), NULL, NULL);
+}
+
+static void scene_dispatch_after_f(dispatch_time_t when, dispatch_queue_t queue, void *context, dispatch_function_t function) {
+    uint64_t due;
+    if (!holds(queue) || !dueOnSceneClock(when, &due)) return dispatch_after_f(when, queue, context, function);
+    keep(due, NULL, function, context);
+}
+
+void scene_main_queue_run(uint64_t until) {
+    for (;;) {
+        // The work due first, of what's due by then, and of that, what was put there first
+        size_t next = SIZE_MAX;
+        for (size_t i = 0; i < heldCount; i++) {
+            if (held[i].due > until) continue;
+            if (next == SIZE_MAX || held[i].due < held[next].due || (held[i].due == held[next].due && held[i].order < held[next].order)) next = i;
+        }
+        if (next == SIZE_MAX) return;
+        Work work = held[next];
+        memmove(&held[next], &held[next + 1], (heldCount - next - 1) * sizeof(Work));
+        heldCount--;
+        // Run at the time it's due, unless the clock's past it
+        if (work.due > sceneTime) scene_clock_set(work.due);
+        void *pool = objc_autoreleasePoolPush();
+        if (work.block) {
+            ((dispatch_block_t)work.block)();
+            Block_release(work.block);
+        } else {
+            work.function(work.context);
+        }
+        objc_autoreleasePoolPop(pool);
+        workRun++;
+    }
+}
+
+size_t scene_main_queue_release(void) {
+    isHeld = false;
+    size_t left = heldCount;
+    for (size_t i = 0; i < heldCount; i++) {
+        if (held[i].block) {
+            dispatch_async(dispatch_get_main_queue(), held[i].block);
+            Block_release(held[i].block);
+        } else {
+            dispatch_async_f(dispatch_get_main_queue(), held[i].context, held[i].function);
+        }
+    }
+    heldCount = 0;
+    return left;
+}
+
 // MARK: - Key appearance
 
 /// SkyLight's, which isn't in the SDK: make-demo.sh links with `-undefined dynamic_lookup`, and dyld
@@ -175,4 +311,8 @@ __attribute__((used, section("__DATA,__interpose"))) static const struct { const
     { (const void *)scene_CFAbsoluteTimeGetCurrent, (const void *)CFAbsoluteTimeGetCurrent },
     { (const void *)keep_key_appearance, (const void *)SLSTransactionSetWindowHasKeyAppearance },
     { (const void *)give_active_shadow, (const void *)SLSTransactionSetWindowShadowProperties },
+    { (const void *)scene_dispatch_async, (const void *)dispatch_async },
+    { (const void *)scene_dispatch_async_f, (const void *)dispatch_async_f },
+    { (const void *)scene_dispatch_after, (const void *)dispatch_after },
+    { (const void *)scene_dispatch_after_f, (const void *)dispatch_after_f },
 };

@@ -25,7 +25,16 @@ import Cocoa
 
 /// The desktop as drawn, and where things are on it, in points from its top left
 struct Desktop {
+    /// The desktop with the popover's appearance, as the scene opens: its menu bar, and its wallpaper
+    /// unless the recorder was told otherwise
     let image: CGImage
+    /// For each appearance, Dark or not, the wallpaper's picture alone, filling the display, and the
+    /// menu bar alone, over nothing, for a scene whose appearance changes, as macOS fades the wallpaper
+    /// over to its other picture by itself, while the menu bar is redrawn under the screen's picture
+    let layers: [Bool: (wallpaper: CGImage, menuBar: CGImage)]
+    /// The desktop drawn as `image` is, with the wallpaper's picture for Dark or not and the menu bar in
+    /// Dark or not, as the window server's pictures of the popover over the desktop are taken over it
+    let drawn: (_ wallpaperIsDark: Bool, _ menuBarIsDark: Bool) -> CGImage
     /// The display's size in points, and its pixels to the point
     let size: CGSize
     let scale: CGFloat
@@ -64,8 +73,43 @@ struct Desktop {
         return (frame, CGPoint(x: popover.minX - frame.minX, y: popover.minY - frame.minY), backdrop)
     }
 
-    /// Writes the desktop as a PNG, in Display P3
+    /// The part of each of `layers` the recorder draws for the canvas `frame`
+    func canvasLayers(_ frame: CGRect) -> [Bool: (wallpaper: CGImage, menuBar: CGImage)] {
+        let pixels = CGRect(x: frame.minX * scale, y: frame.minY * scale, width: frame.width * scale, height: frame.height * scale)
+        return layers.mapValues { layers in
+            guard let wallpaper = layers.wallpaper.cropping(to: pixels), let menuBar = layers.menuBar.cropping(to: pixels) else {
+                fail("Couldn't cut the popover's surroundings out of the desktop")
+            }
+            return (wallpaper, menuBar)
+        }
+    }
+
+    /// Writes the part of the desktop round the popover, `canvas`, for each wallpaper picture and menu bar,
+    /// drawn as the window server's pictures of the popover are taken over it, into `folder`, as
+    /// wallpaper-light-menubar-dark.png and so on, for scripts/demo/compose.py to find those pictures by
+    func writeBackdrops(around canvas: CGRect, into folder: URL) {
+        let pixels = CGRect(x: canvas.minX * scale, y: canvas.minY * scale, width: canvas.width * scale, height: canvas.height * scale)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for wallpaperIsDark in [false, true] {
+            for menuBarIsDark in [false, true] {
+                guard let backdrop = drawn(wallpaperIsDark, menuBarIsDark).cropping(to: pixels) else { fail("Couldn't cut the popover's surroundings out of the desktop") }
+                Self.write(backdrop, to: folder.appendingPathComponent("wallpaper-\(wallpaperIsDark ? "dark" : "light")-menubar-\(menuBarIsDark ? "dark" : "light").png"))
+            }
+        }
+    }
+
+    /// Writes the desktop as a PNG, in Display P3, and its layers beside it, named after the appearance:
+    /// wallpaper-light.png and menubar-light.png, and the same for dark
     func write(to url: URL) {
+        Self.write(image, to: url)
+        for (isDark, layers) in layers {
+            let folder = url.deletingLastPathComponent()
+            Self.write(layers.wallpaper, to: folder.appendingPathComponent("wallpaper-\(isDark ? "dark" : "light").png"))
+            Self.write(layers.menuBar, to: folder.appendingPathComponent("menubar-\(isDark ? "dark" : "light").png"))
+        }
+    }
+
+    private static func write(_ image: CGImage, to url: URL) {
         guard let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else { fail("Couldn't write \(url.path)") }
         CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination) else { fail("Couldn't write \(url.path)") }
@@ -77,14 +121,17 @@ struct Desktop {
 final class DesktopMaker {
     private let screen: NSScreen
     private let isDark: Bool
+    private let wallpaperIsDark: Bool
     private let wallpaper: URL
     private var systemItems: [NSStatusItem] = []
     private var safelightItem: NSStatusItem?
     private var done: ((Desktop) -> Void)?
 
-    init(screen: NSScreen, isDark: Bool, wallpaper: URL) {
+    /// The desktop as it is in Dark or not, with the wallpaper's picture for Dark or not
+    init(screen: NSScreen, isDark: Bool, wallpaperIsDark: Bool, wallpaper: URL) {
         self.screen = screen
         self.isDark = isDark
+        self.wallpaperIsDark = wallpaperIsDark
         self.wallpaper = wallpaper
     }
 
@@ -117,57 +164,76 @@ final class DesktopMaker {
         // is, leftwards, side by side on whole points; Safelight's the leftmost
         let barOnScreen = CGRect(x: screen.frame.minX, y: screen.frame.maxY - bar.height, width: screen.frame.width, height: bar.height)
         let trial = CGVector(dx: barOnScreen.maxX - frames[0].maxX, dy: barOnScreen.minY - frames[0].minY)
-        guard let clock = Self.menuBarImage(of: items[0], movedBy: trial), let clockInk = Self.inkRight(of: clock.image) else {
+        guard let clock = Self.menuBarImage(of: items[0], movedBy: trial, isDark: isDark), let clockInk = Self.inkRight(of: clock.image) else {
             fail("Couldn't draw the clock's stand-in")
         }
         let inkFromLeft = clock.frame.minX - (frames[0].minX + trial.dx) + clockInk / screen.backingScaleFactor
         var right = (barOnScreen.maxX - Desktop.clockEndFromRight - inkFromLeft + frames[0].width).rounded()
-        var drawn: [(name: String, image: MenuBarImage)] = []
         let names = ["Clock", "Control Center", "Spotlight", "Wi-Fi", "Safelight"]
-        for (item, (name, frame)) in zip(items, zip(names, frames)) {
-            let place = CGRect(x: right - frame.width, y: barOnScreen.minY, width: frame.width, height: frame.height)
-            right = place.minX
-            guard let image = Self.menuBarImage(of: item, movedBy: CGVector(dx: place.minX - frame.minX, dy: place.minY - frame.minY)) else {
-                fail("Couldn't draw \(name)'s item in the menu bar")
-            }
-            drawn.append((name, image))
+        var places: [CGRect] = []
+        for frame in frames {
+            places.append(CGRect(x: right - frame.width, y: barOnScreen.minY, width: frame.width, height: frame.height))
+            right = places[places.count - 1].minX
         }
-        guard let safelight = drawn.last, let highlight = Self.menuBarHighlight(around: CGRect(x: right, y: barOnScreen.minY, width: frames[frames.count - 1].width, height: bar.height),
-                                                                                isDark: isDark) else {
-            fail("Couldn't draw the menu bar")
+        // Each item drawn in Light and in Dark, the capsule behind Safelight's icon, the others as they are
+        var menuBars: [Bool: [MenuBarImage]] = [:]
+        var drawn: [(name: String, image: MenuBarImage)] = []
+        for isDark in [false, true] {
+            var images: [MenuBarImage] = []
+            for (item, (name, (frame, place))) in zip(items, zip(names, zip(frames, places))) {
+                guard let image = Self.menuBarImage(of: item, movedBy: CGVector(dx: place.minX - frame.minX, dy: place.minY - frame.minY), isDark: isDark) else {
+                    fail("Couldn't draw \(name)'s item in the menu bar")
+                }
+                images.append(image)
+                if isDark == self.isDark { drawn.append((name, image)) }
+            }
+            guard let safelight = images.last, let highlight = Self.menuBarHighlight(around: CGRect(x: right, y: barOnScreen.minY, width: frames[frames.count - 1].width, height: bar.height),
+                                                                                     isDark: isDark) else {
+                fail("Couldn't draw the menu bar")
+            }
+            menuBars[isDark] = images.dropLast() + [highlight, safelight]
         }
         for item in systemItems { NSStatusBar.system.removeStatusItem(item) }
         systemItems = []
         safelightItem?.isVisible = false
 
-        // The capsule goes behind Safelight's icon, the others are drawn as they are
-        let layers = drawn.dropLast().map(\.image) + [highlight, safelight.image]
+        guard let safelight = drawn.last, let menuBar = menuBars[isDark] else { fail("Couldn't draw the menu bar") }
         let thickness = NSStatusBar.system.thickness
         // In points from the display's top left: the bottom of the box the icon is centred in
         let tip = CGPoint(x: safelight.image.frame.midX - screen.frame.minX, y: bar.height - (bar.height - thickness) / 2)
-        let image = drawDesktop(menuBar: layers)
+        let image = drawDesktop(wallpaperIsDark: wallpaperIsDark, menuBar: menuBar)
+        var layers: [Bool: (wallpaper: CGImage, menuBar: CGImage)] = [:]
+        for isDark in [false, true] {
+            layers[isDark] = (drawDesktop(wallpaperIsDark: isDark, menuBar: []), drawDesktop(wallpaperIsDark: nil, menuBar: menuBars[isDark] ?? []))
+        }
         let placed = drawn.reversed().map { ($0.name, CGRect(x: $0.image.frame.minX - screen.frame.minX, y: screen.frame.maxY - $0.image.frame.maxY,
                                                           width: $0.image.frame.width, height: $0.image.frame.height)) }
         guard let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else { fail("The Retina display has no number") }
-        done?(Desktop(image: image, size: screen.frame.size, scale: screen.backingScaleFactor, displayID: id, arrowTip: tip, menuBarItems: placed))
+        let draw = { [self] (wallpaperIsDark: Bool, menuBarIsDark: Bool) in drawDesktop(wallpaperIsDark: wallpaperIsDark, menuBar: menuBars[menuBarIsDark] ?? []) }
+        done?(Desktop(image: image, layers: layers, drawn: draw, size: screen.frame.size, scale: screen.backingScaleFactor, displayID: id, arrowTip: tip, menuBarItems: placed))
     }
 
-    /// The wallpaper filling the display, with the menu bar's items drawn over it
-    private func drawDesktop(menuBar: [MenuBarImage]) -> CGImage {
+    /// The wallpaper's picture for Dark or not filling the display, with the menu bar's items drawn over
+    /// it, or with no wallpaper, the items over nothing
+    private func drawDesktop(wallpaperIsDark: Bool?, menuBar: [MenuBarImage]) -> CGImage {
         let scale = screen.backingScaleFactor
         let width = Int(screen.frame.width * scale), height = Int(screen.frame.height * scale)
-        guard let source = CGImageSourceCreateWithURL(wallpaper as CFURL, nil),
-              let picture = WallpaperManager.picture(in: source, at: WallpaperManager.index(in: source, isDark: isDark)) else {
-            fail("Couldn't read the wallpaper \(wallpaper.path)")
-        }
         guard let colorSpace = CGColorSpace(name: CGColorSpace.displayP3),
               let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace,
-                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { fail("Couldn't make a picture of the desktop") }
-        // Fill Screen: scaled to cover the display, in the middle
-        let fill = max(CGFloat(width) / CGFloat(picture.width), CGFloat(height) / CGFloat(picture.height))
-        let size = CGSize(width: CGFloat(picture.width) * fill, height: CGFloat(picture.height) * fill)
-        context.interpolationQuality = .high
-        context.draw(picture, in: CGRect(x: (CGFloat(width) - size.width) / 2, y: (CGFloat(height) - size.height) / 2, width: size.width, height: size.height))
+                                      bitmapInfo: (wallpaperIsDark == nil ? CGImageAlphaInfo.premultipliedLast : .noneSkipLast).rawValue) else {
+            fail("Couldn't make a picture of the desktop")
+        }
+        if let wallpaperIsDark {
+            guard let source = CGImageSourceCreateWithURL(wallpaper as CFURL, nil),
+                  let picture = WallpaperManager.picture(in: source, at: WallpaperManager.index(in: source, isDark: wallpaperIsDark)) else {
+                fail("Couldn't read the wallpaper \(wallpaper.path)")
+            }
+            // Fill Screen: scaled to cover the display, in the middle
+            let fill = max(CGFloat(width) / CGFloat(picture.width), CGFloat(height) / CGFloat(picture.height))
+            let size = CGSize(width: CGFloat(picture.width) * fill, height: CGFloat(picture.height) * fill)
+            context.interpolationQuality = .high
+            context.draw(picture, in: CGRect(x: (CGFloat(width) - size.width) / 2, y: (CGFloat(height) - size.height) / 2, width: size.width, height: size.height))
+        }
         for item in menuBar {
             context.draw(item.image, in: CGRect(x: (item.frame.minX - screen.frame.minX) * scale, y: (item.frame.minY - screen.frame.minY) * scale,
                                                 width: item.frame.width * scale, height: item.frame.height * scale))
@@ -207,15 +273,15 @@ final class DesktopMaker {
         }
     }
 
-    /// A menu bar item as the menu bar shows it, in the app's appearance, and where on screen, `movedBy`
-    /// so much. Its button draws itself, its window moved onto the Retina display while it does.
-    private static func menuBarImage(of item: NSStatusItem, movedBy offset: CGVector) -> MenuBarImage? {
+    /// A menu bar item as the menu bar shows it, in Dark or Light, and where on screen, `movedBy` so much.
+    /// Its button draws itself, its window moved onto the Retina display while it does.
+    private static func menuBarImage(of item: NSStatusItem, movedBy offset: CGVector, isDark: Bool) -> MenuBarImage? {
         guard let button = item.button, let window = button.window else { return nil }
         let bar = window.frame
         window.setFrameOrigin(NSPoint(x: bar.minX + offset.dx, y: bar.minY + offset.dy))
         defer { window.setFrameOrigin(bar.origin) }
         guard window.backingScaleFactor >= 2 else { return nil }
-        button.appearance = NSApp.appearance
+        button.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
         // Its button is the height of the old menu bar, which the menu bar centres in its own
         let frame = button.frame.offsetBy(dx: bar.minX + offset.dx, dy: bar.minY + offset.dy + (bar.height - NSStatusBar.system.thickness) / 2)
         guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(frame.width * 2), pixelsHigh: Int(frame.height * 2),

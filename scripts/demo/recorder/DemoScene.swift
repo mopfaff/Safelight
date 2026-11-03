@@ -76,8 +76,10 @@ struct DemoScene: Decodable {
         var intensity: Double = 1
         /// Every display's brightness, 0 to 1
         var brightness: Double = 1
-        /// The picture whose Light and Dark versions the Wallpaper row shows
-        var wallpaper = "/System/Library/Desktop Pictures/Sonoma.heic"
+        /// The wallpaper: a file whose pictures for Light and Dark the desktop and the Wallpaper row show,
+        /// or `{"light": file, "dark": file}`, one file's picture for Light and another's for Dark, put
+        /// in one wallpaper as Safelight's Wallpaper row makes it when each is chosen
+        var wallpaper = Wallpaper.file("/System/Library/Desktop Pictures/Sonoma.heic")
 
         private enum Keys: String, CodingKey { case colorFilter, tint, intensity, brightness, wallpaper }
 
@@ -87,24 +89,45 @@ struct DemoScene: Decodable {
             tint = try keys.decodeIfPresent(Double.self, forKey: .tint) ?? tint
             intensity = try keys.decodeIfPresent(Double.self, forKey: .intensity) ?? intensity
             brightness = try keys.decodeIfPresent(Double.self, forKey: .brightness) ?? brightness
-            wallpaper = try keys.decodeIfPresent(String.self, forKey: .wallpaper) ?? wallpaper
+            wallpaper = try keys.decodeIfPresent(Wallpaper.self, forKey: .wallpaper) ?? wallpaper
         }
     }
 
-    /// A place for the pointer: a point on the canvas, or a slider's knob, where it is or where it
-    /// would be at `value`
+    enum Wallpaper: Decodable {
+        case file(String)
+        case pair(light: String, dark: String)
+
+        private enum Keys: String, CodingKey { case light, dark }
+
+        init(from decoder: Decoder) throws {
+            if let file = try? decoder.singleValueContainer().decode(String.self) {
+                self = .file(file)
+            } else {
+                let keys = try decoder.container(keyedBy: Keys.self)
+                self = .pair(light: try keys.decode(String.self, forKey: .light), dark: try keys.decode(String.self, forKey: .dark))
+            }
+        }
+    }
+
+    /// A place for the pointer: a point on the canvas, a slider's knob, where it is or where it would
+    /// be at `value`, or the middle of a button, by its name as VoiceOver reads it (`{"button": "Dark"}`)
     enum Place: Decodable {
         case point(x: Double, y: Double)
         case knob(control: String, value: Double?)
+        case button(name: String)
 
-        private enum Keys: String, CodingKey { case control, value }
+        private enum Keys: String, CodingKey { case control, value, button }
 
         init(from decoder: Decoder) throws {
             if var point = try? decoder.unkeyedContainer() {
                 self = .point(x: try point.decode(Double.self), y: try point.decode(Double.self))
             } else {
                 let keys = try decoder.container(keyedBy: Keys.self)
-                self = .knob(control: try keys.decode(String.self, forKey: .control), value: try keys.decodeIfPresent(Double.self, forKey: .value))
+                if let button = try keys.decodeIfPresent(String.self, forKey: .button) {
+                    self = .button(name: button)
+                } else {
+                    self = .knob(control: try keys.decode(String.self, forKey: .control), value: try keys.decodeIfPresent(Double.self, forKey: .value))
+                }
             }
         }
     }
@@ -113,16 +136,19 @@ struct DemoScene: Decodable {
     /// - `move`: moves to that `Place`
     /// - `drag`: presses where it is, which must be on that control's knob, moves the knob to the value
     ///   `to`, and lets go. `from`, if given, is the value the control must have to begin with.
+    /// - `click`: presses where it is, which must be on that `Place` (inside a button), and lets go
+    ///   `duration` later, without moving
     struct Action: Decodable {
         var at: Double
         var duration: Double = 0
         var easing: Easing = .easeInOut
         var move: Place?
         var drag: String?
+        var click: Place?
         var from: Double?
         var to: Double?
 
-        private enum Keys: String, CodingKey { case at, duration, easing, move, drag, from, to }
+        private enum Keys: String, CodingKey { case at, duration, easing, move, drag, click, from, to }
 
         init(from decoder: Decoder) throws {
             let keys = try decoder.container(keyedBy: Keys.self)
@@ -131,6 +157,7 @@ struct DemoScene: Decodable {
             easing = try keys.decodeIfPresent(Easing.self, forKey: .easing) ?? easing
             move = try keys.decodeIfPresent(Place.self, forKey: .move)
             drag = try keys.decodeIfPresent(String.self, forKey: .drag)
+            click = try keys.decodeIfPresent(Place.self, forKey: .click)
             from = try keys.decodeIfPresent(Double.self, forKey: .from)
             to = try keys.decodeIfPresent(Double.self, forKey: .to)
         }

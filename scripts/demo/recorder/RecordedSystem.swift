@@ -33,7 +33,7 @@ enum RecordedSystem {
     }
     static var calls: [Call] = []
 
-    fileprivate static func record(_ function: String, _ arguments: Double...) {
+    static func record(_ function: String, _ arguments: Double...) {
         calls.append(Call(function: function, arguments: arguments))
     }
 
@@ -166,11 +166,10 @@ func CGGetActiveDisplayList(_ maxDisplays: UInt32, _ activeDisplays: UnsafeMutab
     CGGetOnlineDisplayList(maxDisplays, activeDisplays, displayCount)
 }
 
-/// Without System Settings' fade (`NSGlobalPreferenceTransition`), which tells every app on the Mac the
-/// appearance has changed and fades the whole screen, the appearance is set the plain way, through the
-/// SkyLight stand-in above
+/// System Settings' fade (`NSGlobalPreferenceTransition`) is the recorder's (AppearanceTransition.swift),
+/// as AppKit's tells every app on the Mac the appearance has changed and fades the whole screen
 func NSClassFromString(_ aClassName: String) -> AnyClass? {
-    aClassName == "NSGlobalPreferenceTransition" ? nil : Foundation.NSClassFromString(aClassName)
+    aClassName == "NSGlobalPreferenceTransition" ? RecordedPreferenceTransition.self : Foundation.NSClassFromString(aClassName)
 }
 
 /// The brightness keys need Accessibility permission, which the recorder never has or asks for, so it

@@ -1,0 +1,41 @@
+{
+  "about": "Dark clicked under Appearance in Light, and the screen changes over to Dark as macOS does it: the popover, the menu bar and the wallpaper, from Sonoma Horizon to Sonoma's Dark picture, with the filter off",
+  "fps": 60,
+  "duration": 5.5,
+  "appearance": "light",
+  "accentColor": "blue",
+  "language": "en-US",
+  "locale": "en_GB",
+  "desktop": true,
+  "settings": {
+    "colorFilter": false,
+    "tint": 0,
+    "intensity": 0.25,
+    "brightness": 1,
+    "wallpaper": {
+      "light": "/System/Library/Desktop Pictures/.wallpapers/Sonoma Horizon/Sonoma Horizon.heic",
+      "dark": "/System/Library/Desktop Pictures/Sonoma.heic"
+    }
+  },
+  "pointer": [-130, 430],
+  "actions": [
+    { "at": 0.2, "move": { "button": "Dark" }, "duration": 0.8, "easing": "easeInOut" },
+    { "at": 1.25, "click": { "button": "Dark" }, "duration": 0.1 }
+  ],
+  "camera": {
+    "16:9": {
+      "size": [3840, 2160],
+      "keys": [
+        { "at": 1.5, "centre": [2027, 300], "height": 600 },
+        { "at": 2.4, "centre": [1280, 720], "height": 1440, "easing": "easeInOut" }
+      ]
+    },
+    "9:16": {
+      "size": [2160, 3840],
+      "keys": [
+        { "at": 1.5, "centre": [2335, 400], "height": 800 },
+        { "at": 2.4, "centre": [2155, 720], "height": 1440, "easing": "easeInOut" }
+      ]
+    }
+  }
+}

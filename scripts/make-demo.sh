@@ -13,6 +13,9 @@
 #                                   and the rest, as its "camera" has them, and stills/
 #   scripts/make-demo.sh --verify <scene>
 #                                   makes it twice and says whether the two are the same, byte for byte
+#   scripts/make-demo.sh --record <scene>
+#                                   only records it, without making its videos, into build/demo/recorder/
+#                                   recorded/<scene>/, leaving the shot in build/demo/<scene>/ as it was
 #   scripts/make-demo.sh --check <scene> [light|dark]
 #                                   compares the recorder's first frame of a scene on the desktop, with the
 #                                   window server's shadow added, against the window server's own picture
@@ -36,22 +39,26 @@
 # this Mac's, and the scene's brightness is the one they start at.
 # The window server draws a shadow and rims round the popover's window, which the frames don't have.
 # For a scene on the desktop they're taken from the window server once for each appearance and size of
-# popover, into build/demo/window-server/, with the popover on the Retina display for a second, which
-# needs the displays awake; after that, making a shot shows nothing.
+# popover, and over each desktop it's on (each picture of the wallpaper the recording shows under it),
+# into build/demo/window-server/, with the popover on the Retina display for a second, which needs the
+# displays awake; after that, making a shot shows nothing.
 
 set -eu
 cd "${0:A:h}/.."
 
-VERIFY=0 CHECK=0
+VERIFY=0 CHECK=0 RECORD_ONLY=0
 if [[ "${1-}" == --verify ]]; then
     VERIFY=1
+    shift
+elif [[ "${1-}" == --record ]]; then
+    RECORD_ONLY=1
     shift
 elif [[ "${1-}" == --check ]]; then
     CHECK=1
     shift
 fi
 if (( $# != 1 && !(CHECK && $# == 2) )); then
-    echo "Usage: scripts/make-demo.sh [--verify] <scene> | --check <scene> [light|dark], the scene one of: ${(j:, :)${(@)${(f)$(ls scripts/demo/scenes)}:r}}" >&2
+    echo "Usage: scripts/make-demo.sh [--verify | --record] <scene> | --check <scene> [light|dark], the scene one of: ${(j:, :)${(@)${(f)$(ls scripts/demo/scenes)}:r}}" >&2
     exit 2
 fi
 SCENE=$1
@@ -70,18 +77,20 @@ rm -rf "$APP" "$BUILD_DIR/src"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks" "$BUILD_DIR/src" "$OUT"
 
 # The recorder has an entry point of its own instead of Safelight's, and draws the desktop with the
-# wallpaper's picture for the scene's appearance as Safelight picks it (recorder/Desktop.swift)
+# wallpaper's picture for the scene's appearance as Safelight picks it (recorder/Desktop.swift), from a
+# wallpaper it makes as Safelight does when the scene has one picture for Light and another for Dark
 INDEX='    private static func index(in source: CGImageSource, isDark: Bool) -> Int {'
 PICTURE='    private static func picture(in source: CGImageSource, at index: Int, maxPixelSize: Int? = nil) -> CGImage? {'
+MAKE='    private static func makeWallpaper(at wallpaper: URL, light: (file: URL, isDark: Bool), dark: (file: URL, isDark: Bool)) -> Bool {'
 if [[ $(grep -c '^@main$' Safelight/Safelight.swift) != 1 ]]; then
     echo "Couldn't find Safelight's @main line to leave out" >&2
     exit 2
 fi
-if [[ $(grep -cxF "$INDEX" Safelight/Safelight.swift) != 1 || $(grep -cxF "$PICTURE" Safelight/Safelight.swift) != 1 ]]; then
-    echo "Couldn't find WallpaperManager's index(in:isDark:) and picture(in:at:maxPixelSize:) for the desktop to use" >&2
+if [[ $(grep -cxF "$INDEX" Safelight/Safelight.swift) != 1 || $(grep -cxF "$PICTURE" Safelight/Safelight.swift) != 1 || $(grep -cxF "$MAKE" Safelight/Safelight.swift) != 1 ]]; then
+    echo "Couldn't find WallpaperManager's index(in:isDark:), picture(in:at:maxPixelSize:) and makeWallpaper(at:light:dark:) for the desktop to use" >&2
     exit 2
 fi
-sed -e '/^@main$/d' -e "s/^$INDEX\$/${INDEX/private /}/" -e "s/^$PICTURE\$/${PICTURE/private /}/" Safelight/Safelight.swift >"$BUILD_DIR/src/Safelight.swift"
+sed -e '/^@main$/d' -e "s/^$INDEX\$/${INDEX/private /}/" -e "s/^$PICTURE\$/${PICTURE/private /}/" -e "s/^$MAKE\$/${MAKE/private /}/" Safelight/Safelight.swift >"$BUILD_DIR/src/Safelight.swift"
 
 cp scripts/demo/recorder/Info.plist "$APP/Contents/Info.plist"
 # The menu bar icon is a symbol in the asset catalog. With whole paths, as actool hands relative ones to
@@ -133,9 +142,12 @@ run() {
     fi
 }
 ON_DESKTOP=$(setting desktop false)
-# What the window server draws round the popover, taken unless it has been for this appearance and size
+# What the window server draws round the popover, taken unless it has been for this appearance and size,
+# over the desktop as it is in that appearance, or with the wallpaper's picture for the other one given
 windowServer() {
-    run "$1" "$OUT" "$BUILD_DIR/$SCENE-window-server.log" -windowServer "$PWD/build/demo/window-server"
+    local scene=$1
+    shift
+    run "$scene" "$OUT" "$BUILD_DIR/$SCENE-window-server.log" -windowServer "$PWD/build/demo/window-server" "$@"
     grep -E '^(Captured|The window server)' "$BUILD_DIR/$SCENE-window-server.log"
 }
 
@@ -156,27 +168,37 @@ if (( CHECK )); then
     exit 0
 fi
 
-[[ "$ON_DESKTOP" == true ]] && windowServer "$SCENE_FILE"
 # Made in a folder of its own, which takes the place of the shot's once it's done, so a shot made from
-# an older recording is never left beside a newer one
+# an older recording is never left beside a newer one. On the desktop, the window server's pictures of
+# the popover over it are taken first for every appearance of the popover and picture of the wallpaper
+# the recording has (compose.py needs).
 shoot() {
     local out=$1
     rm -rf "$out.new"
     mkdir -p "$out.new"
     run "$SCENE_FILE" "$out.new" "$BUILD_DIR/$SCENE.log"
-    grep '^Recorded' "$BUILD_DIR/$SCENE.log"
-    if [[ "$ON_DESKTOP" == true ]]; then
+    grep -E '^(Recorded|The main queue)' "$BUILD_DIR/$SCENE.log"
+    if [[ "$ON_DESKTOP" == true ]] && (( !RECORD_ONLY )); then
+        python3 scripts/demo/compose.py needs "$SCENE" --folder "$out.new" | while read -r appearance wallpaper; do
+            windowServer "$SCENE_FILE" -appearance "$appearance" -wallpaperAppearance "$wallpaper"
+        done
         python3 scripts/demo/compose.py "$SCENE" --folder "$out.new"
     fi
     rm -rf "$out"
     mv "$out.new" "$out"
 }
+if (( RECORD_ONLY )); then
+    shoot "$BUILD_DIR/recorded/$SCENE"
+    exit 0
+fi
 shoot "$OUT"
 
 if (( VERIFY )); then
     AGAIN="$BUILD_DIR/again/$SCENE"
     shoot "$AGAIN"
-    if differing=$(diff -rq "$OUT" "$AGAIN"); then
+    # All but a wallpaper the recorder made of two pictures, which ImageIO writes with 4 bytes that differ
+    # every time; its pictures decode the same, and the desktop drawn from them is compared
+    if differing=$(diff -rq -x wallpaper.heic "$OUT" "$AGAIN"); then
         echo "Made again: the same, byte for byte"
     else
         echo "Made again, and these differ:" >&2

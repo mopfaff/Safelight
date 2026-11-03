@@ -9,15 +9,20 @@ import Metal
 // rather than the real one), and has Core Animation draw the popover's window off screen (`CARenderer`),
 // glass and all, into a PNG with the pointer drawn over it. Meanwhile every clock the main thread reads
 // gives the scene's time (Interposers.c), as AppKit's gestures, which move the knob's glass as it's
-// dragged, time the mouse events by it. So the same scene gives the same frames byte for byte.
+// dragged, time the mouse events by it, and work the main thread puts on the main queue runs when the
+// scene's time reaches it. So the same scene gives the same frames byte for byte. When the scene changes
+// the appearance, the app does it as on the Mac, and macOS's part is played as AppearanceTransition.swift
+// has it, which the log says frame by frame for scripts/demo/compose.py to draw.
 //
 // scripts/make-demo.sh builds this together with a copy of Safelight.swift, RecordedSystem.swift (the
 // system as the app sees it, which records what the app would change on each frame), Interposers.c and
 // scripts/screenshots/FixedTime.swift, and runs it with `-scene file.json -output directory`. It writes
-// directory/frames/0000.png… and directory/log.json, and for a scene on the desktop, desktop.png
-// (Desktop.swift). Instead of recording, with `-check YES` as well it writes the window server's
-// picture of the first frame and its own (`captureOverBackdrop`), and with `-windowServer folder` it
-// takes what the window server draws round the popover, unless it has already (`captureWindowServer`).
+// directory/frames/0000.png… and directory/log.json, and for a scene on the desktop, desktop.png and its
+// layers, and the desktop round the popover in each appearance, backdrops/ (Desktop.swift). Instead of
+// recording, with `-check YES` as well it writes the window server's picture of the first frame and its
+// own (`captureOverBackdrop`), and with `-windowServer folder` it takes what the window server draws round
+// the popover, unless it has already (`captureWindowServer`), in the appearance `-appearance` gives and
+// over the wallpaper's picture for the one `-wallpaperAppearance` gives, if they're given.
 //
 // The popover is opened under an invisible icon on the Retina display, in an invisible window that
 // clicks go through, and drawn as the active app's popover is (`acquireKeyAppearance`), so nothing on
@@ -128,6 +133,28 @@ struct Control {
     }
 }
 
+/// A button in the popover a scene can click, by its name, as it's drawn: its frame in the hosting
+/// view, which is flipped. SwiftUI gives the hosting view no elements for accessibility, which would
+/// name them, while nothing asks it for them, so they're found by how they're drawn. "Light" and "Dark"
+/// are the Appearance picker's thumbnails, the first two of the popover's rounded ones the size the
+/// picker has them (the Wallpaper picker's are the same size, under them), left and right.
+func buttonFrame(named name: String, in host: NSView) -> CGRect? {
+    guard let root = host.layer, let index = ["Light", "Dark"].firstIndex(of: name) else { return nil }
+    var thumbnails: [CGRect] = []
+    func walk(_ layer: CALayer) {
+        if layer.bounds.size == AppearancePicker.thumbnailSize, layer.cornerRadius == AppearancePicker.thumbnailCornerRadius {
+            thumbnails.append(root.convert(layer.bounds, from: layer))
+        }
+        layer.sublayers?.forEach(walk)
+    }
+    walk(root)
+    // Each thumbnail's clip, and the picture in it, have that shape
+    let distinct = thumbnails.reduce(into: [CGRect]()) { found, frame in if !found.contains(frame) { found.append(frame) } }
+        .sorted { ($0.minY, $0.minX) < ($1.minY, $1.minX) }
+    guard distinct.count >= 2, distinct[0].minY == distinct[1].minY else { return nil }
+    return distinct[index]
+}
+
 /// The app, which takes the mouse events of a shot from the scene while it's recorded. An AppKit
 /// control tracks the mouse while it's pressed in a loop of its own: an NSSlider's (as Tint's
 /// HueSlider overrides mouseDown) checks the button is down (`NSEvent.pressedMouseButtons`, which
@@ -173,8 +200,13 @@ final class FrameRenderer {
     private let root = CALayer()
     /// Where the window's layer goes, at its place on the canvas
     private let place = CALayer()
+    /// The backdrop as one picture, and in layers, once the desktop changes (`showDesktop`): each
+    /// appearance's wallpaper, the Dark one over the Light one, and each one's menu bar over them
+    private var picture: CALayer?
+    private var wallpapers: [Bool: CALayer] = [:]
+    private var menuBars: [Bool: CALayer] = [:]
 
-    init(canvas: CGSize, scale: CGFloat, windowFrame: CGRect, backdrop: CGImage?) {
+    init(canvas: CGSize, scale: CGFloat, windowFrame: CGRect, backdrop: CGImage?, layers: [Bool: (wallpaper: CGImage, menuBar: CGImage)] = [:]) {
         width = Int(canvas.width * scale)
         height = Int(canvas.height * scale)
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else { fail("There's no Metal device to draw with") }
@@ -200,6 +232,18 @@ final class FrameRenderer {
             picture.frame = scaled.bounds
             picture.contents = backdrop
             scaled.addSublayer(picture)
+            self.picture = picture
+        }
+        for (kind, contents) in [(0, layers.mapValues(\.wallpaper)), (1, layers.mapValues(\.menuBar))] {
+            for isDark in [false, true] {
+                guard let image = contents[isDark] else { continue }
+                let layer = CALayer()
+                layer.frame = scaled.bounds
+                layer.contents = image
+                layer.isHidden = true
+                scaled.addSublayer(layer)
+                if kind == 0 { wallpapers[isDark] = layer } else { menuBars[isDark] = layer }
+            }
         }
         // Core Animation's y goes up from the bottom; the canvas's down from the top
         place.frame = CGRect(x: windowFrame.minX, y: canvas.height - windowFrame.maxY, width: windowFrame.width, height: windowFrame.height)
@@ -208,6 +252,21 @@ final class FrameRenderer {
         renderer.layer = root
         renderer.bounds = root.frame
         CATransaction.flush()
+    }
+
+    /// The desktop behind the popover from now on: the wallpaper `dark` of the way from its Light picture
+    /// to its Dark one, and the menu bar in Dark or not, in layers instead of the one picture
+    func showDesktop(dark: Double, menuBarIsDark: Bool) {
+        guard let light = wallpapers[false], let darkLayer = wallpapers[true], menuBars.count == 2 else { fail("There's no desktop in layers to change") }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        picture?.isHidden = true
+        light.isHidden = false
+        darkLayer.isHidden = dark == 0
+        darkLayer.opacity = Float(dark)
+        menuBars[false]?.isHidden = menuBarIsDark
+        menuBars[true]?.isHidden = !menuBarIsDark
+        CATransaction.commit()
     }
 
     /// The frame with `layer` (the window's) in it, drawn at `time`, its rows from the top down, premultiplied
@@ -325,6 +384,24 @@ struct Log: Encodable {
         let calls: [RecordedSystem.Call]
         /// Animations Core Animation is running in the popover, which would follow the real clock
         let coreAnimation: [String]?
+        /// The appearance the popover is drawn in
+        let popover: String
+        /// For a scene on the desktop, how the desktop is: the wallpaper, from 0, its picture for Light,
+        /// to 1, its picture for Dark, and the menu bar's appearance
+        let desktop: DesktopState?
+        /// The picture of the screen macOS shows over it while the appearance changes, from the frame
+        /// drawn last before it was taken, and how much of it shows, while any does
+        let screenPicture: ScreenPicture?
+    }
+
+    struct DesktopState: Encodable, Equatable {
+        let wallpaper: Double
+        let menuBar: String
+    }
+
+    struct ScreenPicture: Encodable {
+        let frame: Int
+        let opacity: Double
     }
 
     struct PointerState: Encodable {
@@ -371,6 +448,10 @@ final class Recorder: NSObject, NSApplicationDelegate {
     /// The Retina display the popover is drawn for, at twice its size
     private let screen = NSScreen.screens.first { $0.backingScaleFactor >= 2 }
     private let scale = 2
+    /// The popover's appearance as the scene opens, or the one the window server's pictures are taken in
+    private var appearance = "dark"
+    /// Whether the desktop shows the wallpaper's picture for Dark as the scene opens
+    private var wallpaperIsDark = true
     private var anchor: NSWindow!
     private var activity: NSObjectProtocol?
     /// For a scene on the desktop, what draws it, and the desktop once drawn
@@ -395,8 +476,13 @@ final class Recorder: NSObject, NSApplicationDelegate {
         removeSettings()
         DispatchQueue.main.asyncAfter(deadline: .now() + 60) { fail("Timed out opening the popover") }
 
-        // The Mac as the scene has it, for Safelight to read as it opens
-        let isDark = scene.appearance == "dark"
+        // The Mac as the scene has it, for Safelight to read as it opens, or for the window server's
+        // pictures, in the appearance it's told to take them in, with the wallpaper's picture for the
+        // one it's told to
+        let isDark = (UserDefaults.standard.string(forKey: "appearance") ?? scene.appearance) == "dark"
+        wallpaperIsDark = (UserDefaults.standard.string(forKey: "wallpaperAppearance") ?? (isDark ? "dark" : "light")) == "dark"
+        appearance = isDark ? "dark" : "light"
+        let wallpaper = wallpaperFile()
         RecordedSystem.colorFilterEnabled = scene.settings.colorFilter
         RecordedSystem.colorFilterType = 16 // Color Tint
         RecordedSystem.hue = scene.settings.tint / 360
@@ -410,7 +496,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
 
         // Nothing would stop it changing the Mac if the stand-ins weren't the ones called
         guard let filter = ColorFilterManager.shared.read(), filter.intensity == Float(scene.settings.intensity),
-              AppearanceManager.shared.isDark() == isDark, NSClassFromString("NSGlobalPreferenceTransition") == nil else {
+              AppearanceManager.shared.isDark() == isDark, NSClassFromString("NSGlobalPreferenceTransition") === RecordedPreferenceTransition.self else {
             fail("Safelight's copy reaches the system's settings; RecordedSystem.swift isn't standing in for them")
         }
 
@@ -418,7 +504,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
         // before it as each new item goes to the left
         if scene.desktop {
             guard scene.canvas == nil, let screen else { fail("A scene on the desktop has its canvas worked out from it, so it can't have one of its own") }
-            desktopMaker = DesktopMaker(screen: screen, isDark: isDark, wallpaper: URL(fileURLWithPath: scene.settings.wallpaper))
+            desktopMaker = DesktopMaker(screen: screen, isDark: isDark, wallpaperIsDark: wallpaperIsDark, wallpaper: wallpaper)
             desktopMaker?.addSystemItems()
         }
 
@@ -428,7 +514,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
         appDelegate.popover.behavior = .applicationDefined
         appDelegate.popover.animates = false
         // The wallpaper's pictures, which are only read, as the desktop isn't changed unless one is chosen
-        WallpaperManager.shared.showPictures(of: URL(fileURLWithPath: scene.settings.wallpaper))
+        WallpaperManager.shared.showPictures(of: wallpaper)
         if let desktopMaker, let item = appDelegate.statusItem {
             desktopMaker.make(with: item) { desktop in
                 self.desktop = desktop
@@ -437,6 +523,21 @@ final class Recorder: NSObject, NSApplicationDelegate {
         } else {
             appDelegate.statusItem?.isVisible = false
             openOnceLoaded()
+        }
+    }
+
+    /// The scene's wallpaper: its file, or for one picture for Light and another for Dark, a wallpaper
+    /// with both, made as Safelight's Wallpaper row makes it, beside the frames
+    private func wallpaperFile() -> URL {
+        switch scene.settings.wallpaper {
+        case let .file(path):
+            return URL(fileURLWithPath: path)
+        case let .pair(light, dark):
+            let made = output.appendingPathComponent("wallpaper.heic")
+            guard WallpaperManager.makeWallpaper(at: made, light: (URL(fileURLWithPath: light), false), dark: (URL(fileURLWithPath: dark), true)) else {
+                fail("Couldn't make a wallpaper of \(light)'s picture for Light and \(dark)'s for Dark")
+            }
+            return made
         }
     }
 
@@ -529,7 +630,9 @@ final class Recorder: NSObject, NSApplicationDelegate {
                                           menuBar: desktop.menuBarItems.map { Log.MenuBarItem(name: $0.name, frame: [$0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height]) })
         }
         let windowFrame = CGRect(origin: origin, size: windowSize)
-        let renderer = FrameRenderer(canvas: canvasSize, scale: CGFloat(scale), windowFrame: windowFrame, backdrop: backdrop)
+        let canvasOnDesktop = desktopInfo.map { CGRect(x: $0.canvas[0], y: $0.canvas[1], width: $0.canvas[2], height: $0.canvas[3]) }
+        let renderer = FrameRenderer(canvas: canvasSize, scale: CGFloat(scale), windowFrame: windowFrame, backdrop: backdrop,
+                                     layers: canvasOnDesktop.flatMap { desktop?.canvasLayers($0) } ?? [:])
 
         // Canvas points to the window's and back: the window's y goes up from its bottom
         func inWindow(_ point: CGPoint) -> NSPoint { NSPoint(x: point.x - origin.x, y: windowSize.height - (point.y - origin.y)) }
@@ -541,10 +644,18 @@ final class Recorder: NSObject, NSApplicationDelegate {
             let fraction = value.map { ($0 - range.lowerBound) / (range.upperBound - range.lowerBound) } ?? slider.knobFraction
             return onCanvas(host.convert(slider.knobCentre(at: fraction), to: nil))
         }
+        /// A button's frame on the canvas
+        func button(_ name: String) -> CGRect {
+            guard let frame = buttonFrame(named: name, in: host) else { fail("There's no button called \(name) in the popover") }
+            let inWindow = host.convert(frame, to: nil)
+            let topLeft = onCanvas(NSPoint(x: inWindow.minX, y: inWindow.maxY))
+            return CGRect(origin: topLeft, size: inWindow.size)
+        }
         func resolve(_ place: DemoScene.Place) -> CGPoint {
             switch place {
             case let .point(x, y): CGPoint(x: x, y: y)
             case let .knob(control, value): knob(control, at: value)
+            case let .button(name): CGPoint(x: button(name).midX, y: button(name).midY)
             }
         }
         // Mouse events as the window would be sent them, timed by the scene's clock, which every clock
@@ -598,6 +709,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
             fail("Couldn't make \(frames.path): \(error)")
         }
         desktop?.write(to: output.appendingPathComponent("desktop.png"))
+        if let canvasOnDesktop { desktop?.writeBackdrops(around: canvasOnDesktop, into: output.appendingPathComponent("backdrops")) }
 
         // PNGs are written in the background, while the next frame is drawn
         let writing = DispatchQueue(label: "Writing frames", qos: .userInitiated, attributes: .concurrent)
@@ -616,7 +728,10 @@ final class Recorder: NSObject, NSApplicationDelegate {
         func begin() {
             let time = Double(frame) / Double(scene.fps)
             eventsThisFrame = 0
-            scene_clock_set(UInt64(((Self.clockStart + time) * 1e9).rounded()))
+            let now = UInt64(((Self.clockStart + time) * 1e9).rounded())
+            // The main queue's work that's due by now first, as the run loop would have run it
+            scene_main_queue_run(now)
+            scene_clock_set(now)
 
             while started < actions.count, actions[started].at <= time + 1e-9 {
                 let action = actions[started]
@@ -632,8 +747,18 @@ final class Recorder: NSObject, NSApplicationDelegate {
                     send(.leftMouseDown, at: from, time: time)
                 } else if let place = action.move {
                     running.append((action, from, resolve(place)))
+                } else if let place = action.click {
+                    let on: Bool
+                    switch place {
+                    case let .button(name): on = button(name).contains(from)
+                    default: on = hypot(resolve(place).x - from.x, resolve(place).y - from.y) < 3
+                    }
+                    guard on else { fail("The pointer isn't on what's clicked at \(action.at)s") }
+                    running.append((action, from, from))
+                    isPressed = true
+                    send(.leftMouseDown, at: from, time: time)
                 } else {
-                    fail("The action at \(action.at)s neither moves nor drags")
+                    fail("The action at \(action.at)s neither moves, drags nor clicks")
                 }
             }
             for (action, from, to) in running {
@@ -644,7 +769,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
                     send(isPressed ? .leftMouseDragged : .mouseMoved, at: point, time: time)
                 }
             }
-            for (action, _, _) in running where time >= action.end - 1e-9 && action.drag != nil {
+            for (action, _, _) in running where time >= action.end - 1e-9 && (action.drag != nil || action.click != nil) {
                 isPressed = false
                 send(.leftMouseUp, at: pointer ?? .zero, time: time)
             }
@@ -659,6 +784,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
             let (event, nanoseconds) = pending[index]
             if dequeue {
                 pending.remove(at: index)
+                scene_main_queue_run(nanoseconds)
                 scene_clock_set(nanoseconds)
                 if event.type == .leftMouseDown { isButtonDown = true }
                 if event.type == .leftMouseUp { isButtonDown = false }
@@ -672,11 +798,27 @@ final class Recorder: NSObject, NSApplicationDelegate {
             guard window.value(forKey: "hasKeyAppearance") as? Bool == true else { fail("The popover stopped looking key at frame \(frame)") }
 
             // The frame SwiftUI draws a frame's time later. The run loop isn't run in between: its timers
-            // and SwiftUI's display link would draw at the real time, and work the app puts off with
-            // DispatchQueue.main.async can't run anyway while this, itself on the main queue, does.
+            // and SwiftUI's display link would draw at the real time. Work on the main queue is kept
+            // for the scene's clock instead (Interposers.c), and what's due by now runs first.
+            scene_main_queue_run(scene_clock_now())
             host._renderForTest(interval: frame == 0 ? 0 : 1 / Double(scene.fps))
             window.displayIfNeeded()
             let animations = Self.coreAnimationAnimations(in: frameLayer)
+            // The desktop behind the glass as it is now, in layers once it's changed
+            var desktopState: Log.DesktopState?
+            if desktop != nil {
+                let state = Log.DesktopState(wallpaper: AppearanceTransition.wallpaper(at: time, from: startingDesktop.wallpaper), menuBar: menuBarIsDark ? "dark" : "light")
+                if state != startingDesktop || desktopInLayers {
+                    renderer.showDesktop(dark: state.wallpaper, menuBarIsDark: menuBarIsDark)
+                    desktopInLayers = true
+                }
+                desktopState = state
+            }
+            let screenPicture = AppearanceTransition.all.last.flatMap { transition in
+                let opacity = transition.pictureOpacity(at: time)
+                return opacity > 0 ? Log.ScreenPicture(frame: transition.snapshotFrame, opacity: opacity) : nil
+            }
+            let popoverAppearance = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? "dark" : "light"
             var pixels = renderer.draw(frameLayer, at: time)
             // On the desktop, scripts/demo/compose.py draws the pointer, over the window server's shadow,
             // and wherever it is on the desktop
@@ -711,13 +853,26 @@ final class Recorder: NSObject, NSApplicationDelegate {
                                            : Double(RecordedSystem.gammaTables[display]?.last ?? 1))
                                    }),
                 calls: RecordedSystem.calls,
-                coreAnimation: animations.isEmpty ? nil : animations))
+                coreAnimation: animations.isEmpty ? nil : animations,
+                popover: popoverAppearance, desktop: desktopState, screenPicture: screenPicture))
             RecordedSystem.calls = []
+            RecordedPreferenceTransition.framesDrawn = frame + 1
             frame += 1
         }
 
         // While an AppKit control tracks the mouse, its loop takes the events, and once it waits for
         // more than the frame has, the frame's drawn and the next one started
+        // The app's appearance changes as AppKit changes it when it's told, on the scene's clock, and the
+        // menu bar's with it; the wallpaper changes over by itself (AppearanceTransition.swift)
+        var menuBarIsDark = appearance == "dark"
+        RecordedPreferenceTransition.now = { (Double(scene_clock_now()) / 1e9 - Self.clockStart) }
+        RecordedPreferenceTransition.changeAppAppearance = { isDark in
+            NSApp.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
+            menuBarIsDark = isDark
+        }
+        let startingDesktop = Log.DesktopState(wallpaper: wallpaperIsDark ? 1 : 0, menuBar: appearance)
+        var desktopInLayers = false
+        scene_main_queue_hold()
         RecorderApplication.isPressed = { isButtonDown }
         RecorderApplication.eventSource = { mask, until, dequeue in
             while true {
@@ -736,6 +891,8 @@ final class Recorder: NSObject, NSApplicationDelegate {
         }
         RecorderApplication.eventSource = nil
         RecorderApplication.isPressed = nil
+        let mainQueueWork = scene_main_queue_work_run()
+        let mainQueueLeft = scene_main_queue_release()
 
         written.wait()
         let encoder = JSONEncoder()
@@ -748,6 +905,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
         // The slider's knob would follow the real clock if the main thread weren't reading the scene's
         guard scene_clock_readings() > 0 else { fail("Nothing read the scene's clock; see Interposers.c") }
         print("Recorded \(count) frames of \(renderer.width)×\(renderer.height) to \(frames.path)")
+        print("The main queue's work: \(mainQueueWork) ran on the scene's clock, \(mainQueueLeft) still due as it ended")
         removeSettings()
         exit(0)
     }
@@ -801,7 +959,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
             Self.writePNG(captured, to: folder.appendingPathComponent("window-server.png"))
             Self.writePNG(drawn, to: folder.appendingPathComponent("recorder.png"))
             Self.writePNG(backdrop, to: folder.appendingPathComponent("backdrop.png"))
-            var about: [String: Any] = ["appearance": self.scene.appearance, "scale": self.scale, "display": self.screen.flatMap(Self.id) ?? 0,
+            var about: [String: Any] = ["appearance": self.appearance, "scale": self.scale, "display": self.screen.flatMap(Self.id) ?? 0,
                                         "window": [windowFrame.minX, windowFrame.minY, windowFrame.width, windowFrame.height]]
             about["canvas"] = desktopCanvas
             if let data = try? JSONSerialization.data(withJSONObject: about, options: [.prettyPrinted, .sortedKeys]) {
@@ -839,18 +997,24 @@ final class Recorder: NSObject, NSApplicationDelegate {
     /// gives the popover's window its key look's rims whether it looks key or not. Written into a folder
     /// of `folder` named after the appearance and the window's size, as they're the same for every frame
     /// and every scene, once: nothing is shown if that folder has them already. For a scene on the
-    /// desktop, then the popover over the desktop round it (`captureOverBackdrop`), into desktop/ there,
-    /// unless it has that already.
+    /// desktop, then the popover over the desktop round it (`captureOverBackdrop`), into a folder there
+    /// for that desktop (desktop, desktop-2, …), unless one has it over the same desktop already.
     private func captureWindowServer(window: NSWindow, frameLayer: CALayer, renderer: FrameRenderer, canvas: CGSize, windowFrame: CGRect, backdrop: CGImage?,
                                      desktopCanvas: [Double]?, into folder: URL) {
-        let place = folder.appendingPathComponent("\(scene.appearance)-\(Int(window.frame.width))x\(Int(window.frame.height))")
+        let place = folder.appendingPathComponent("\(appearance)-\(Int(window.frame.width))x\(Int(window.frame.height))")
         // Then, on the desktop, the popover over the desktop round it, unless it's been taken over the same
         func overDesktop() {
-            let desktop = place.appendingPathComponent("desktop")
-            let taken = CGImageSourceCreateWithURL(desktop.appendingPathComponent("backdrop.png") as CFURL, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
-            guard let backdrop, desktopCanvas != nil, taken.flatMap(Self.pixels) != Self.pixels(of: backdrop) else {
-                if desktopCanvas != nil { print("The window server's picture of the popover over the desktop is already in \(desktop.path)") }
-                finish()
+            guard let backdrop, desktopCanvas != nil else { finish() }
+            let wanted = Self.pixels(of: backdrop)
+            var number = 1
+            var desktop: URL { place.appendingPathComponent(number == 1 ? "desktop" : "desktop-\(number)") }
+            while FileManager.default.fileExists(atPath: desktop.path) {
+                let taken = CGImageSourceCreateWithURL(desktop.appendingPathComponent("backdrop.png") as CFURL, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
+                if taken.flatMap(Self.pixels) == wanted {
+                    print("The window server's picture of the popover over the desktop is already in \(desktop.path)")
+                    finish()
+                }
+                number += 1
             }
             captureOverBackdrop(window: window, frameLayer: frameLayer, renderer: renderer, canvas: canvas, windowFrame: windowFrame, backdrop: backdrop,
                                 desktopCanvas: desktopCanvas, into: desktop) { self.finish() }
@@ -879,7 +1043,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
             try? FileManager.default.createDirectory(at: place, withIntermediateDirectories: true)
             Self.writePNG(withShadow, to: place.appendingPathComponent("with-shadow.png"))
             Self.writePNG(alone, to: place.appendingPathComponent("alone.png"))
-            let about: [String: Any] = ["margin": margin, "scale": scale, "window": [window.frame.width, window.frame.height], "appearance": self.scene.appearance,
+            let about: [String: Any] = ["margin": margin, "scale": scale, "window": [window.frame.width, window.frame.height], "appearance": self.appearance,
                                         "display": NSScreen.screens.first { $0.frame.intersects(window.frame) }?.localizedName ?? ""]
             if let data = try? JSONSerialization.data(withJSONObject: about, options: [.prettyPrinted, .sortedKeys]) {
                 try? data.write(to: place.appendingPathComponent("about.json"))

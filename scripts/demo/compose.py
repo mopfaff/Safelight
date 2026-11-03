@@ -12,6 +12,11 @@
 #      filter tints it with the rest (red Color Tint turned its white outline red, seen on the screen,
 #      check.py pointer, 2026-11-03). As the window server does, this is all in the display's own
 #      colour space, blending its encoded values.
+#      When the appearance changes (recorder/AppearanceTransition.swift), the desktop is in layers instead:
+#      the wallpaper between its pictures for Light and Dark, the menu bar in its appearance over it, and
+#      what the window server draws round the popover, taken over each picture, blended as the wallpaper
+#      is. Over all that but the pointer, while macOS shows it, its picture of the screen from when the
+#      change began, fading out: the screen as it was on the frame drawn last before.
 #   2. pipeline.shown() turns the whole screen into the light the display gives off with that frame's
 #      settings, as log.json has them: Color Tint's hue and intensity, and the display's brightness.
 #   3. A camera films it: a crop of the screen, moving and zooming as the scene's "camera" says, scaled
@@ -29,6 +34,9 @@
 #                               same desktop (make-demo.sh --check records both into build/demo/<scene>/check/)
 #   compose.py verify <scene>   decodes the videos as macOS's players do (AVFoundation, colour matched to
 #                               Display P3) and compares them with the colours they were made from
+#   compose.py needs <scene>    the window server's pictures of the popover over the desktop the recording
+#                               needs, a line for each: the popover's appearance and the wallpaper's picture
+#                               under it (make-demo.sh takes them)
 #   compose.py hues <scene>     for a scene that moves Tint: the masters' desktop, decoded, at red, yellow,
 #                               green, cyan, blue and magenta, against pipeline.shown() with MediaAccessibility's
 #                               matrix for the Tint slider's value on each of those frames
@@ -84,8 +92,8 @@ class WindowServerLayer:
       own, and its rims under the glass, which the glass's edge picks up: up to 51 levels off that
       shadow or the recorder's frame. The ring is the same on every frame while the popover and the
       desktop round it don't change, so it's the window server's own picture of the popover over the
-      same desktop (desktop/window-server.png), where that has it: not above the window, where the
-      menu bar is, which only the shadow reaches."""
+      same desktop (desktop/window-server.png, or desktop-2/… for another desktop: `picture_over`), where that
+      has it: not above the window, where the menu bar is, which only the shadow reaches."""
 
     RING_OUTSIDE, RING_INSIDE = 3, 2
 
@@ -111,31 +119,37 @@ class WindowServerLayer:
         self.ring = ((touched & ~whole) | (whole & (ndimage.distance_transform_edt(whole) < self.RING_INSIDE))
                      | (~touched & (ndimage.distance_transform_edt(~touched) < self.RING_OUTSIDE)))
         self.outside = ~touched & ~self.ring
-        # The window server's picture over the desktop, where it has one
-        self.picture = np.full(with_shadow.shape[:2] + (3,), np.nan, np.float32)
-        desktop = self.folder / "desktop"
-        self.desktop = json.loads((desktop / "about.json").read_text()) if (desktop / "about.json").exists() else None
-        if self.desktop:
+        self.display = display
+
+    def picture_over(self, backdrop, canvas):
+        """The window server's picture of the popover over the desktop `backdrop` (the canvas round it, in
+        Display P3, 0...1) at `canvas` on the desktop, in points, round the window as the shadow is,
+        with nothing (NaN) where it has nothing: from whichever of the folders it's taken into (desktop,
+        desktop-2, …) was taken over that"""
+        for desktop in sorted(self.folder.glob("desktop*")):
+            if not (desktop / "about.json").exists():
+                continue
+            about = json.loads((desktop / "about.json").read_text())
+            if about.get("canvas") != canvas or not np.array_equal(read_png(desktop / "backdrop.png")[0][..., :3], backdrop):
+                continue
             taken, taken_icc = read_png(desktop / "window-server.png")
-            if taken_icc != display.profile.data:
-                raise SystemExit(f"{desktop}'s pictures aren't in {display.name}'s colours; delete it and make the shot again")
-            window = [round(v * self.scale) for v in self.desktop["window"]]
+            if taken_icc != self.display.profile.data:
+                raise SystemExit(f"{desktop}'s pictures aren't in {self.display.name}'s colours; delete it and make the shot again")
+            picture = np.full(self.shadow.shape[:2] + (3,), np.nan, np.float32)
+            window = [round(v * self.scale) for v in about["window"]]
+            m = self.margin
             top, left = m - window[1], m - window[0]
             y0, x0 = max(top, 0), max(left, 0)
-            y1, x1 = min(top + taken.shape[0], self.picture.shape[0]), min(left + taken.shape[1], self.picture.shape[1])
-            self.picture[y0:y1, x0:x1] = taken[y0 - top:y1 - top, x0 - left:x1 - left, :3]
+            y1, x1 = min(top + taken.shape[0], picture.shape[0]), min(left + taken.shape[1], picture.shape[1])
+            picture[y0:y1, x0:x1] = taken[y0 - top:y1 - top, x0 - left:x1 - left, :3]
+            return picture
+        raise SystemExit(f"There's no picture of the window server's of the popover over this desktop in {self.folder}: make-demo.sh takes it")
 
-    def backdrop(self):
-        """The desktop the window server's picture of the popover over the desktop was taken over, in
-        Display P3, and where on the desktop, in points"""
-        if not self.desktop:
-            return None, None
-        return read_png(self.folder / "desktop" / "backdrop.png")[0][..., :3], self.desktop.get("canvas")
-
-    def add(self, picture, origin, window, background):
+    def add(self, picture, origin, window, background, ring):
         """Puts it into `picture`, a part of the screen in the display's colours whose top left is at pixel
         `origin`, with the frame in it already, for a window whose top left is at pixel `window`, over
-        `background`, the same part of the desktop without the popover"""
+        `background`, the same part of the desktop without the popover, with `ring` as the window
+        server's picture of its edge"""
         top, left = window[1] - self.margin - origin[1], window[0] - self.margin - origin[0]
         y0, x0 = max(top, 0), max(left, 0)
         y1, x1 = min(top + self.shadow.shape[0], picture.shape[0]), min(left + self.shadow.shape[1], picture.shape[1])
@@ -144,7 +158,7 @@ class WindowServerLayer:
         part = (slice(y0 - top, y1 - top), slice(x0 - left, x1 - left))
         shadow = self.shadow[part]
         over = shadow[..., :3] + (1 - shadow[..., 3:]) * background[y0:y1, x0:x1]
-        taken = self.picture[part]
+        taken = ring[part]
         ring = self.ring[part]
         has = ring & ~np.isnan(taken[..., 0])
         target = picture[y0:y1, x0:x1]
@@ -215,18 +229,52 @@ class Shot:
         self.window = [round(v * self.scale) for v in desktop["popover"]]
         self.count = len(self.log["frames"])
         self.fps = self.log["fps"]
-        pixels, icc = read_png(self.folder / desktop["image"])
-        self.desktop = to_display(pixels, icc, self.display)
-        appearances = {frame["system"]["appearance"] for frame in self.log["frames"]}
-        if len(appearances) != 1:
-            raise SystemExit(f"{scene} changes the appearance, which changes the popover's edge: the window server's picture of it is for one")
-        self.window_server = WindowServerLayer(appearances.pop(), desktop["popover"][2:], self.display)
-        # Its picture of the popover's edge has to be over this desktop, with the popover in this place
-        taken, place = self.window_server.backdrop()
+        frames = self.log["frames"]
         x, y, w, h = self.canvas
-        if taken is None or place != desktop["canvas"] or not np.array_equal(taken, pixels[y:y + h, x:x + w, :3]):
-            raise SystemExit(f"The window server's picture of the popover in {self.window_server.folder}/desktop isn't over this desktop: make-demo.sh takes it")
+        # The desktop as one picture while it and the popover don't change, as recorded before scenes
+        # could change the appearance; in layers otherwise (desktop_state)
+        states = {(f["popover"], f["desktop"]["wallpaper"], f["desktop"]["menuBar"]) if "desktop" in f else None for f in frames}
+        self.layered = len(states) > 1
+        self.layers = {}
+        if not self.layered:
+            pixels, icc = read_png(self.folder / desktop["image"])
+            self.desktop = to_display(pixels, icc, self.display)
+            appearance = frames[0].get("popover") or frames[0]["system"]["appearance"]
+            self.window_servers = {appearance: WindowServerLayer(appearance, desktop["popover"][2:], self.display)}
+            # Its picture of the popover's edge has to be over this desktop, with the popover in this place
+            self.rings = {(appearance, None): self.window_servers[appearance].picture_over(pixels[y:y + h, x:x + w, :3], desktop["canvas"])}
+        else:
+            for appearance in ("light", "dark"):
+                wallpaper, icc = read_png(self.folder / f"wallpaper-{appearance}.png")
+                menu_bar, menu_icc = read_png(self.folder / f"menubar-{appearance}.png")
+                # The menu bar's colours, matched to the display's, kept with their alpha, as the window
+                # server puts it over the wallpaper
+                self.layers[appearance] = (to_display(wallpaper[..., :3], icc, self.display),
+                                           np.dstack([to_display(menu_bar[..., :3], menu_icc, self.display), menu_bar[..., 3:]]))
+            self.desktop = self.layers["light"][0]
+            self.window_servers, self.rings = {}, {}
+            for popover, wallpaper in self.needs():
+                if popover not in self.window_servers:
+                    self.window_servers[popover] = WindowServerLayer(popover, desktop["popover"][2:], self.display)
+                backdrop = read_png(self.folder / "backdrops" / f"wallpaper-{wallpaper}-menubar-{popover}.png")[0][..., :3]
+                self.rings[(popover, wallpaper)] = self.window_servers[popover].picture_over(backdrop, desktop["canvas"])
         self.pointer = Pointer(self.display, self.scale, self.log["pointer"]["hotSpot"])
+
+    def needs(self):
+        """The window server's pictures of the popover over the desktop the frames need: for each, the
+        popover's appearance, and the wallpaper's picture under it, light or dark, while it shows any of it
+        (the menu bar has the popover's appearance, as both change when the app's told)"""
+        needed = []
+        for frame in self.log["frames"]:
+            popover, desktop = frame.get("popover"), frame.get("desktop")
+            if not popover or not desktop:
+                continue
+            if desktop["menuBar"] != popover:
+                raise SystemExit(f"Frame {frame['frame']} has the menu bar in {desktop['menuBar']} and the popover in {popover}; no picture of the window server's has that")
+            for wallpaper, shows in (("light", desktop["wallpaper"] < 1), ("dark", desktop["wallpaper"] > 0)):
+                if shows and (popover, wallpaper) not in needed:
+                    needed.append((popover, wallpaper))
+        return needed
 
     def settings(self, frame):
         """Color Tint as (hue, intensity) or None, and the display's brightness, on `frame`"""
@@ -235,12 +283,40 @@ class Shot:
         brightness = next(d["brightness"] for d in system["displays"] if d["id"] == self.log["desktop"]["display"])
         return tint, brightness
 
-    def screen(self, frame, region):
-        """The screen's encoded values, in the display's colours, in `region` (left, top, right, bottom,
-        in pixels): the desktop with the frame in its place, the window server's shadow round it, and
-        the pointer"""
+    def desktop_state(self, frame, region):
+        """The desktop without the popover in `region` on `frame`, in the display's colours: its wallpaper
+        between its pictures for Light and Dark as the log has it, and over it the menu bar in its
+        appearance, as the window server puts one over the other, blending their encoded values"""
         x0, y0, x1, y1 = region
-        picture = self.desktop[y0:y1, x0:x1].copy()
+        if not self.layered:
+            return self.desktop[y0:y1, x0:x1]
+        state = self.log["frames"][frame]["desktop"]
+        dark = state["wallpaper"]
+        light_wallpaper, dark_wallpaper = self.layers["light"][0][y0:y1, x0:x1], self.layers["dark"][0][y0:y1, x0:x1]
+        wallpaper = light_wallpaper if dark == 0 else dark_wallpaper if dark == 1 else (1 - dark) * light_wallpaper + dark * dark_wallpaper
+        menu_bar = self.layers[state["menuBar"]][1][y0:y1, x0:x1]
+        return menu_bar[..., :3] * menu_bar[..., 3:] + (1 - menu_bar[..., 3:]) * wallpaper
+
+    def ring(self, frame):
+        """The window server's picture of the popover's edge on `frame`: over the wallpaper's picture for
+        Light, for Dark, or as much of each as the wallpaper shows, as the glass shows what's under it"""
+        if not self.layered:
+            return next(iter(self.rings.values()))
+        record = self.log["frames"][frame]
+        popover, dark = record["popover"], record["desktop"]["wallpaper"]
+        if dark == 0:
+            return self.rings[(popover, "light")]
+        if dark == 1:
+            return self.rings[(popover, "dark")]
+        return (1 - dark) * self.rings[(popover, "light")] + dark * self.rings[(popover, "dark")]
+
+    def screen(self, frame, region, pointer=True):
+        """The screen's encoded values, in the display's colours, in `region` (left, top, right, bottom,
+        in pixels): the desktop with the frame in its place and the window server's shadow round it, under
+        macOS's picture of the screen while the appearance changes, and the pointer, unless left out"""
+        x0, y0, x1, y1 = region
+        background = self.desktop_state(frame, region)
+        picture = background.copy()
         cx, cy, cw, ch = self.canvas
         ix0, iy0, ix1, iy1 = max(x0, cx), max(y0, cy), min(x1, cx + cw), min(y1, cy + ch)
         if ix0 < ix1 and iy0 < iy1:
@@ -249,10 +325,17 @@ class Shot:
                 raise SystemExit(f"Frame {frame} is see-through; it wasn't recorded over the desktop")
             part = pixels[iy0 - cy:iy1 - cy, ix0 - cx:ix1 - cx, :3]
             picture[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0] = to_display(part, icc, self.display)
-        self.window_server.add(picture, (x0, y0), self.window[:2], self.desktop[y0:y1, x0:x1])
-        if pointer := self.log["frames"][frame].get("pointer"):
+        record = self.log["frames"][frame]
+        window_server = self.window_servers[record["popover"]] if self.layered else next(iter(self.window_servers.values()))
+        window_server.add(picture, (x0, y0), self.window[:2], background, self.ring(frame))
+        # macOS's picture of the screen, taken as the change began, over everything but the pointer, as
+        # the window server puts it over what's under it, blending their encoded values
+        if taken := record.get("screenPicture"):
+            opacity = taken["opacity"]
+            picture = opacity * self.screen(taken["frame"], region, pointer=False) + (1 - opacity) * picture
+        if pointer and (place := record.get("pointer")):
             canvas = self.log["desktop"]["canvas"]
-            self.pointer.draw(picture, (x0, y0), (canvas[0] + pointer["x"], canvas[1] + pointer["y"]))
+            self.pointer.draw(picture, (x0, y0), (canvas[0] + place["x"], canvas[1] + place["y"]))
         return np.clip(picture, 0, 1)
 
     def light(self, frame, region):
@@ -476,7 +559,7 @@ def check(folder):
     background = to_display(backdrop[..., :3], backdrop_icc, display)
     plain = to_display(recorder[..., :3], recorder_icc, display)
     ours = plain.copy()
-    layer.add(ours, (0, 0), window[:2], background)
+    layer.add(ours, (0, 0), window[:2], background, layer.picture_over(backdrop[..., :3], about.get("canvas")))
     level = lambda values: np.round(np.clip(values, 0, 1) * 255)
     theirs = level(theirs[..., :3])
     # Each pixel's part, from the layer's, which goes round the window
@@ -605,7 +688,7 @@ def pixel_buffer(buffer):
 
 def main():
     parser = argparse.ArgumentParser(description="Makes a recorded demo shot's videos.")
-    parser.add_argument("command", nargs="?", choices=["check", "verify", "hues"])
+    parser.add_argument("command", nargs="?", choices=["check", "verify", "hues", "needs"])
     parser.add_argument("scene")
     parser.add_argument("--folder", help="where the recording is, and the videos go: build/demo/<scene>/ unless given")
     parser.add_argument("--workers", type=int, default=min(multiprocessing.cpu_count(), 8))
@@ -616,6 +699,11 @@ def main():
         verify(args.scene, args.folder)
     elif args.command == "hues":
         hues(args.scene, args.folder)
+    elif args.command == "needs":
+        log = Shot.__new__(Shot)
+        log.log = json.loads(((Path(args.folder) if args.folder else BUILD / args.scene) / "log.json").read_text())
+        for popover, wallpaper in log.needs():
+            print(popover, wallpaper)
     else:
         compose(args.scene, args.folder, args.workers)
 
