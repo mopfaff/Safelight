@@ -20,13 +20,17 @@ struct DemoScene: Decodable {
     /// The size of each frame, in points (drawn at twice that in pixels), and where the popover's
     /// window is on it. Left out, it's the popover's window.
     var canvas: Canvas?
+    /// Whether the popover is shown on the desktop, open under Safelight's icon in the menu bar
+    /// (Desktop.swift), rather than on the canvas: the canvas is then its surroundings there, and the
+    /// whole desktop is written beside the frames, for scripts/demo/compose.py to put them on
+    var desktop = false
     /// The Mac's settings as the shot begins, which Safelight reads as it opens
     var settings: Settings
     /// Where the pointer is to begin with, or nowhere (no pointer is drawn) if left out
     var pointer: Place?
     var actions: [Action] = []
 
-    private enum Keys: String, CodingKey { case about, fps, duration, appearance, accentColor, language, locale, canvas, settings, pointer, actions }
+    private enum Keys: String, CodingKey { case about, fps, duration, appearance, accentColor, language, locale, canvas, desktop, settings, pointer, actions }
 
     init(from decoder: Decoder) throws {
         let keys = try decoder.container(keyedBy: Keys.self)
@@ -38,6 +42,7 @@ struct DemoScene: Decodable {
         language = try keys.decodeIfPresent(String.self, forKey: .language) ?? language
         locale = try keys.decodeIfPresent(String.self, forKey: .locale) ?? locale
         canvas = try keys.decodeIfPresent(Canvas.self, forKey: .canvas)
+        desktop = try keys.decodeIfPresent(Bool.self, forKey: .desktop) ?? desktop
         settings = try keys.decode(Settings.self, forKey: .settings)
         pointer = try keys.decodeIfPresent(Place.self, forKey: .pointer)
         actions = try keys.decodeIfPresent([Action].self, forKey: .actions) ?? actions

@@ -6,6 +6,7 @@
   "accentColor": "blue",
   "language": "en-US",
   "locale": "en_GB",
+  "desktop": true,
   "settings": {
     "colorFilter": true,
     "tint": 0,
@@ -15,5 +16,21 @@
   "pointer": { "control": "Intensity" },
   "actions": [
     { "at": 0.5, "drag": "Intensity", "from": 0.25, "to": 1.0, "duration": 3, "easing": "easeInOut" }
-  ]
+  ],
+  "camera": {
+    "16:9": {
+      "size": [3840, 2160],
+      "keys": [
+        { "at": 0.5, "centre": [1849, 400], "height": 800 },
+        { "at": 3.5, "centre": [1280, 720], "height": 1440, "easing": "easeInOut" }
+      ]
+    },
+    "9:16": {
+      "size": [2160, 3840],
+      "keys": [
+        { "at": 0.5, "centre": [2300, 500], "height": 1000 },
+        { "at": 3.5, "centre": [2300, 720], "height": 1440, "easing": "easeInOut" }
+      ]
+    }
+  }
 }

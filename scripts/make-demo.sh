@@ -1,14 +1,25 @@
 #!/bin/zsh
-# Records a demo shot of Safelight's real popover, frame by frame, from a scene file: the UI moving as
-# the scene has the pointer move it, and what Safelight would apply to the Mac on each frame.
+# Makes a demo shot of Safelight's real popover, frame by frame, from a scene file: the UI moving as
+# the scene has the pointer move it, and, for a scene on the desktop, videos of the whole screen as the
+# display shows it with what Safelight sets on each frame.
 #
 #   scripts/make-demo.sh <scene>    records scripts/demo/scenes/<scene>.json into build/demo/<scene>/:
 #                                   frames/0000.png… (Display P3, at twice the size in points, see-through
-#                                   where the popover isn't) and log.json, frame by frame: the pointer,
-#                                   each slider's value and where its knob is drawn, and the color filter,
-#                                   brightness and appearance Safelight has set, with the calls it made
+#                                   where the popover isn't, unless it's on the desktop) and log.json, frame
+#                                   by frame: the pointer, each slider's value and where its knob is drawn,
+#                                   and the color filter, brightness and appearance Safelight has set, with
+#                                   the calls it made. For a scene with "desktop": true, also desktop.png,
+#                                   and scripts/demo/compose.py makes its videos from them: <scene>-16x9.mp4
+#                                   and the rest, as its "camera" has them, and stills/
 #   scripts/make-demo.sh --verify <scene>
-#                                   records it twice and says whether the two are the same, byte for byte
+#                                   makes it twice and says whether the two are the same, byte for byte
+#   scripts/make-demo.sh --check <scene> [light|dark]
+#                                   compares the recorder's first frame of a scene on the desktop, with the
+#                                   window server's shadow added, against the window server's own picture
+#                                   of the popover over the same desktop, in the scene's appearance or the
+#                                   one given (build/demo/<scene>/check-<appearance>/). The popover and the
+#                                   desktop round it are on the Retina display for a second, behind other
+#                                   windows; the displays have to be awake.
 #
 # It builds a copy of Safelight.swift into "Safelight Demo Recorder.app" with scripts/demo/recorder/,
 # whose RecordedSystem.swift stands in for the functions that change the color filter, brightness and
@@ -18,21 +29,29 @@
 # time it's recorded at: SwiftUI runs on its clock for tests, and the main thread reads the scene's
 # time from every clock (recorder/Interposers.c), so the same scene on the same Mac gives the same
 # frames, byte for byte. Run at a background priority (taskpolicy -b), the knob's settling after a
-# drag came out a tenth of a point off; --verify finds that. The displays in the Brightness section are
+# drag came out a tenth of a point off, and with every core busy, about one recording in six took the
+# knob a tiny bit further from frame 172 of intensity-drag on (0.0004 of the way along), always the same
+# other way, so something there races with another thread; --verify finds that. Composing a recording
+# gives the same videos every time. The displays in the Brightness section are
 # this Mac's, and the scene's brightness is the one they start at.
-# For now it only records: the color filter and brightness are applied to the frames afterwards
-# (scripts/demo/pipeline.py).
+# The window server draws a shadow and rims round the popover's window, which the frames don't have.
+# For a scene on the desktop they're taken from the window server once for each appearance and size of
+# popover, into build/demo/window-server/, with the popover on the Retina display for a second, which
+# needs the displays awake; after that, making a shot shows nothing.
 
 set -eu
 cd "${0:A:h}/.."
 
-VERIFY=0
+VERIFY=0 CHECK=0
 if [[ "${1-}" == --verify ]]; then
     VERIFY=1
     shift
+elif [[ "${1-}" == --check ]]; then
+    CHECK=1
+    shift
 fi
-if (( $# != 1 )); then
-    echo "Usage: scripts/make-demo.sh [--verify] <scene>, one of: ${(j:, :)${(@)${(f)$(ls scripts/demo/scenes)}:r}}" >&2
+if (( $# != 1 && !(CHECK && $# == 2) )); then
+    echo "Usage: scripts/make-demo.sh [--verify] <scene> | --check <scene> [light|dark], the scene one of: ${(j:, :)${(@)${(f)$(ls scripts/demo/scenes)}:r}}" >&2
     exit 2
 fi
 SCENE=$1
@@ -50,17 +69,25 @@ OUT="build/demo/$SCENE"
 rm -rf "$APP" "$BUILD_DIR/src"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks" "$BUILD_DIR/src" "$OUT"
 
-# The recorder has an entry point of its own instead of Safelight's
+# The recorder has an entry point of its own instead of Safelight's, and draws the desktop with the
+# wallpaper's picture for the scene's appearance as Safelight picks it (recorder/Desktop.swift)
+INDEX='    private static func index(in source: CGImageSource, isDark: Bool) -> Int {'
+PICTURE='    private static func picture(in source: CGImageSource, at index: Int, maxPixelSize: Int? = nil) -> CGImage? {'
 if [[ $(grep -c '^@main$' Safelight/Safelight.swift) != 1 ]]; then
     echo "Couldn't find Safelight's @main line to leave out" >&2
     exit 2
 fi
-sed '/^@main$/d' Safelight/Safelight.swift >"$BUILD_DIR/src/Safelight.swift"
+if [[ $(grep -cxF "$INDEX" Safelight/Safelight.swift) != 1 || $(grep -cxF "$PICTURE" Safelight/Safelight.swift) != 1 ]]; then
+    echo "Couldn't find WallpaperManager's index(in:isDark:) and picture(in:at:maxPixelSize:) for the desktop to use" >&2
+    exit 2
+fi
+sed -e '/^@main$/d' -e "s/^$INDEX\$/${INDEX/private /}/" -e "s/^$PICTURE\$/${PICTURE/private /}/" Safelight/Safelight.swift >"$BUILD_DIR/src/Safelight.swift"
 
 cp scripts/demo/recorder/Info.plist "$APP/Contents/Info.plist"
-# The menu bar icon is a symbol in the asset catalog
-if ! xcrun actool Safelight/Assets.xcassets --compile "$APP/Contents/Resources" --platform macosx \
-        --minimum-deployment-target 15.5 --output-partial-info-plist "$BUILD_DIR/assets.plist" >"$BUILD_DIR/actool.log" 2>&1; then
+# The menu bar icon is a symbol in the asset catalog. With whole paths, as actool hands relative ones to
+# Xcode's ibtoold, which takes them from the folder of whoever started it, another project's maybe.
+if ! xcrun actool "$PWD/Safelight/Assets.xcassets" --compile "$PWD/$APP/Contents/Resources" --platform macosx \
+        --minimum-deployment-target 15.5 --output-partial-info-plist "$PWD/$BUILD_DIR/assets.plist" >"$BUILD_DIR/actool.log" 2>&1; then
     echo "Couldn't compile the asset catalog (full log: $BUILD_DIR/actool.log)" >&2
     exit 2
 fi
@@ -95,27 +122,64 @@ if [[ -z "${ACCENT_COLORS[$ACCENT]-}" ]]; then
 fi
 
 # Run directly rather than with `open`, as it never needs to be the active app
-record() {
-    local out=$1 log=$2
-    if ! "$APP/Contents/MacOS/$NAME" -scene "$PWD/$SCENE_FILE" -output "$PWD/$out" \
+run() {
+    local scene=$1 out=$2 log=$3
+    shift 3
+    if ! "$APP/Contents/MacOS/$NAME" -scene "$PWD/$scene" -output "$PWD/$out" "$@" \
             -AppleAccentColor "${ACCENT_COLORS[$ACCENT]}" -AppleLanguages "($(setting language en-US))" -AppleLocale "$(setting locale en_GB)" >"$log" 2>&1; then
         echo "Recording $SCENE failed (full log: $log):" >&2
         grep -v '^$' "$log" | tail -20 >&2
         exit 2
     fi
 }
-record "$OUT" "$BUILD_DIR/$SCENE.log"
-grep '^Recorded' "$BUILD_DIR/$SCENE.log"
+ON_DESKTOP=$(setting desktop false)
+# What the window server draws round the popover, taken unless it has been for this appearance and size
+windowServer() {
+    run "$1" "$OUT" "$BUILD_DIR/$SCENE-window-server.log" -windowServer "$PWD/build/demo/window-server"
+    grep -E '^(Captured|The window server)' "$BUILD_DIR/$SCENE-window-server.log"
+}
+
+if (( CHECK )); then
+    if [[ "$ON_DESKTOP" != true ]]; then
+        echo "--check compares a scene on the desktop; $SCENE_FILE hasn't \"desktop\": true" >&2
+        exit 2
+    fi
+    APPEARANCE=${2:-$(setting appearance dark)}
+    CHECK_SCENE="$BUILD_DIR/check/$SCENE.json"
+    mkdir -p "$BUILD_DIR/check"
+    cp "$SCENE_FILE" "$CHECK_SCENE"
+    plutil -replace appearance -string "$APPEARANCE" "$CHECK_SCENE"
+    windowServer "$CHECK_SCENE"
+    CHECK_OUT="$OUT/check-$APPEARANCE"
+    run "$CHECK_SCENE" "$CHECK_OUT" "$BUILD_DIR/$SCENE-check.log" -check YES
+    python3 scripts/demo/compose.py check "$SCENE" --folder "$CHECK_OUT"
+    exit 0
+fi
+
+[[ "$ON_DESKTOP" == true ]] && windowServer "$SCENE_FILE"
+# Made in a folder of its own, which takes the place of the shot's once it's done, so a shot made from
+# an older recording is never left beside a newer one
+shoot() {
+    local out=$1
+    rm -rf "$out.new"
+    mkdir -p "$out.new"
+    run "$SCENE_FILE" "$out.new" "$BUILD_DIR/$SCENE.log"
+    grep '^Recorded' "$BUILD_DIR/$SCENE.log"
+    if [[ "$ON_DESKTOP" == true ]]; then
+        python3 scripts/demo/compose.py "$SCENE" --folder "$out.new"
+    fi
+    rm -rf "$out"
+    mv "$out.new" "$out"
+}
+shoot "$OUT"
 
 if (( VERIFY )); then
     AGAIN="$BUILD_DIR/again/$SCENE"
-    rm -rf "$AGAIN"
-    mkdir -p "$AGAIN"
-    record "$AGAIN" "$BUILD_DIR/$SCENE-again.log"
+    shoot "$AGAIN"
     if differing=$(diff -rq "$OUT" "$AGAIN"); then
-        echo "Recorded again: the same, byte for byte"
+        echo "Made again: the same, byte for byte"
     else
-        echo "Recorded again, and these differ:" >&2
+        echo "Made again, and these differ:" >&2
         echo "$differing" | awk '{ print $2 }' | xargs -n 1 basename | tr '\n' ' ' >&2
         echo >&2
         exit 1

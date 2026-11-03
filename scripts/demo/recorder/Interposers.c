@@ -13,11 +13,15 @@
 //   time look key, across every app, so telling it the popover does (SLSTransactionSetWindowHasKeyAppearance)
 //   took that look from the user's own window, and clicking another window took it back from the
 //   popover, which then drew its controls grey.
+// - So the window server draws the popover's shadow as a window's that doesn't look key, whose inner
+//   rim is fainter (0.08 against 0.1). Every window of the recorder's is given its key look's shadow
+//   for both, so the window server's pictures of it have the shadow the active app's popover has.
 #include "Interposers.h"
 #include <CoreFoundation/CoreFoundation.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -119,6 +123,47 @@ static int keep_key_appearance(void *transaction, uint32_t window, bool hasKeyAp
     return 0;
 }
 
+// MARK: - Shadows
+
+extern int SLSTransactionSetWindowShadowProperties(void *transaction, uint32_t window, CFDictionaryRef properties);
+
+static unsigned long activeShadowsGiven = 0;
+
+unsigned long active_shadows_given(void) {
+    return activeShadowsGiven;
+}
+
+/// Each of the shadow's properties for a window that doesn't look key (…Inactive, or …Inctive as
+/// AppKit spells one) set to the one for a window that does (…Active)
+static int give_active_shadow(void *transaction, uint32_t window, CFDictionaryRef properties) {
+    if (!properties) return SLSTransactionSetWindowShadowProperties(transaction, window, properties);
+    CFMutableDictionaryRef active = CFDictionaryCreateMutableCopy(NULL, 0, properties);
+    CFIndex count = CFDictionaryGetCount(properties);
+    const void **keys = malloc(sizeof(void *) * count);
+    CFDictionaryGetKeysAndValues(properties, keys, NULL);
+    bool changed = false;
+    for (CFIndex i = 0; i < count; i++) {
+        CFStringRef key = keys[i];
+        if (CFGetTypeID(key) != CFStringGetTypeID()) continue;
+        CFStringRef suffix = CFStringHasSuffix(key, CFSTR("Inactive")) ? CFSTR("Inactive") : CFStringHasSuffix(key, CFSTR("Inctive")) ? CFSTR("Inctive") : NULL;
+        if (!suffix) continue;
+        CFStringRef stem = CFStringCreateWithSubstring(NULL, key, CFRangeMake(0, CFStringGetLength(key) - CFStringGetLength(suffix)));
+        CFStringRef activeKey = CFStringCreateWithFormat(NULL, NULL, CFSTR("%@Active"), stem);
+        const void *value = CFDictionaryGetValue(properties, activeKey);
+        if (value) {
+            CFDictionarySetValue(active, key, value);
+            changed = true;
+        }
+        CFRelease(activeKey);
+        CFRelease(stem);
+    }
+    free(keys);
+    if (changed) activeShadowsGiven++;
+    int result = SLSTransactionSetWindowShadowProperties(transaction, window, active);
+    CFRelease(active);
+    return result;
+}
+
 __attribute__((used, section("__DATA,__interpose"))) static const struct { const void *replacement, *original; } interposers[] = {
     { (const void *)scene_mach_absolute_time, (const void *)mach_absolute_time },
     { (const void *)scene_mach_continuous_time, (const void *)mach_continuous_time },
@@ -129,4 +174,5 @@ __attribute__((used, section("__DATA,__interpose"))) static const struct { const
     { (const void *)scene_CACurrentMediaTime, (const void *)CACurrentMediaTime },
     { (const void *)scene_CFAbsoluteTimeGetCurrent, (const void *)CFAbsoluteTimeGetCurrent },
     { (const void *)keep_key_appearance, (const void *)SLSTransactionSetWindowHasKeyAppearance },
+    { (const void *)give_active_shadow, (const void *)SLSTransactionSetWindowShadowProperties },
 };

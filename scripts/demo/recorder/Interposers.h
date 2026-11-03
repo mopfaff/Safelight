@@ -9,3 +9,6 @@ unsigned long scene_clock_readings(void);
 
 /// How many times AppKit would have told the window server a window has key appearance, or no longer has
 unsigned long key_appearances_kept(void);
+
+/// How many times AppKit gave a window its shadow, with its key look's rims for when it doesn't look key
+unsigned long active_shadows_given(void);

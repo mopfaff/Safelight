@@ -14,12 +14,15 @@ import Metal
 // scripts/make-demo.sh builds this together with a copy of Safelight.swift, RecordedSystem.swift (the
 // system as the app sees it, which records what the app would change on each frame), Interposers.c and
 // scripts/screenshots/FixedTime.swift, and runs it with `-scene file.json -output directory`. It writes
-// directory/frames/0000.png… and directory/log.json. With `-check YES` as well, it compares its first
-// frame with the window server's instead (`check`).
+// directory/frames/0000.png… and directory/log.json, and for a scene on the desktop, desktop.png
+// (Desktop.swift). Instead of recording, with `-check YES` as well it writes the window server's
+// picture of the first frame and its own (`captureOverBackdrop`), and with `-windowServer folder` it
+// takes what the window server draws round the popover, unless it has already (`captureWindowServer`).
 //
 // The popover is opened under an invisible icon on the Retina display, in an invisible window that
 // clicks go through, and drawn as the active app's popover is (`acquireKeyAppearance`), so nothing on
-// screen changes and the recorder never becomes the active app.
+// screen changes and the recorder never becomes the active app; only the two window-server pictures put
+// it on screen, for a second each.
 
 setlinebuf(stdout)
 
@@ -197,6 +200,8 @@ struct Log: Encodable {
     /// Points
     let canvas: [Double]
     let popover: Popover
+    /// The desktop the canvas is part of, for a scene on the desktop
+    let desktop: DesktopInfo?
     let pointer: Pointer
     let displays: [Display]
     /// What Safelight changed as it opened, before the first frame
@@ -208,6 +213,24 @@ struct Log: Encodable {
         let window: [Double]
         /// The tip of its arrow, where it hangs from Safelight's icon in the menu bar
         let arrowTip: [Double]
+    }
+
+    struct DesktopInfo: Encodable {
+        /// desktop.png, beside the frames: the display the popover is on, as macOS shows it
+        let image: String
+        let display: UInt32
+        /// In points, and its pixels to the point
+        let size: [Double]
+        let scale: Int
+        /// The canvas on the desktop, and the popover's window: x, y, width, height, in points from its top left
+        let canvas: [Double]
+        let popover: [Double]
+        let menuBar: [MenuBarItem]
+    }
+
+    struct MenuBarItem: Encodable {
+        let name: String
+        let frame: [Double]
     }
 
     struct Pointer: Encodable {
@@ -287,6 +310,9 @@ final class Recorder: NSObject, NSApplicationDelegate {
     private let scale = 2
     private var anchor: NSWindow!
     private var activity: NSObjectProtocol?
+    /// For a scene on the desktop, what draws it, and the desktop once drawn
+    private var desktopMaker: DesktopMaker?
+    private var desktop: Desktop?
 
     init(scene: DemoScene, name: String, output: URL) {
         self.scene = scene
@@ -325,15 +351,30 @@ final class Recorder: NSObject, NSApplicationDelegate {
             fail("Safelight's copy reaches the system's settings; RecordedSystem.swift isn't standing in for them")
         }
 
-        // Safelight opening, with its popover, but not its icon in the menu bar, which this has no use
-        // for. The popover stays open whatever's clicked.
+        // On the desktop, the menu bar's items are drawn beside Safelight's icon, the stand-ins made
+        // before it as each new item goes to the left
+        if scene.desktop {
+            guard scene.canvas == nil, let screen else { fail("A scene on the desktop has its canvas worked out from it, so it can't have one of its own") }
+            desktopMaker = DesktopMaker(screen: screen, isDark: isDark, wallpaper: URL(fileURLWithPath: scene.settings.wallpaper))
+            desktopMaker?.addSystemItems()
+        }
+
+        // Safelight opening, with its popover, but not its icon in the menu bar, which this only needs
+        // for drawing the desktop's. The popover stays open whatever's clicked.
         appDelegate.applicationDidFinishLaunching(notification)
-        appDelegate.statusItem?.isVisible = false
         appDelegate.popover.behavior = .applicationDefined
         appDelegate.popover.animates = false
         // The wallpaper's pictures, which are only read, as the desktop isn't changed unless one is chosen
         WallpaperManager.shared.showPictures(of: URL(fileURLWithPath: scene.settings.wallpaper))
-        openOnceLoaded()
+        if let desktopMaker, let item = appDelegate.statusItem {
+            desktopMaker.make(with: item) { desktop in
+                self.desktop = desktop
+                self.openOnceLoaded()
+            }
+        } else {
+            appDelegate.statusItem?.isVisible = false
+            openOnceLoaded()
+        }
     }
 
     private func openOnceLoaded() {
@@ -403,14 +444,28 @@ final class Recorder: NSObject, NSApplicationDelegate {
     private func record(window: NSWindow, host: NSHostingView<MenuView>, arrowTipOnScreen: NSPoint) {
         guard let frameLayer = window.contentView?.superview?.layer else { fail("The popover has no layer to draw") }
         let windowSize = window.frame.size
-        let canvasSize = scene.canvas.map { CGSize(width: $0.width, height: $0.height) } ?? windowSize
-        let origin = scene.canvas.map { CGPoint(x: $0.popover[0], y: $0.popover[1]) } ?? .zero
-        let windowFrame = CGRect(origin: origin, size: windowSize)
+        // Where the arrow's tip is in the window, from its top left
+        let arrowTipInWindow = window.convertPoint(fromScreen: arrowTipOnScreen)
+        let arrowTip = CGPoint(x: arrowTipInWindow.x, y: windowSize.height - arrowTipInWindow.y)
+        var canvasSize = scene.canvas.map { CGSize(width: $0.width, height: $0.height) } ?? windowSize
+        var origin = scene.canvas.map { CGPoint(x: $0.popover[0], y: $0.popover[1]) } ?? .zero
         var backdrop: CGImage?
         if let path = scene.canvas?.backdrop {
             guard let image = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil).flatMap({ CGImageSourceCreateImageAtIndex($0, 0, nil) }) else { fail("Couldn't read the backdrop \(path)") }
             backdrop = image
         }
+        // On the desktop, the canvas is the popover's surroundings there, under Safelight's icon
+        var desktopInfo: Log.DesktopInfo?
+        if let desktop {
+            let popover = desktop.popover(size: windowSize, arrowTip: arrowTip)
+            let canvas = desktop.canvas(around: popover)
+            (canvasSize, origin, backdrop) = (canvas.frame.size, canvas.popover, canvas.backdrop)
+            desktopInfo = Log.DesktopInfo(image: "desktop.png", display: desktop.displayID, size: [desktop.size.width, desktop.size.height], scale: Int(desktop.scale),
+                                          canvas: [canvas.frame.minX, canvas.frame.minY, canvas.frame.width, canvas.frame.height],
+                                          popover: [popover.minX, popover.minY, popover.width, popover.height],
+                                          menuBar: desktop.menuBarItems.map { Log.MenuBarItem(name: $0.name, frame: [$0.frame.minX, $0.frame.minY, $0.frame.width, $0.frame.height]) })
+        }
+        let windowFrame = CGRect(origin: origin, size: windowSize)
         let renderer = FrameRenderer(canvas: canvasSize, scale: CGFloat(scale), windowFrame: windowFrame, backdrop: backdrop)
 
         // Canvas points to the window's and back: the window's y goes up from its bottom
@@ -448,16 +503,21 @@ final class Recorder: NSObject, NSApplicationDelegate {
         for _ in 0..<5 { host._renderForTest(interval: 1) }
         window.displayIfNeeded()
         if UserDefaults.standard.bool(forKey: "check") {
-            return check(window: window, frameLayer: frameLayer, renderer: renderer, canvas: canvasSize, windowFrame: windowFrame, backdrop: backdrop)
+            return captureOverBackdrop(window: window, frameLayer: frameLayer, renderer: renderer, canvas: canvasSize, windowFrame: windowFrame, backdrop: backdrop,
+                                       desktopCanvas: desktopInfo?.canvas, into: output) { self.finish() }
+        }
+        if let folder = UserDefaults.standard.string(forKey: "windowServer") {
+            return captureWindowServer(window: window, frameLayer: frameLayer, renderer: renderer, canvas: canvasSize, windowFrame: windowFrame, backdrop: backdrop,
+                                       desktopCanvas: desktopInfo?.canvas, into: URL(fileURLWithPath: folder))
         }
         pointer = scene.pointer.map(resolve)
 
-        let arrowTipInWindow = window.convertPoint(fromScreen: arrowTipOnScreen)
         let cursor = NSCursor.arrow
         let displays = Self.activeDisplays()
         var log = Log(scene: name, fps: scene.fps, scale: scale, canvas: [canvasSize.width, canvasSize.height],
                       popover: Log.Popover(window: [windowFrame.minX, windowFrame.minY, windowFrame.width, windowFrame.height],
                                            arrowTip: [onCanvas(arrowTipInWindow).x, onCanvas(arrowTipInWindow).y]),
+                      desktop: desktopInfo,
                       pointer: Log.Pointer(image: "NSCursor.arrow", hotSpot: [cursor.hotSpot.x, cursor.hotSpot.y]),
                       displays: displays.map { display in
                           Log.Display(id: display, name: NSScreen.screens.first { Self.id(of: $0) == display }?.localizedName ?? "",
@@ -473,6 +533,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
         } catch {
             fail("Couldn't make \(frames.path): \(error)")
         }
+        desktop?.write(to: output.appendingPathComponent("desktop.png"))
 
         // PNGs are written in the background, while the next frame is drawn
         let writing = DispatchQueue(label: "Writing frames", qos: .userInitiated, attributes: .concurrent)
@@ -531,7 +592,10 @@ final class Recorder: NSObject, NSApplicationDelegate {
             window.displayIfNeeded()
             let animations = Self.coreAnimationAnimations(in: frameLayer)
             var pixels = renderer.draw(frameLayer, at: time)
-            guard let image = Self.image(&pixels, width: renderer.width, height: renderer.height, pointer: pointer, cursor: cursor, scale: CGFloat(scale)) else { fail("Couldn't draw frame \(frame)") }
+            // On the desktop, scripts/demo/compose.py draws the pointer, over the window server's shadow,
+            // and wherever it is on the desktop
+            guard let image = Self.image(&pixels, width: renderer.width, height: renderer.height, pointer: scene.desktop ? nil : pointer, cursor: cursor,
+                                         scale: CGFloat(scale)) else { fail("Couldn't draw frame \(frame)") }
             let url = frames.appendingPathComponent(String(format: "%04d.png", frame))
             inFlight.wait()
             writing.async(group: written) {
@@ -585,15 +649,16 @@ final class Recorder: NSObject, NSApplicationDelegate {
 
     // MARK: Checking
 
-    /// With `-check`, instead of recording: the first frame, without the pointer, as the window server
-    /// draws it on screen over the backdrop and as the recorder draws it, written to check/ beside the
-    /// frames, and how far apart they are. The popover and a window with the backdrop are on screen in
-    /// the background for a second, so the displays have to be awake. The window server's picture has
-    /// the popover window's shadow and, in Dark, its dark rim, which a frame doesn't. On 3 November 2026,
-    /// over a part of Sonoma, in Dark, the glass inside them was at most 6 levels from the window
-    /// server's, and 461 of 681,768 pixels 3 levels or more.
-    private func check(window: NSWindow, frameLayer: CALayer, renderer: FrameRenderer, canvas: CGSize, windowFrame: CGRect, backdrop: CGImage?) {
-        guard let backdrop else { fail("-check needs a backdrop in the scene's canvas, or the window server's picture has whatever's on screen behind") }
+    /// The first frame, without the pointer, as the window server draws it on screen over the backdrop
+    /// (window-server.png, in the display's colours) and as the recorder draws it (recorder.png), written
+    /// into `folder` with the backdrop and where the window is on it (about.json). The popover and a
+    /// window with the backdrop are on screen in the background for a second, so the displays have to
+    /// be awake. The window server's picture has the popover window's shadow and rims, which a frame
+    /// doesn't; scripts/demo/compose.py compares the two (`check`) and takes the window server's picture
+    /// of the popover's edge, which is the same on every frame (`WindowServerLayer`).
+    private func captureOverBackdrop(window: NSWindow, frameLayer: CALayer, renderer: FrameRenderer, canvas: CGSize, windowFrame: CGRect, backdrop: CGImage?,
+                                     desktopCanvas: [Double]?, into folder: URL, then done: @escaping () -> Void) {
+        guard let backdrop else { fail("Comparing with the window server needs a backdrop in the scene's canvas, or the window server's picture has whatever's on screen behind") }
         // The canvas on screen, with the popover's window where it is on it
         let onScreen = NSRect(x: window.frame.minX - windowFrame.minX, y: window.frame.maxY + windowFrame.minY - canvas.height,
                               width: canvas.width, height: canvas.height)
@@ -616,41 +681,104 @@ final class Recorder: NSObject, NSApplicationDelegate {
             window.alphaValue = 0
             behind.orderOut(nil)
             guard let captured, captured.width == renderer.width, captured.height == renderer.height else { fail("Couldn't take the window server's picture") }
-
-            var pixels = renderer.draw(frameLayer, at: 0)
-            guard let drawn = Self.image(&pixels, width: renderer.width, height: renderer.height, pointer: nil, cursor: .arrow, scale: CGFloat(self.scale)),
-                  let colorSpace = CGColorSpace(name: CGColorSpace.displayP3),
-                  let matched = CGContext(data: nil, width: renderer.width, height: renderer.height, bitsPerComponent: 8, bytesPerRow: renderer.width * 4, space: colorSpace,
-                                          bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
-                  let matchedBytes = matched.data?.assumingMemoryBound(to: UInt8.self) else { fail("Couldn't compare the pictures") }
-            // The window server's picture in the display's colours, matched to Display P3 as the frame is
-            matched.draw(captured, in: CGRect(x: 0, y: 0, width: renderer.width, height: renderer.height))
-            guard (0..<renderer.width * renderer.height).contains(where: { matchedBytes[$0 * 4] | matchedBytes[$0 * 4 + 1] | matchedBytes[$0 * 4 + 2] != 0 }) else {
+            guard let bytes = Self.pixels(of: captured), bytes.enumerated().contains(where: { $0.offset % 4 != 3 && $0.element != 0 }) else {
                 fail("The window server's picture is black; are the displays asleep?")
             }
-            let folder = self.output.appendingPathComponent("check")
+
+            var pixels = renderer.draw(frameLayer, at: 0)
+            guard let drawn = Self.image(&pixels, width: renderer.width, height: renderer.height, pointer: nil, cursor: .arrow, scale: CGFloat(self.scale)) else {
+                fail("Couldn't draw the first frame")
+            }
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             Self.writePNG(captured, to: folder.appendingPathComponent("window-server.png"))
             Self.writePNG(drawn, to: folder.appendingPathComponent("recorder.png"))
-
-            // Everywhere, and inside the popover's glass only, 20 points in from its window's edges, where
-            // its shadow isn't
-            let inside = windowFrame.insetBy(dx: 20, dy: 20).applying(CGAffineTransform(scaleX: CGFloat(self.scale), y: CGFloat(self.scale)))
-            for (name, area) in [("canvas", CGRect(x: 0, y: 0, width: renderer.width, height: renderer.height)), ("glass", inside)] {
-                var counts = [0, 0, 0], largest = 0, total = 0
-                for row in Int(area.minY)..<Int(area.maxY) {
-                    for column in Int(area.minX)..<Int(area.maxX) {
-                        let index = (row * renderer.width + column) * 4
-                        let difference = (0..<3).map { abs(Int(pixels[index + $0]) - Int(matchedBytes[index + $0])) }.max() ?? 0
-                        largest = max(largest, difference)
-                        for (level, limit) in [1, 3, 9].enumerated() where difference >= limit { counts[level] += 1 }
-                        total += 1
-                    }
-                }
-                print("\(name): \(total) pixels, \(counts[0]) differ, \(counts[1]) by 3 levels or more, \(counts[2]) by 9 or more, at most \(largest)")
+            Self.writePNG(backdrop, to: folder.appendingPathComponent("backdrop.png"))
+            var about: [String: Any] = ["appearance": self.scene.appearance, "scale": self.scale, "display": self.screen.flatMap(Self.id) ?? 0,
+                                        "window": [windowFrame.minX, windowFrame.minY, windowFrame.width, windowFrame.height]]
+            about["canvas"] = desktopCanvas
+            if let data = try? JSONSerialization.data(withJSONObject: about, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: folder.appendingPathComponent("about.json"))
             }
-            self.removeSettings()
-            exit(0)
+            print("Captured the window server's picture of the popover over the backdrop into \(folder.path)")
+            done()
+        }
+    }
+
+    /// A picture's pixels, drawn in Display P3, 8 bits a channel
+    private static func pixels(of image: CGImage) -> [UInt8]? {
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.displayP3) else { return nil }
+        var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        guard let context = CGContext(data: &bytes, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4, space: colorSpace,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return bytes
+    }
+
+    private func finish() -> Never {
+        removeSettings()
+        exit(0)
+    }
+
+    /// With `-windowServer folder`, instead of recording: what the window server draws round the
+    /// popover's window, which a frame doesn't have, for scripts/demo/compose.py to add to the frames.
+    /// Its shadow and its rims: a hard dark one round it and, inside its edge, a faint white one, as
+    /// AppKit asks for it (`SLSTransactionSetWindowShadowProperties`: density 0.3, radius 8, 4 points
+    /// down; rim 0.85, 2 points; inner rim 0.1, 3 points, on 3 November 2026). The popover is on screen
+    /// for a second, over nothing, and two pictures of it are taken, in the display's colours: with
+    /// its shadow (with-shadow.png, the window's frame and `margin` points round it) and without
+    /// (alone.png). Their difference is what the window server adds. Only the inner rim depends on
+    /// whether the window looks key, which the window server isn't told (Interposers.c), so Interposers.c
+    /// gives the popover's window its key look's rims whether it looks key or not. Written into a folder
+    /// of `folder` named after the appearance and the window's size, as they're the same for every frame
+    /// and every scene, once: nothing is shown if that folder has them already. For a scene on the
+    /// desktop, then the popover over the desktop round it (`captureOverBackdrop`), into desktop/ there,
+    /// unless it has that already.
+    private func captureWindowServer(window: NSWindow, frameLayer: CALayer, renderer: FrameRenderer, canvas: CGSize, windowFrame: CGRect, backdrop: CGImage?,
+                                     desktopCanvas: [Double]?, into folder: URL) {
+        let place = folder.appendingPathComponent("\(scene.appearance)-\(Int(window.frame.width))x\(Int(window.frame.height))")
+        // Then, on the desktop, the popover over the desktop round it, unless it's been taken over the same
+        func overDesktop() {
+            let desktop = place.appendingPathComponent("desktop")
+            let taken = CGImageSourceCreateWithURL(desktop.appendingPathComponent("backdrop.png") as CFURL, nil).flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
+            guard let backdrop, desktopCanvas != nil, taken.flatMap(Self.pixels) != Self.pixels(of: backdrop) else {
+                if desktopCanvas != nil { print("The window server's picture of the popover over the desktop is already in \(desktop.path)") }
+                finish()
+            }
+            captureOverBackdrop(window: window, frameLayer: frameLayer, renderer: renderer, canvas: canvas, windowFrame: windowFrame, backdrop: backdrop,
+                                desktopCanvas: desktopCanvas, into: desktop) { self.finish() }
+        }
+        guard !FileManager.default.fileExists(atPath: place.appendingPathComponent("about.json").path) else {
+            print("The window server's shadow round the popover is already in \(place.path)")
+            return overDesktop()
+        }
+        let margin: CGFloat = 48
+        let rect = window.frame.insetBy(dx: -margin, dy: -margin)
+        window.alphaValue = 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            guard active_shadows_given() > 0 else { fail("AppKit gave the popover's window its shadow in a way Interposers.c doesn't see") }
+            typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+            guard let symbol = Darwin.dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { fail("There's no CGWindowListCreateImage") } // RTLD_DEFAULT
+            let createImage = unsafeBitCast(symbol, to: CreateImage.self)
+            let includingWindow: UInt32 = 1 << 3, boundsIgnoreFraming: UInt32 = 1 << 0, bestResolution: UInt32 = 1 << 3
+            // In Core Graphics' screen coordinates, which go down from the top of the main display
+            let bounds = CGRect(x: rect.minX, y: NSScreen.screens[0].frame.maxY - rect.maxY, width: rect.width, height: rect.height)
+            let withShadow = createImage(bounds, includingWindow, UInt32(window.windowNumber), bestResolution)?.takeRetainedValue()
+            let alone = createImage(.null, includingWindow, UInt32(window.windowNumber), boundsIgnoreFraming | bestResolution)?.takeRetainedValue()
+            window.alphaValue = 0
+            let scale = Int(window.backingScaleFactor)
+            guard let withShadow, let alone, withShadow.width == Int(rect.width) * scale, alone.width == Int(window.frame.width) * scale,
+                  alone.height == Int(window.frame.height) * scale else { fail("Couldn't take the window server's pictures of the popover") }
+            try? FileManager.default.createDirectory(at: place, withIntermediateDirectories: true)
+            Self.writePNG(withShadow, to: place.appendingPathComponent("with-shadow.png"))
+            Self.writePNG(alone, to: place.appendingPathComponent("alone.png"))
+            let about: [String: Any] = ["margin": margin, "scale": scale, "window": [window.frame.width, window.frame.height], "appearance": self.scene.appearance,
+                                        "display": NSScreen.screens.first { $0.frame.intersects(window.frame) }?.localizedName ?? ""]
+            if let data = try? JSONSerialization.data(withJSONObject: about, options: [.prettyPrinted, .sortedKeys]) {
+                try? data.write(to: place.appendingPathComponent("about.json"))
+            }
+            print("Captured the window server's shadow round the popover into \(place.path)")
+            // A moment later, as the popover's window has just been hidden
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { overDesktop() }
         }
     }
 
