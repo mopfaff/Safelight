@@ -1,0 +1,46 @@
+{
+  "about": "Night Shift at its warmest beside Safelight's red: the same screen twice, on the left with Night Shift on at More Warm as macOS shows it, on the right with Safelight's filter red and Intensity dragged from Low (25%) to High (100%) over 3 s, in Light, both panes easing out from the popover's corner to the whole screen",
+  "fps": 60,
+  "duration": 6,
+  "appearance": "light",
+  "accentColor": "blue",
+  "language": "en-US",
+  "locale": "en_GB",
+  "desktop": true,
+  "nightShift": { "strength": 1 },
+  "settings": {
+    "colorFilter": true,
+    "tint": 0,
+    "intensity": 0.25,
+    "brightness": 1,
+    "wallpaper": {
+      "light": "/System/Library/Desktop Pictures/.wallpapers/Sonoma Horizon/Sonoma Horizon.heic",
+      "dark": "/System/Library/Desktop Pictures/Sonoma.heic"
+    }
+  },
+  "pointer": { "control": "Intensity" },
+  "actions": [
+    { "at": 0.6, "drag": "Intensity", "from": 0.25, "to": 1.0, "duration": 3, "easing": "easeInOut" }
+  ],
+  "camera": {
+    "16:9": {
+      "size": [3840, 2160],
+      "panes": [
+        { "rect": [0, 598, 1904, 1071], "label": "Night Shift, warmest",
+          "keys": [{ "at": 2.0, "centre": [-759, 400], "height": 800 }, { "at": 4.0, "centre": [-1328, 720], "height": 1440, "easing": "easeInOut" }] },
+        { "rect": [1936, 598, 1904, 1071], "label": "Safelight, red",
+          "keys": [{ "at": 2.0, "centre": [1849, 400], "height": 800 }, { "at": 4.0, "centre": [1280, 720], "height": 1440, "easing": "easeInOut" }] }
+      ]
+    },
+    "9:16": {
+      "size": [2160, 3840],
+      "panes": [
+        { "rect": [0, 625, 2160, 1215], "label": "Night Shift, warmest",
+          "keys": [{ "at": 2.0, "centre": [-759, 400], "height": 800 }, { "at": 4.0, "centre": [-1328, 720], "height": 1440, "easing": "easeInOut" }] },
+        { "rect": [0, 2122, 2160, 1215], "label": "Safelight, red",
+          "keys": [{ "at": 2.0, "centre": [1849, 400], "height": 800 }, { "at": 4.0, "centre": [1280, 720], "height": 1440, "easing": "easeInOut" }] }
+      ]
+    }
+  },
+  "stills": [60, 150, 240]
+}

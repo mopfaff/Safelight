@@ -41,6 +41,9 @@ from PIL import Image
 # It's light: under Grayscale, red, green and blue matched greys of 58.4, 79.2 and 36.6 on the screen,
 # not 30, 59 and 11 (check.py eye-test, 2026-11-03). "encoded" is kept to compare the two.
 MATRIX_DOMAIN = "linear"
+# The same for Night Shift's matrix, which goes to another place in the DCP (location 9); to be settled
+# by check.py night-shift's eye test.
+NIGHT_SHIFT_DOMAIN = "linear"
 
 
 # --- MediaAccessibility ---------------------------------------------------------------------------
@@ -80,6 +83,112 @@ def tint_matrix(hue, intensity):
 def grayscale_matrix(intensity=1.0):
     """The Grayscale filter's matrix, MADisplayFilterCreateGrayscale(intensity, ...), for check.py."""
     return _filter_matrix(_ma.MADisplayFilterCreateGrayscale(intensity, 0, 0, 1))
+
+
+# --- Night Shift ----------------------------------------------------------------------------------
+#
+# Worked out from macOS itself (2026-11-04, macOS 27.2, M4 Pro), to show Night Shift beside Safelight:
+#   1. The slider (CBBlueLightClient's strength, 0 Less Warm ... 1 More Warm) is a colour temperature in
+#      the range corebrightnessd gives (2700, 4100, 6000 K here), linear on each side of the middle one
+#      (-[CBBlueLightClient setStrength:withPeriod:commit:]), so More Warm is 2700 K.
+#   2. corebrightnessd's colour code, CFX in CoreBrightness, makes a 3×3 matrix of it: the temperature's
+#      chromaticity from its table, an adaptation to it in LMS from D65 (white point type 1, which
+#      CBColorModuleShared sets), its memory-colour coefficients, and scaled so no row sums past 1. Rows
+#      are what goes out, so white comes out as each row's sum. It's turned on through
+#      CFXEnableBlueLightReduction's factor (0 off, 1 on), which corebrightnessd fades.
+#   3. CBBrightnessProxySKL setWhitePoint:rampDuration:error: hands it to WindowServer (SkyLight
+#      SLCADisplay::set_white_point), and QuartzCore ramps to it (IOMFBDisplay::update_color_matrix) and
+#      gives it to the display coprocessor with IOMobileFramebufferSetMatrix, location 9: the
+#      CAEnableHarmonyXYZ preference, which would send it to the ICC pipeline's "Harmony" matrix
+#      instead, isn't set. The DCP's matrix at location 9 can be read back (check.py night-shift).
+# CFX isn't exported, so night_shift_matrix() calls it where dyld_info finds it in the shared cache, with
+# what corebrightnessd gives it (the display's native white point and D50 output don't change the matrix).
+
+_CB = "/System/Library/PrivateFrameworks/CoreBrightness.framework/CoreBrightness"
+_cfx = None
+
+
+def _cfx_functions():
+    """CFX's functions in this process: their places from dyld_info (unslid), moved by the shared cache's slide."""
+    global _cfx
+    if _cfx is None:
+        import subprocess
+        ctypes.CDLL(_CB)
+        dyld = ctypes.CDLL(None)
+        dyld._dyld_get_image_name.restype = ctypes.c_char_p
+        dyld._dyld_get_image_name.argtypes = [ctypes.c_uint32]
+        dyld._dyld_get_image_vmaddr_slide.restype = ctypes.c_long
+        dyld._dyld_get_image_vmaddr_slide.argtypes = [ctypes.c_uint32]
+        slide = next(dyld._dyld_get_image_vmaddr_slide(i) for i in range(dyld._dyld_image_count())
+                     if dyld._dyld_get_image_name(i).decode().startswith(_CB.rsplit("/", 1)[0]))
+        starts = {}
+        for line in subprocess.run(["dyld_info", "-function_starts", _CB], capture_output=True, text=True, check=True).stdout.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1].startswith("_CFX"):
+                starts[parts[1][1:]] = int(parts[0], 16) + slide
+        c, f, b = ctypes.c_void_p, ctypes.c_float, ctypes.c_bool
+        signatures = {"CFXCreate": (c,), "CFXRelease": (None, c), "CFXSetWhitePointType": (None, c, ctypes.c_int),
+                      "CFXInitializeBlueLightReduction": (b, c), "CFXOverrideBlueLightReductionCCTRange": (None, c, f, f, f),
+                      "CFXSetBlueLightReductionTargetCCT": (None, c, f, f, f, b), "CFXEnableBlueLightReduction": (None, c, f, f, b)}
+        _cfx = {name: ctypes.CFUNCTYPE(*signature)(starts[name]) for name, signature in signatures.items()}
+    return _cfx
+
+
+class _CCTRange(ctypes.Structure):
+    _fields_ = [("warmest", ctypes.c_float), ("coolest", ctypes.c_float), ("middle", ctypes.c_float)]
+
+
+def night_shift_range():
+    """The colour temperatures Night Shift goes between, warmest, coolest and middle, as corebrightnessd
+    has them (CBBlueLightClient getCCTRange:)."""
+    from objc import pyobjc_id
+    import objc
+    objc.loadBundle("CoreBrightness", {}, bundle_path=_CB.rsplit("/", 1)[0])
+    client = objc.lookUpClass("CBBlueLightClient").alloc().init()
+    libobjc = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+    libobjc.sel_registerName.restype = ctypes.c_void_p
+    libobjc.sel_registerName.argtypes = [ctypes.c_char_p]
+    send = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(_CCTRange))(
+        ctypes.cast(libobjc.objc_msgSend, ctypes.c_void_p).value)
+    value = _CCTRange()
+    if not send(pyobjc_id(client), libobjc.sel_registerName(b"getCCTRange:"), ctypes.byref(value)):
+        raise RuntimeError("corebrightnessd didn't give Night Shift's range")
+    return value.warmest, value.coolest, value.middle
+
+
+def night_shift_cct(strength, cct_range=None):
+    """The colour temperature of Night Shift's slider at `strength` (0 Less Warm ... 1 More Warm), as
+    CBBlueLightClient setStrength: works it out, in Float."""
+    warmest, coolest, middle = (np.float32(v) for v in (cct_range or night_shift_range()))
+    s = np.float32(min(max(strength, 0), 1))
+    if s > 0.5:
+        return float(np.float32(float(s - np.float32(0.5)) * -2.0 * float(middle - warmest) + float(middle)))
+    return float(np.float32(float(s) * -2.0 * float(coolest - middle) + float(coolest)))
+
+
+def night_shift_matrix(cct, factor=1.0, cct_range=None):
+    """Night Shift's matrix at colour temperature `cct` (night_shift_cct() gives the slider's), on by
+    `factor` (corebrightnessd fades it from 0 to 1), made by CoreBrightness's own code as corebrightnessd
+    makes it, so it's what goes to the display (check.py night-shift reads it back). Rows are what comes
+    out, from the red, green and blue that go in, in light (the DCP multiplies light: check.py
+    night-shift's eye test)."""
+    cfx = _cfx_functions()
+    warmest, coolest, middle = cct_range or night_shift_range()
+    handle = cfx["CFXCreate"]()
+    try:
+        cfx["CFXSetWhitePointType"](handle, 1)
+        cfx["CFXInitializeBlueLightReduction"](handle)
+        cfx["CFXOverrideBlueLightReductionCCTRange"](handle, coolest, warmest, middle)
+        cfx["CFXSetBlueLightReductionTargetCCT"](handle, cct, 0, 0, False)
+        cfx["CFXEnableBlueLightReduction"](handle, factor, 0, True)
+        # The target it hands corebrightnessd's ramp (ColorRampCallback): {period, matrix[9], count, 1, white point}
+        ramp = (ctypes.c_float * 14).from_address(handle + 0xd0)
+        if ctypes.c_uint32.from_buffer(ramp, 40).value != 9 or ramp[11] != 1:
+            raise RuntimeError("CFX's layout isn't what pipeline.py knows (macOS changed?)")
+        matrix = np.array(ramp[1:10], np.float64).reshape(3, 3)
+    finally:
+        cfx["CFXRelease"](handle)
+    return matrix
 
 
 # --- Colour profiles ------------------------------------------------------------------------------
@@ -227,8 +336,9 @@ def hid_brightness(product):
     devices = iokit.IOHIDManagerCopyDevices(manager)
     for device in (objc.objc_object(c_void_p=devices) if devices else []):
         ref = objc.pyobjc_id(device)
-        if str(objc.objc_object(c_void_p=iokit.IOHIDDeviceGetProperty(ref, cf("Product")))) != product:
-            continue
+        name = iokit.IOHIDDeviceGetProperty(ref, cf("Product"))
+        if not name or str(objc.objc_object(c_void_p=name)) != product:
+            continue  # some of Apple's HID devices have no name
         for element in objc.objc_object(c_void_p=iokit.IOHIDDeviceCopyMatchingElements(ref, None, 0)):
             e = objc.pyobjc_id(element)
             if (iokit.IOHIDElementGetUsagePage(e), iokit.IOHIDElementGetUsage(e)) != (0x82, 0x10) or iokit.IOHIDElementGetType(e) != 257:
@@ -259,24 +369,32 @@ def dark_layer(frame, brightness):
     return (np.asarray(frame).astype(np.float16) * through).astype(np.float64)
 
 
-def shown(frame, display, tint=None, brightness=1.0, domain=None):
+def shown(frame, display, tint=None, brightness=1.0, domain=None, night_shift=None):
     """The light `display` gives off for `frame`, its encoded values (0...1, in the display's colour
     space, Sidecar's dark layer not yet in it), with Color Tint at `tint` (hue, intensity) or off, and
     at Safelight's `brightness` for that display. Linear, in the display's primaries, 1 = its white at
-    full brightness."""
+    full brightness. `night_shift` is Night Shift's matrix (night_shift_matrix()) if it's on: how it
+    and Color Tint stack isn't known, so not both."""
     domain = domain or MATRIX_DOMAIN
     x = np.asarray(frame, np.float64)[..., :3]
     if display.kind == SIDECAR:
         # Nothing reaches the iPad after the dark layer
         return display.profile.decode(dark_layer(x, brightness) if brightness < 0.999 else x)
+    if tint is not None and night_shift is not None:
+        raise NotImplementedError("Color Tint and Night Shift together: which the DCP applies first isn't known")
     if display.kind == GAMMA and brightness < 0.999:
         table = gamma_table(max(brightness, 0.05))
         x = np.interp(x, np.linspace(0, 1, len(table)), table)
     if tint is not None and domain == "encoded":
         x = x @ tint_matrix(*tint).T
+    if night_shift is not None and NIGHT_SHIFT_DOMAIN == "encoded":
+        x = np.clip(x @ np.asarray(night_shift).T, 0, 1)
     light = display.profile.decode(x)
     if tint is not None and domain == "linear":
         light = light @ tint_matrix(*tint).T
+    if night_shift is not None and NIGHT_SHIFT_DOMAIN == "linear":
+        # Its rows sum to 1 at most, but saturated colours can come out below 0, which no light is
+        light = np.clip(light @ np.asarray(night_shift).T, 0, None)
     if display.kind == BACKLIGHT:
         light = light * max(brightness, display.min_light)
     return light

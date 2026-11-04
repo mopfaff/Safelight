@@ -27,6 +27,18 @@
 #                          then puts Color Filters back exactly as they were. Ask: is the pointer's
 #                          white outline still white, or red like everything else? On 2026-11-03 the
 #                          user saw it red: the filter tints the pointer (on the Studio Display, M4 Pro).
+#   check.py night-shift   Night Shift's matrix as the display coprocessor has it, and whether it multiplies
+#                          light or encoded values, seen on the screen. Ask the user first: it turns Night
+#                          Shift on at its warmest (--strength 1, More Warm), reads the matrix each display's
+#                          framebuffer has at location 9 (IOMobileFramebufferGetMatrix, only ever read) as it
+#                          fades in, against pipeline.night_shift_matrix(), and leaves it on with rows of tiles
+#                          on the main display, each a mix of two colours in light (numbered by the share of
+#                          the first) with a checkerboard of the two in it, until stopped (kill -TERM its PID)
+#                          or --seconds pass; then puts Night Shift back exactly as it was (on or off, its
+#                          strength, read back) and writes both fades to build/demo/night-shift/fades.json.
+#                          Ask: in each row, which tile does the checkerboard disappear into, or come closest
+#                          to? If the DCP multiplies light, it's the one numbered 50 (49, 48, 50); if encoded
+#                          values, 21, 18, 52, none quite. Then check.py night-shift --answer A,B,C.
 #   check.py switch        How macOS changes the screen over from Light to Dark and back, timed on the screen
 #                          (scripts/demo/film-switch.swift) for recorder/AppearanceTransition.swift. Ask the
 #                          user first: it changes the appearance to Dark and back, twice, as Safelight does,
@@ -39,7 +51,7 @@
 #                          encoded values; the wallpaper linear over 2.0 s, from 320–400 ms (to Dark).
 #
 # Needs what pipeline.py needs, and screen recording permission for screencapture.
-import argparse, json, os, signal, subprocess, sys, tempfile, time
+import argparse, ctypes, json, os, signal, subprocess, sys, tempfile, time
 from pathlib import Path
 import numpy as np
 import AppKit, Foundation, Quartz
@@ -317,6 +329,262 @@ def check_eye_test(args):
     print("Then: check.py eye-test --answer RED,GREEN,BLUE")
 
 
+# --- Night Shift ----------------------------------------------------------------------------------
+
+class NightShift:
+    """Night Shift (Control Center and System Settings › Displays), through CBBlueLightClient, as System
+    Settings drives it."""
+
+    class Status(ctypes.Structure):
+        # CBBlueLightClient's status: active, enabled, sun schedule allowed, mode, schedule (from and to,
+        # hour and minute), disable flags, available
+        _fields_ = [("active", ctypes.c_bool), ("enabled", ctypes.c_bool), ("sun", ctypes.c_bool), ("mode", ctypes.c_int),
+                    ("schedule", ctypes.c_int * 4), ("flags", ctypes.c_uint64), ("available", ctypes.c_bool)]
+
+        def __repr__(self):
+            return (f"enabled {self.enabled}, active {self.active}, mode {self.mode}, schedule {list(self.schedule)}, "
+                    f"flags {self.flags}, sun {self.sun}, available {self.available}")
+
+    def __init__(self):
+        import objc
+        objc.loadBundle("CoreBrightness", {}, bundle_path=pipeline._CB.rsplit("/", 1)[0])
+        self.client = objc.lookUpClass("CBBlueLightClient").alloc().init()
+        self.libobjc = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+        self.libobjc.sel_registerName.restype = ctypes.c_void_p
+        self.libobjc.sel_registerName.argtypes = [ctypes.c_char_p]
+
+    def send(self, selector, argtypes, *args):
+        import objc
+        function = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p, *argtypes)(
+            ctypes.cast(self.libobjc.objc_msgSend, ctypes.c_void_p).value)
+        return function(objc.pyobjc_id(self.client), self.libobjc.sel_registerName(selector.encode()), *args)
+
+    def state(self):
+        status, strength, cct = self.Status(), ctypes.c_float(), ctypes.c_float()
+        self.send("getBlueLightStatus:", [ctypes.POINTER(self.Status)], ctypes.byref(status))
+        self.send("getStrength:", [ctypes.POINTER(ctypes.c_float)], ctypes.byref(strength))
+        self.send("getCCT:", [ctypes.POINTER(ctypes.c_float)], ctypes.byref(cct))
+        return status, strength.value, cct.value
+
+    def turn_on(self, strength):
+        self.send("setStrength:commit:", [ctypes.c_float, ctypes.c_bool], strength, True)
+        self.send("setEnabled:", [ctypes.c_bool], True)
+
+    def restore(self, state):
+        status, _, cct = state
+        self.send("setEnabled:", [ctypes.c_bool], status.enabled)
+        self.send("setCCT:commit:", [ctypes.c_float, ctypes.c_bool], cct, True)
+
+    @staticmethod
+    def same(a, b):
+        return bytes(a[0]) == bytes(b[0]) and a[1:] == b[1:]
+
+
+class Framebuffers:
+    """Each display's framebuffer, through IOMobileFramebuffer, only ever read: the matrix it has at a
+    location (IOMobileFramebufferGetMatrix, s31.32 fixed point, rows first)."""
+
+    def __init__(self):
+        iokit = ctypes.CDLL("/System/Library/Frameworks/IOKit.framework/IOKit")
+        iomfb = ctypes.CDLL("/System/Library/PrivateFrameworks/IOMobileFramebuffer.framework/IOMobileFramebuffer")
+        c = ctypes.c_void_p
+        iokit.IOServiceMatching.restype, iokit.IOServiceMatching.argtypes = c, [ctypes.c_char_p]
+        iokit.IOServiceGetMatchingServices.argtypes = [ctypes.c_uint32, c, ctypes.POINTER(ctypes.c_uint32)]
+        iokit.IOIteratorNext.restype, iokit.IOIteratorNext.argtypes = ctypes.c_uint32, [ctypes.c_uint32]
+        iokit.IORegistryEntryCreateCFProperty.restype = c
+        iokit.IORegistryEntryCreateCFProperty.argtypes = [ctypes.c_uint32, c, c, ctypes.c_uint32]
+        iomfb.IOMobileFramebufferOpen.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(c)]
+        iomfb.IOMobileFramebufferGetMatrix.argtypes = [c, ctypes.c_uint32, ctypes.POINTER(ctypes.c_int64)]
+        self.iomfb = iomfb
+        libc = ctypes.CDLL(None)
+        task = ctypes.c_uint32.in_dll(libc, "mach_task_self_").value
+        iterator = ctypes.c_uint32()
+        iokit.IOServiceGetMatchingServices(0, iokit.IOServiceMatching(b"IOMobileFramebufferShim"), ctypes.byref(iterator))
+        self.displays = {}
+        import objc
+        key = objc.pyobjc_id(Foundation.NSString.stringWithString_("DisplayAttributes").nsstring())
+        while service := iokit.IOIteratorNext(iterator.value):
+            attributes = iokit.IORegistryEntryCreateCFProperty(service, key, None, 0)
+            if not attributes:
+                continue
+            name = str(objc.objc_object(c_void_p=attributes).get("ProductAttributes", {}).get("ProductName", service))
+            handle = c()
+            if iomfb.IOMobileFramebufferOpen(service, task, 0, ctypes.byref(handle)) == 0:
+                self.displays[name] = handle
+
+    def matrix(self, name, location=9):
+        values = (ctypes.c_int64 * 9)()
+        error = self.iomfb.IOMobileFramebufferGetMatrix(self.displays[name], location, values)
+        if error:
+            raise OSError(f"IOMobileFramebufferGetMatrix({name}, {location}): {error & 0xffffffff:#x}")
+        return np.array(values, np.float64).reshape(3, 3) / 2 ** 32
+
+
+NIGHT_SHIFT_ROWS = {"red and green": ((1, 0, 0), (0, 1, 0)), "red and cyan": ((1, 0, 0), (0, 1, 1)),
+                    "white and black": ((1, 1, 1), (0, 0, 0))}
+NIGHT_SHIFT_STEPS = np.round(np.arange(0, 1.001, 0.05), 2)
+
+
+def night_shift_shown(encoded, display, matrix, domain):
+    """What the display gives off for `encoded` under Night Shift's `matrix`, if it multiplies light or
+    encoded values (as pipeline.shown())."""
+    x = np.asarray(encoded, np.float64).reshape(1, -1, 3)
+    if domain == "encoded":
+        return display.profile.decode(np.clip(x @ matrix.T, 0, 1))[0]
+    return np.clip(display.profile.decode(x) @ matrix.T, 0, None)[0]
+
+
+def lab(light, display):
+    """CIELAB of the display's light, its white as the white"""
+    xyz = light @ display.profile.to_xyz.T / display.profile.to_xyz.sum(1)
+    f = np.where(xyz > (6 / 29) ** 3, np.cbrt(xyz), xyz / (3 * (6 / 29) ** 2) + 4 / 29)
+    return np.stack([116 * f[:, 1] - 16, 500 * (f[:, 0] - f[:, 1]), 200 * (f[:, 1] - f[:, 2])], 1)
+
+
+def mixes(display, a, b, shares):
+    """Tiles of `a` and `b` mixed in light, `shares` of `a`, as encoded values"""
+    la, lb = (display.profile.decode(np.array([[c]], np.float64))[0, 0] for c in (a, b))
+    return display.profile.encode((np.outer(shares, la) + np.outer(1 - np.asarray(shares), lb))[None])[0]
+
+
+def night_shift_predictions(display, matrix):
+    """For each row, the share (×100) of the tile the checkerboard of its two colours looks most like, and
+    how far off it still is (ΔE), with no Night Shift, and with Night Shift if the DCP multiplies light,
+    or encoded values."""
+    fine = np.linspace(0, 1, 1001)
+    out = {}
+    for name, (a, b) in NIGHT_SHIFT_ROWS.items():
+        tiles = mixes(display, a, b, fine)
+        row = {}
+        for model in ("off", "light", "encoded values"):
+            if model == "off":
+                show = lambda e: display.profile.decode(np.asarray(e, np.float64).reshape(1, -1, 3))[0]
+            else:
+                show = lambda e, d="linear" if model == "light" else "encoded": night_shift_shown(e, display, matrix, d)
+            board = (show([a]) + show([b])) / 2
+            distance = np.linalg.norm(lab(show(tiles), display) - lab(board, display), axis=1)
+            row[model] = (fine[distance.argmin()] * 100, distance.min())
+        out[name] = row
+    return out
+
+
+def night_shift_picture(display, scale, width):
+    """A row of tiles for each pair of colours, each a mix of the two in light, numbered by the share of
+    the first (×100), with a checkerboard of the two, a pixel each, in the middle: where Night Shift
+    multiplies light, the checkerboard disappears into the tile numbered 50 under it, as it does
+    without it."""
+    cols = len(NIGHT_SHIFT_STEPS)
+    tile = min(110, int((width - 40) / cols / 1.13))
+    gap, label = max(tile // 8, 6), 36
+    w = cols * tile + (cols + 1) * gap
+    h = len(NIGHT_SHIFT_ROWS) * (tile + label) + (len(NIGHT_SHIFT_ROWS) + 1) * gap
+    image = Image.new("RGB", (w * scale, h * scale), (40, 40, 40))
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.truetype("/System/Library/Fonts/SFNS.ttf", 22 * scale)
+    pixels = None
+    for r, (a, b) in enumerate(NIGHT_SHIFT_ROWS.values()):
+        y = gap + r * (tile + label + gap)
+        colours = np.round(mixes(display, a, b, NIGHT_SHIFT_STEPS) * 255).astype(int)
+        for c, v in enumerate(NIGHT_SHIFT_STEPS):
+            x = gap + c * (tile + gap)
+            draw.rectangle([x * scale, y * scale, (x + tile) * scale - 1, (y + tile) * scale - 1], fill=tuple(colours[c]))
+            text = f"{round(v * 100)}"
+            box = draw.textbbox((0, 0), text, font=font)
+            draw.text(((x + tile / 2) * scale - (box[2] - box[0]) / 2, (y + tile + 6) * scale), text, font=font, fill=(220, 220, 220))
+    pixels = np.array(image)
+    for r, (a, b) in enumerate(NIGHT_SHIFT_ROWS.values()):
+        y = gap + r * (tile + label + gap)
+        for c in range(cols):
+            x, inset = gap + c * (tile + gap), tile // 4
+            top, left, size = (y + inset) * scale, (x + inset) * scale, (tile - 2 * inset) * scale
+            i, j = np.indices((size, size))
+            pixels[top:top + size, left:left + size] = np.where(((i + j) % 2 == 0)[..., None], np.array(a) * 255, np.array(b) * 255)
+    return pixels, (w, h)
+
+
+def check_night_shift(args):
+    display_id = Quartz.CGMainDisplayID()
+    display = pipeline.Display.live(display_id)
+    cct = pipeline.night_shift_cct(args.strength)
+    model = pipeline.night_shift_matrix(cct)
+    expected = night_shift_predictions(display, model)
+    if args.answer:
+        answers = [float(a) for a in args.answer.split(",")]
+        print(f"Night Shift at {cct:.0f} K: the tile (×100) each row's checkerboard disappeared into, or came closest to:")
+        fits = {"light": 0, "encoded values": 0}
+        for (name, row), answer in zip(expected.items(), answers):
+            print(f"  {name:16} seen {answer:3.0f}   " + "   ".join(f"{m} {s:.0f} (ΔE {d:.1f})" for m, (s, d) in row.items()))
+            if name != "white and black":
+                near = min(fits, key=lambda m: abs(row[m][0] - answer))
+                fits[near] += 1
+        print("coloured rows nearer each: " + ", ".join(f"{kind} {n}" for kind, n in fits.items()))
+        return
+    for name, row in expected.items():
+        print(f"{name:16} " + "   ".join(f"{m} {s:.0f} (ΔE {d:.1f})" for m, (s, d) in row.items()))
+    screen = screen_of(display_id)
+    scale = int(screen.backingScaleFactor())
+    sf = screen.frame()
+    picture, (w, h) = night_shift_picture(display, scale, sf.size.width)
+    frame = Foundation.NSMakeRect(sf.origin.x + (sf.size.width - w) // 2, sf.origin.y + (sf.size.height - h) // 2, w, h)
+    app()
+    window = picture_window(picture, display_id, frame)
+    run_for(0.3)
+    drawn = capture(display_id, frame)
+    report("the tiles as drawn (from a capture)", picture[: drawn.shape[0], : drawn.shape[1]], drawn)
+    framebuffers = Framebuffers()
+    print("matrices at location 9 now:", {n: np.round(framebuffers.matrix(n), 6).tolist() for n in framebuffers.displays})
+    if args.dry_run:
+        window.close()
+        return
+    night_shift = NightShift()
+    before = night_shift.state()
+    print("Night Shift before:", before[0], f"strength {before[1]:.6f}, {before[2]:.1f} K")
+    stop = []
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: stop.append(True))
+    out = Path(__file__).resolve().parents[2] / "build" / "demo" / "night-shift"
+    out.mkdir(parents=True, exist_ok=True)
+    fades = {}
+    try:
+        start = time.time()
+        night_shift.turn_on(args.strength)
+        fades["on"] = follow_fade(framebuffers, start)
+        print(f"Night Shift is on at strength {args.strength} ({cct:.0f} K) for up to {args.seconds:.0f} s, until stopped "
+              f"(PID {os.getpid()}). In each row, which tile does the checkerboard square disappear into, or come closest to?", flush=True)
+        for name in framebuffers.displays:
+            got = framebuffers.matrix(name)
+            print(f"{name}: location 9 {np.round(got, 6).tolist()}\n  CoreBrightness's {np.round(model, 6).tolist()}\n"
+                  f"  most off {np.abs(got - model).max():.2e}")
+        deadline = time.time() + args.seconds
+        while not stop and time.time() < deadline:
+            run_for(0.2)
+    finally:
+        start = time.time()
+        night_shift.restore(before)
+        fades["off"] = follow_fade(framebuffers, start)
+        window.close()
+    after = night_shift.state()
+    print("Night Shift is back as it was:" if NightShift.same(before, after) else "Night Shift ISN'T back as it was:",
+          after[0], f"strength {after[1]:.6f}, {after[2]:.1f} K")
+    (out / "fades.json").write_text(json.dumps({"strength": args.strength, "cct": cct, "model": model.tolist(), **fades}))
+    print(f"The fades are in {out / 'fades.json'}. Then: check.py night-shift --answer RED-GREEN,RED-CYAN,WHITE-BLACK")
+
+
+def follow_fade(framebuffers, start, settle=1.5, limit=15):
+    """The matrix at location 9 on each display, read every few milliseconds from `start` until it hasn't
+    changed for `settle` seconds: [seconds, {display: matrix}] for each change."""
+    seen, last_change = [], time.time()
+    while time.time() - start < limit:
+        now = {n: framebuffers.matrix(n).tolist() for n in framebuffers.displays}
+        if not seen or now != seen[-1][1]:
+            seen.append([time.time() - start, now])
+            last_change = time.time()
+        elif time.time() - last_change > settle:
+            break
+        time.sleep(0.004)
+    return seen
+
+
 # --- pointer --------------------------------------------------------------------------------------
 
 def check_pointer(args):
@@ -442,13 +710,18 @@ def main():
     p.add_argument("--values", type=float, nargs="*", default=[0.75, 0.5, 0.25])
     p = sub.add_parser("pointer")
     p.add_argument("--seconds", type=float, default=300)
+    p = sub.add_parser("night-shift")
+    p.add_argument("--seconds", type=float, default=300)
+    p.add_argument("--strength", type=float, default=1.0, help="Night Shift's slider, 0 Less Warm ... 1 More Warm")
+    p.add_argument("--answer", help="the tile each row's checkerboard disappeared into: red-green,red-cyan,white-black")
+    p.add_argument("--dry-run", action="store_true", help="show the tiles for a moment and read the matrices, leaving Night Shift alone")
     p = sub.add_parser("switch")
     p.add_argument("--runs", type=int, default=2)
     p.add_argument("--pause", type=float, default=4.5, help="seconds in Dark, then in Light")
     p.add_argument("--films", nargs="*", help="fit these films rather than taking new ones")
     args = parser.parse_args()
     {"colour": check_colour, "dark-layer": check_dark_layer, "eye-test": check_eye_test, "brightness": check_brightness,
-     "pointer": check_pointer, "switch": check_switch}[args.check](args)
+     "pointer": check_pointer, "switch": check_switch, "night-shift": check_night_shift}[args.check](args)
 
 
 if __name__ == "__main__":

@@ -23,7 +23,8 @@
 #      settings, as log.json has them: Color Tint's hue and intensity, and the display's brightness.
 #      For a scene with "otherDisplays": true, the Mac's other displays are on the stage as well, each
 #      with its own desktop (desktop-<number>.png, which nothing on changes) and its own brightness, through
-#      its own pipeline: the Dell's gamma table, the Studio Display's backlight (Stage).
+#      its own pipeline: the Dell's gamma table, the Studio Display's backlight (Stage). For a scene with
+#      "nightShift", the same screen is on the stage again, as it is with Night Shift on instead (Stage).
 #   3. A camera films it: a crop of the stage, moving and zooming as the scene's "camera" says, scaled
 #      in light, as a camera's sensor would take it. A camera can have panes, each a part of the video
 #      filming the stage on its own (a close view of the popover above both displays whole, say).
@@ -54,7 +55,14 @@
 # from its top left), kept on the stage. Between two keys it moves along the later one's easing (linear,
 # easeIn, easeOut or easeInOut, as Core Animation's), zooming by the same ratio each moment, about the
 # point that's in the same place in both. Or, instead of keys, "panes": each a "rect" of the video
-# (left, top, width, height, in pixels) and keys of its own; the rest of the video is black.
+# (left, top, width, height, in pixels) and keys of its own; the rest of the video is black, but for a
+# pane's "label", a plain line of text over it (in SF Pro, light grey), where it's needed to read the
+# shot (captions are the edit's).
+#
+# A scene with "nightShift": {"strength": S} puts the same screen again to the left of the popover's,
+# GAP points away, as it is with Night Shift on at its slider's S (1 is More Warm) and Safelight's
+# filter off: the desktop with the popover closed (desktop-closed.png), no pointer, at the same
+# brightness, through Night Shift's matrix as CoreBrightness makes it (pipeline.night_shift_matrix).
 #
 # Needs what pipeline.py needs, and ffmpeg with libx265 and libx264.
 import argparse, collections, json, math, multiprocessing, subprocess, sys
@@ -271,6 +279,17 @@ class Shot:
                 backdrop = read_png(self.folder / "backdrops" / f"wallpaper-{wallpaper}-menubar-{popover}.png")[0][..., :3]
                 self.rings[(popover, size, wallpaper)] = self.window_servers[(popover, size)].picture_over(backdrop, desktop["canvas"])
         self.pointer = Pointer(self.display, self.scale, self.log["pointer"]["hotSpot"])
+        # For a scene with "nightShift": the same screen with Night Shift on instead of Safelight's filter,
+        # the popover closed, at the strength of its slider the scene gives (1 is More Warm), its matrix
+        # made by CoreBrightness's own code (pipeline.night_shift_matrix)
+        self.night_shift = self.scene.get("nightShift")
+        if self.night_shift:
+            if self.layered:
+                raise SystemExit("Night Shift's screen is drawn from desktop-closed.png, which doesn't change: keep the appearance")
+            pixels, icc = read_png(self.folder / "desktop-closed.png")
+            self.closed = to_display(pixels[..., :3], icc, self.display)
+            self.night_shift_cct = pipeline.night_shift_cct(self.night_shift.get("strength", 1))
+            self.night_shift_matrix = pipeline.night_shift_matrix(self.night_shift_cct)
         self.stage = Stage(self)
 
     def popover_state(self, frame):
@@ -392,6 +411,16 @@ class Stage:
         self.shot = shot
         width, height = shot.size
         self.displays = [StageDisplay(shot.display, (0, 0, width, height), shot.scale, None, shot.light)]
+        if shot.night_shift:
+            if shot.log["desktop"].get("others"):
+                raise SystemExit("Night Shift's screen goes where another display would: not with \"otherDisplays\"")
+            # The same display again, GAP to the left, showing the desktop with the popover closed and
+            # Night Shift on, at the brightness the popover's display has on each frame
+            def light(frame, region):
+                x0, y0, x1, y1 = region
+                brightness = shot.settings(frame)[1]
+                return pipeline.shown(shot.closed[y0:y1, x0:x1], shot.display, None, brightness, night_shift=shot.night_shift_matrix)
+            self.displays.append(StageDisplay(shot.display, (-self.GAP - width, 0, width, height), shot.scale, "Night Shift", light))
         desktop = shot.log["desktop"]
         others = desktop.get("others") or []
         if others:
@@ -410,6 +439,7 @@ class Stage:
                     tint, brightness = shot.settings(frame, number)
                     return pipeline.shown(encoded[y0:y1, x0:x1], display, tint, brightness)
                 self.displays.append(StageDisplay(display, (sx, sy, sw, sh), other["scale"] / scale, other["name"], light))
+        if len(self.displays) > 1:
             left = min(d.rect[0] for d in self.displays) - self.MARGIN
             top = min(d.rect[1] for d in self.displays) - self.MARGIN
             right = max(d.rect[0] + d.rect[2] for d in self.displays) + self.MARGIN
@@ -453,10 +483,11 @@ class Camera:
     """A pane of a video filming the stage: where it is in the video (left, top, width, height, in
     pixels) and what it films when"""
 
-    def __init__(self, name, spec, bounds, rect=None):
+    def __init__(self, name, spec, bounds, rect=None, label=None):
         self.name = name
         self.size = spec["size"]
         self.rect = rect or (0, 0, *self.size)
+        self.label = label
         self.aspect = self.rect[2] / self.rect[3]
         self.bounds = bounds
         self.keys = [(key["at"], self.view_rect(key), key.get("easing", "easeInOut")) for key in sorted(spec["keys"], key=lambda key: key["at"])]
@@ -466,7 +497,7 @@ class Camera:
         """A video's panes: each of its "panes", or the whole of it"""
         if "panes" not in spec:
             return [cls(name, spec, bounds)]
-        return [cls(name, {"size": spec["size"], "keys": pane["keys"]}, bounds, tuple(pane["rect"])) for pane in spec["panes"]]
+        return [cls(name, {"size": spec["size"], "keys": pane["keys"]}, bounds, tuple(pane["rect"]), pane.get("label")) for pane in spec["panes"]]
 
     def view_rect(self, key):
         """A key's view, in the pane's shape: left, top, width, height. At most the size that takes in the
@@ -511,7 +542,36 @@ def film(shot, cameras, frame):
     for camera in cameras:
         x, y, w, h = camera.rect
         picture[y:y + h, x:x + w] = film_pane(shot, camera, frame)
+        if camera.label:
+            # In the black above the pane, so on no display: light as the display's white gives it
+            lx, ly, ink = label(camera)
+            picture[ly:ly + ink.shape[0], lx:lx + ink.shape[1]] = shot.display.profile.decode(np.repeat(ink[..., None], 3, axis=2))
     return picture
+
+
+LABEL_FONT = "/System/Library/Fonts/SFNS.ttf"
+LABEL_GREY = 0.85
+_labels = {}
+
+
+def label(camera):
+    """A pane's label as Pillow draws it, in SF Pro Medium, its size 6% of the pane's height, light grey
+    over black, centred over the pane, the bottom of its letters 4% of the pane's height above it: where
+    its picture goes in the video (left, top), and its encoded values, 0...1"""
+    key = (camera.label, camera.rect)
+    if key not in _labels:
+        from PIL import ImageDraw, ImageFont
+        x, y, w, h = camera.rect
+        font = ImageFont.truetype(LABEL_FONT, round(h * 0.06))
+        font.set_variation_by_name("Medium")
+        left, top, right, bottom = font.getbbox(camera.label)
+        image = Image.new("L", (right - left, bottom - top))
+        ImageDraw.Draw(image).text((-left, -top), camera.label, font=font, fill=255)
+        lx, ly = x + (w - (right - left)) // 2, y - round(h * 0.04) - (bottom - top)
+        if ly < 0:
+            raise SystemExit(f"No room above the pane for its label \"{camera.label}\"")
+        _labels[key] = (lx, ly, np.asarray(image, np.float64) / 255 * LABEL_GREY)
+    return _labels[key]
 
 
 def film_pane(shot, camera, frame):

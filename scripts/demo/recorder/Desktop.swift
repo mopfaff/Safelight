@@ -43,6 +43,10 @@ struct Desktop {
     /// The desktop with the popover's appearance, as the scene opens: its menu bar, and its wallpaper
     /// unless the recorder was told otherwise
     let image: CGImage
+    /// The same desktop with the popover closed: Safelight's icon without the capsule behind it, for
+    /// another screen beside this one that shows the desktop alone (Night Shift's, in a scene with
+    /// "nightShift")
+    let closed: CGImage
     /// For each appearance, Dark or not, the wallpaper's picture alone, filling the display, and the
     /// menu bar alone, over nothing, for a scene whose appearance changes, as macOS fades the wallpaper
     /// over to its other picture by itself, while the menu bar is redrawn under the screen's picture
@@ -132,10 +136,11 @@ struct Desktop {
     }
 
     /// Writes the desktop as a PNG, in Display P3, and its layers beside it, named after the appearance:
-    /// wallpaper-light.png and menubar-light.png, and the same for dark, and each other display's beside
-    /// it, desktop-<its number>.png
+    /// wallpaper-light.png and menubar-light.png, and the same for dark, the desktop with the popover
+    /// closed, desktop-closed.png, and each other display's beside it, desktop-<its number>.png
     func write(to url: URL) {
         Self.write(image, to: url)
+        Self.write(closed, to: url.deletingLastPathComponent().appendingPathComponent("desktop-closed.png"))
         for other in others {
             Self.write(other.image, to: url.deletingLastPathComponent().appendingPathComponent("desktop-\(other.displayID).png"))
         }
@@ -259,7 +264,8 @@ final class DesktopMaker {
                                         frame: CGRect(x: other.frame.minX - screen.frame.minX, y: screen.frame.maxY - other.frame.maxY, width: other.frame.width, height: other.frame.height),
                                         millimetres: CGDisplayScreenSize(number), scale: other.backingScaleFactor)
         }
-        done?(Desktop(image: image, layers: layers, drawn: draw, size: screen.frame.size, scale: screen.backingScaleFactor, displayID: id, arrowTip: tip, menuBarItems: placed,
+        let closed = drawDesktop(wallpaperIsDark: wallpaperIsDark, menuBar: itemsAlone[isDark] ?? [])
+        done?(Desktop(image: image, closed: closed, layers: layers, drawn: draw, size: screen.frame.size, scale: screen.backingScaleFactor, displayID: id, arrowTip: tip, menuBarItems: placed,
                       millimetres: CGDisplayScreenSize(id), others: others))
     }
 
