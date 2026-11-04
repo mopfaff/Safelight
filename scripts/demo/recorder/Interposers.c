@@ -41,9 +41,13 @@
 
 extern double CACurrentMediaTime(void);
 
-/// The scene's wall clock starts at 21:00 on 21 December 2026 in Central Europe (20:00 UTC), as the
-/// screenshots' does, in seconds since 1970
-static const uint64_t wallClockStart = 1797883200;
+/// What the scene's wall clock reads when its clock reads 0, in seconds since 1970: 21:00 on 21 December
+/// 2026 in Central Europe (20:00 UTC), as the screenshots' does, unless the scene sets its own time of day
+static uint64_t wallClockStart = 1797883200;
+
+void scene_wall_clock_set(uint64_t seconds) {
+    wallClockStart = seconds;
+}
 
 static bool isSet = false;
 static uint64_t sceneTime = 0;

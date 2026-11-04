@@ -412,6 +412,19 @@ struct Log: Encodable {
         let millimetres: [Double]
         /// The Mac's other displays, for a scene with "otherDisplays": true, each with its own desktop
         let others: [OtherDisplay]?
+        /// For a scene with a clock of its own, the menu bar's clock for each minute it shows, which
+        /// menubar-light.png and menubar-dark.png are without
+        let clocks: [MenuBarClock]?
+    }
+
+    struct MenuBarClock: Encodable {
+        /// What it says, as the frames' `menuBarClock` has it
+        let title: String
+        /// Its picture in Light and in Dark, beside the frames (clock/light-0000.png…), and where it goes on
+        /// the desktop: x, y, width, height, in points from its top left
+        let light: String
+        let dark: String
+        let frame: [Double]
     }
 
     struct OtherDisplay: Encodable {
@@ -450,6 +463,11 @@ struct Log: Encodable {
     struct Frame: Encodable {
         let frame: Int
         let time: Double
+        /// For a scene with a clock of its own, how far it's run, in seconds from the first frame, the time
+        /// of day it reads, and what the menu bar's clock says
+        let clockTime: Double?
+        let timeOfDay: String?
+        let menuBarClock: String?
         /// Where the pointer is on the canvas, and whether it's pressed, unless there's none
         let pointer: PointerState?
         /// Each slider's value, which the app has, and the value its knob is drawn at, which follows it
@@ -590,7 +608,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
         if scene.desktop {
             guard scene.canvas == nil, let screen else { fail("A scene on the desktop has its canvas worked out from it, so it can't have one of its own") }
             desktopMaker = DesktopMaker(screen: screen, isDark: isDark, wallpaperIsDark: wallpaperIsDark, wallpaper: wallpaper,
-                                        otherScreens: scene.otherDisplays ? NSScreen.screens.filter { $0 != screen } : [])
+                                        otherScreens: scene.otherDisplays ? NSScreen.screens.filter { $0 != screen } : [], clockTitles: clockTitles())
             desktopMaker?.addSystemItems()
         }
 
@@ -610,6 +628,19 @@ final class Recorder: NSObject, NSApplicationDelegate {
             appDelegate.statusItem?.isVisible = false
             openOnceLoaded()
         }
+    }
+
+    /// What the menu bar's clock says through a scene with a clock of its own, each once, in order; none
+    /// for any other scene, whose clock says 21:00
+    private func clockTitles() -> [String] {
+        guard scene.clock != nil else { return [] }
+        let count = Int((scene.duration * Double(scene.fps)).rounded())
+        var titles: [String] = []
+        for frame in 0..<count {
+            let title = DesktopMaker.clockTitle(at: wallClock(scene.clockTime(at: Double(frame) / Double(scene.fps))))
+            if titles.last != title { titles.append(title) }
+        }
+        return titles
     }
 
     /// The scene's wallpaper: its file, or for one picture for Light and another for Dark, a wallpaper
@@ -694,6 +725,10 @@ final class Recorder: NSObject, NSApplicationDelegate {
 
     private func record(window: NSWindow, host: NSHostingView<MenuView>, arrowTipOnScreen: NSPoint) {
         guard let frameLayer = window.contentView?.superview?.layer else { fail("The popover has no layer to draw") }
+        // With a clock of its own, the wall clock reads the first key's time of day at the first frame
+        if let start = scene.clock?.first?.seconds {
+            scene_wall_clock_set(UInt64(DemoScene.day + start - Self.clockStart))
+        }
         let windowSize = window.frame.size
         // The popover at its largest in the shot, as the canvas has room for it to grow: it's taller while
         // the displays are adjusted independently, so if the scene switches that, its size the other way,
@@ -741,7 +776,12 @@ final class Recorder: NSObject, NSApplicationDelegate {
                                                                size: [other.frame.width, other.frame.height], scale: Int(other.scale),
                                                                frame: [other.frame.minX, other.frame.minY, other.frame.width, other.frame.height],
                                                                millimetres: [other.millimetres.width, other.millimetres.height])
-                                          } : nil)
+                                          } : nil,
+                                          clocks: desktop.clocks.isEmpty ? nil : desktop.clocks.enumerated().map { number, clock in
+                                              Log.MenuBarClock(title: clock.title, light: "clock/" + Desktop.clockPicture(number, isDark: false),
+                                                               dark: "clock/" + Desktop.clockPicture(number, isDark: true),
+                                                               frame: [clock.frame.minX, clock.frame.minY, clock.frame.width, clock.frame.height])
+                                          })
         }
         let windowFrame = CGRect(origin: origin, size: windowSize)
         let canvasOnDesktop = desktopInfo.map { CGRect(x: $0.canvas[0], y: $0.canvas[1], width: $0.canvas[2], height: $0.canvas[3]) }
@@ -802,6 +842,42 @@ final class Recorder: NSObject, NSApplicationDelegate {
         }
         pointer = scene.pointer.map(resolve)
 
+        // With a schedule, the Schedule switch is on as the shot begins, as it's been since some time before:
+        // the keyframes are the Schedule's, and Safelight has set the Mac from them for the time of day the
+        // scene's clock reads at its first frame, which it's set to now. Then its timer sets the Mac every
+        // minute (`minutes`), as it does from when Safelight opens, here from a whole minute.
+        var scheduleTimer: Timer?
+        if let keyframes = scene.schedule {
+            let controller = ColorController.shared
+            do {
+                controller.schedule = try keyframes.enumerated().map { index, keyframe in
+                    guard ["light", "dark"].contains(keyframe.appearance), let id = UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", index)) else {
+                        fail("A keyframe's appearance is light or dark, not \(keyframe.appearance)")
+                    }
+                    return ColorKeyframe(id: id, minute: try keyframe.minute(), isColorFilterOn: keyframe.colorFilter, intensity: Float(keyframe.intensity),
+                                         tint: Float(keyframe.tint), brightness: Float(keyframe.brightness), isDarkAppearance: keyframe.appearance == "dark")
+                }
+            } catch {
+                fail("The scene's schedule: \(error)")
+            }
+            guard let timer = Mirror(reflecting: controller).children.first(where: { $0.label == "timer" })?.value as? Timer, timer.isValid, timer.timeInterval == 60 else {
+                fail("Couldn't find the Schedule's timer, which sets the Mac every minute")
+            }
+            scheduleTimer = timer
+            scene_clock_set(Self.clockNanoseconds(0))
+            controller.isAutoMode = true
+            // Settled, with the switch over and the sliders dimmed
+            host._renderForTest(interval: 0)
+            for _ in 0..<5 {
+                host._renderForTest(interval: 1)
+                SwitchAnimations.render(in: host, interval: 1)
+            }
+            window.displayIfNeeded()
+            guard controller.isAutoMode, !controller.isChangingAppearance, controller.isDarkAppearance == (appearance == "dark") else {
+                fail("The Schedule has the Mac in another appearance than the scene's as it begins")
+            }
+        }
+
         let cursor = NSCursor.arrow
         let displays = Self.activeDisplays()
         var log = Log(scene: name, fps: scene.fps, scale: scale, canvas: [canvasSize.width, canvasSize.height],
@@ -838,13 +914,53 @@ final class Recorder: NSObject, NSApplicationDelegate {
         let actions = scene.actions.sorted { $0.at < $1.at }
         var frame = 0
 
+        /// With a clock of the scene's, which runs faster than the shot, the popover is drawn on the scene's
+        /// clock up to `target` (seconds from the first frame) as the display would have drawn it meanwhile:
+        /// a display frame at a time (1/fps) through the second after anything changed (the Schedule's
+        /// timer, or work on the main queue), longer than any of its animations runs (an AppKit switch's,
+        /// about half a second), then the rest in one go. SwiftUI moves an animation on by less than a long
+        /// interval, so in one step of a minute or so a switch was still half over. Main queue work due
+        /// meanwhile runs at its time. `drawing`, for the frame itself: drawn at `target` even if it's
+        /// been drawn at that time, as the Schedule may have changed something since.
+        var renderedAt = 0.0
+        var animatingUntil = 0.0
+        var drawnOnce = false
+        func advance(to target: Double, drawing: Bool) {
+            let displayFrame = 1 / Double(scene.fps)
+            func step(to time: Double) {
+                let nanoseconds = Self.clockNanoseconds(time)
+                let ran = scene_main_queue_work_run()
+                scene_main_queue_run(nanoseconds)
+                if scene_main_queue_work_run() != ran { animatingUntil = max(animatingUntil, time + 1) }
+                scene_clock_set(nanoseconds)
+                host._renderForTest(interval: drawnOnce ? time - renderedAt : 0)
+                switchFrames += SwitchAnimations.render(in: host, interval: drawnOnce ? time - renderedAt : 0)
+                renderedAt = time
+                drawnOnce = true
+            }
+            while renderedAt + displayFrame < min(target, animatingUntil) - 1e-9 {
+                step(to: renderedAt + displayFrame)
+            }
+            if target > renderedAt || drawing { step(to: target) }
+        }
+
         /// Starts the frame: the actions that start by now, then where the running ones have the
         /// pointer, as the frame's events
         func begin() {
             let time = Double(frame) / Double(scene.fps)
             eventsThisFrame = 0
-            let now = UInt64(((Self.clockStart + time) * 1e9).rounded())
-            // The main queue's work that's due by now first, as the run loop would have run it
+            let now = Self.clockNanoseconds(scene.clockTime(at: time))
+            // The Schedule's timer each minute since the last frame, and the main queue's work that's due
+            // by now, in the order the run loop would have run them, the popover drawn up to each minute
+            if let scheduleTimer, frame > 0 {
+                let previous = Self.clockNanoseconds(scene.clockTime(at: Double(frame - 1) / Double(scene.fps)))
+                for firing in Self.minutes(startingAt: scene.clock?.first?.seconds ?? 0, after: previous, upTo: now) {
+                    advance(to: Double(firing) / 1e9 - Self.clockStart, drawing: false)
+                    scene_clock_set(firing)
+                    scheduleTimer.fire()
+                    animatingUntil = Double(firing) / 1e9 - Self.clockStart + 1
+                }
+            }
             scene_main_queue_run(now)
             scene_clock_set(now)
 
@@ -910,14 +1026,20 @@ final class Recorder: NSObject, NSApplicationDelegate {
         /// Draws the frame and logs it, and moves on to the next
         func finish() {
             let time = Double(frame) / Double(scene.fps)
+            // How far the scene's clock has run, which may be faster than the shot
+            let clock = scene.clockTime(at: time)
             guard window.value(forKey: "hasKeyAppearance") as? Bool == true else { fail("The popover stopped looking key at frame \(frame)") }
 
-            // The frame SwiftUI draws a frame's time later. The run loop isn't run in between: its timers
-            // and SwiftUI's display link would draw at the real time. Work on the main queue is kept
-            // for the scene's clock instead (Interposers.c), and what's due by now runs first.
+            // The frame SwiftUI draws a frame's time later on the scene's clock. The run loop isn't run in
+            // between: its timers and SwiftUI's display link would draw at the real time. Work on the main
+            // queue is kept for the scene's clock instead (Interposers.c), and what's due by now runs first.
             scene_main_queue_run(scene_clock_now())
-            host._renderForTest(interval: frame == 0 ? 0 : 1 / Double(scene.fps))
-            switchFrames += SwitchAnimations.render(in: host, interval: frame == 0 ? 0 : 1 / Double(scene.fps))
+            if scene.clock == nil {
+                host._renderForTest(interval: frame == 0 ? 0 : 1 / Double(scene.fps))
+                switchFrames += SwitchAnimations.render(in: host, interval: frame == 0 ? 0 : 1 / Double(scene.fps))
+            } else {
+                advance(to: clock, drawing: true)
+            }
             window.displayIfNeeded()
             // The popover's window grows and shrinks with what's in it, from its top, where its arrow is
             if window.frame.size != windowNow.size {
@@ -930,7 +1052,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
             // The desktop behind the glass as it is now, in layers once it's changed
             var desktopState: Log.DesktopState?
             if desktop != nil {
-                let state = Log.DesktopState(wallpaper: AppearanceTransition.wallpaper(at: time, from: startingDesktop.wallpaper), menuBar: menuBarIsDark ? "dark" : "light")
+                let state = Log.DesktopState(wallpaper: AppearanceTransition.wallpaper(at: clock, from: startingDesktop.wallpaper), menuBar: menuBarIsDark ? "dark" : "light")
                 if state != startingDesktop || desktopInLayers {
                     renderer.showDesktop(dark: state.wallpaper, menuBarIsDark: menuBarIsDark)
                     desktopInLayers = true
@@ -938,11 +1060,11 @@ final class Recorder: NSObject, NSApplicationDelegate {
                 desktopState = state
             }
             let screenPicture = AppearanceTransition.all.last.flatMap { transition in
-                let opacity = transition.pictureOpacity(at: time)
+                let opacity = transition.pictureOpacity(at: clock)
                 return opacity > 0 ? Log.ScreenPicture(frame: transition.snapshotFrame, opacity: opacity) : nil
             }
             let popoverAppearance = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? "dark" : "light"
-            var pixels = renderer.draw(frameLayer, at: time)
+            var pixels = renderer.draw(frameLayer, at: clock)
             // On the desktop, scripts/demo/compose.py draws the pointer, over the window server's shadow,
             // and wherever it is on the desktop
             guard let image = Self.image(&pixels, width: renderer.width, height: renderer.height, pointer: scene.desktop ? nil : pointer, cursor: cursor,
@@ -963,6 +1085,8 @@ final class Recorder: NSObject, NSApplicationDelegate {
             let controller = ColorController.shared
             log.frames.append(Log.Frame(
                 frame: frame, time: time,
+                clockTime: scene.clock == nil ? nil : clock, timeOfDay: scene.clock == nil ? nil : Self.timeOfDay(clock, startingAt: scene.clock?.first?.seconds ?? 0),
+                menuBarClock: scene.clock == nil ? nil : DesktopMaker.clockTitle(at: wallClock(clock)),
                 pointer: pointer.map { Log.PointerState(x: $0.x, y: $0.y, pressed: isPressed) },
                 sliders: sliders,
                 app: Log.App(isColorFilterOn: controller.isColorFilterOn, tint: Double(controller.tint), intensity: Double(controller.intensity),
@@ -1043,6 +1167,39 @@ final class Recorder: NSObject, NSApplicationDelegate {
 
     /// When the scene starts on the clock its mouse events are timed by, in seconds
     static let clockStart: TimeInterval = 1000
+
+    /// The scene's clock, as Interposers.c gives it, `clock` seconds after the first frame, in nanoseconds
+    static func clockNanoseconds(_ clock: Double) -> UInt64 {
+        UInt64(((clockStart + clock) * 1e9).rounded())
+    }
+
+    /// What the wall clock reads `clock` seconds after the first frame, with a scene clock of its own
+    private func wallClock(_ clock: Double) -> Date {
+        Date(timeIntervalSince1970: DemoScene.day + (scene.clock?.first?.seconds ?? 0) + clock)
+    }
+
+    /// The time of day `clock` seconds after a first frame at `start` seconds after midnight: HH:MM:SS.sss
+    static func timeOfDay(_ clock: Double, startingAt start: Double) -> String {
+        let milliseconds = Int(((start + clock) * 1000).rounded()) % 86_400_000
+        return String(format: "%02d:%02d:%02d.%03d", milliseconds / 3_600_000, milliseconds / 60_000 % 60, milliseconds / 1000 % 60, milliseconds % 1000)
+    }
+
+    /// When the Schedule's timer fires between two frames, after `previous` and up to `now` on the scene's
+    /// clock, in nanoseconds, with the first frame at `start` seconds after midnight: on each whole minute
+    /// of the time of day, as if Safelight had opened on one
+    static func minutes(startingAt start: Double, after previous: UInt64, upTo now: UInt64) -> [UInt64] {
+        let minute: Int64 = 60_000_000_000
+        let base = Int64(clockNanoseconds(0))
+        // The time of day at the first frame, which is on a whole second
+        let dayStart = Int64(start) * 1_000_000_000
+        var next = (dayStart + Int64(previous) - base) / minute + 1
+        var firings: [UInt64] = []
+        while next * minute - dayStart + base <= Int64(now) {
+            firings.append(UInt64(next * minute - dayStart + base))
+            next += 1
+        }
+        return firings
+    }
 
     // MARK: Checking
 

@@ -67,6 +67,10 @@ struct Desktop {
     let millimetres: CGSize
     /// The other displays, drawn as their desktops show, if they were asked for
     let others: [OtherDesktop]
+    /// For a scene with a clock of its own, the menu bar's clock for each minute it shows, in Light and in
+    /// Dark, and where it goes, in points from the display's top left; the desktop's pictures are then
+    /// without it
+    let clocks: [(title: String, light: CGImage, dark: CGImage, frame: CGRect)]
 
     /// Another display's desktop: where it is as the displays are arranged, in points from the top left of
     /// the popover's display, its size in millimetres, and its pixels to the point
@@ -149,6 +153,19 @@ struct Desktop {
             Self.write(layers.wallpaper, to: folder.appendingPathComponent("wallpaper-\(isDark ? "dark" : "light").png"))
             Self.write(layers.menuBar, to: folder.appendingPathComponent("menubar-\(isDark ? "dark" : "light").png"))
         }
+        if !clocks.isEmpty {
+            let folder = url.deletingLastPathComponent().appendingPathComponent("clock")
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            for (number, clock) in clocks.enumerated() {
+                Self.write(clock.light, to: folder.appendingPathComponent(Self.clockPicture(number, isDark: false)))
+                Self.write(clock.dark, to: folder.appendingPathComponent(Self.clockPicture(number, isDark: true)))
+            }
+        }
+    }
+
+    /// The name of the clock's picture number `number`, in Dark or not, in the clock folder beside the frames
+    static func clockPicture(_ number: Int, isDark: Bool) -> String {
+        String(format: "%@-%04d.png", isDark ? "dark" : "light", number)
     }
 
     private static func write(_ image: CGImage, to url: URL) {
@@ -166,23 +183,27 @@ final class DesktopMaker {
     private let wallpaperIsDark: Bool
     private let wallpaper: URL
     private let otherScreens: [NSScreen]
+    /// What the menu bar's clock says through the shot, for a scene with a clock of its own
+    private let clockTitles: [String]
     private var systemItems: [NSStatusItem] = []
     private var safelightItem: NSStatusItem?
     private var done: ((Desktop) -> Void)?
 
     /// The desktop as it is in Dark or not, with the wallpaper's picture for Dark or not, and the same on
-    /// each of `otherScreens`
-    init(screen: NSScreen, isDark: Bool, wallpaperIsDark: Bool, wallpaper: URL, otherScreens: [NSScreen] = []) {
+    /// each of `otherScreens`; with `clockTitles`, the menu bar's clock as it says each, apart
+    init(screen: NSScreen, isDark: Bool, wallpaperIsDark: Bool, wallpaper: URL, otherScreens: [NSScreen] = [], clockTitles: [String] = []) {
         self.screen = screen
         self.isDark = isDark
         self.wallpaperIsDark = wallpaperIsDark
         self.wallpaper = wallpaper
         self.otherScreens = otherScreens
+        self.clockTitles = clockTitles
+        if !clockTitles.isEmpty && !otherScreens.isEmpty { fail("Other displays' menu bars have no clock of the scene's") }
     }
 
     /// The stand-ins, made before Safelight opens, as each new item goes to the left of the ones before
     func addSystemItems() {
-        systemItems = Self.makeSystemItems()
+        systemItems = Self.makeSystemItems(clock: clockTitles.first)
     }
 
     /// Draws the desktop once the menu bar has laid out the stand-ins and `safelightItem`, then takes
@@ -238,6 +259,30 @@ final class DesktopMaker {
             menuBars[isDark] = images.dropLast() + [highlight, safelight]
             itemsAlone[isDark] = images
         }
+        // With a clock of the scene's, the clock as it says each minute of the shot, in its place, and the
+        // desktop without it. Its digits are all as wide (as macOS's own clock's are), so it's as wide
+        // whatever the time, and it stays in its place, its button drawing each title.
+        var clocks: [(title: String, light: CGImage, dark: CGImage, frame: CGRect)] = []
+        if !clockTitles.isEmpty {
+            let clock = items[0]
+            guard let button = clock.button else { fail("The clock's stand-in has no button") }
+            let width = button.frame.width
+            for title in clockTitles {
+                button.title = title
+                guard button.frame.width == width else { fail("The clock's stand-in is \(button.frame.width) points wide saying \(title), not \(width)") }
+                let offset = CGVector(dx: places[0].minX - frames[0].minX, dy: places[0].minY - frames[0].minY)
+                guard let light = Self.menuBarImage(of: clock, movedBy: offset, isDark: false), let dark = Self.menuBarImage(of: clock, movedBy: offset, isDark: true),
+                      light.frame == dark.frame, let lightP3 = Self.inDisplayP3(light.image), let darkP3 = Self.inDisplayP3(dark.image) else {
+                    fail("Couldn't draw the clock saying \(title)")
+                }
+                clocks.append((title, lightP3, darkP3, CGRect(x: light.frame.minX - screen.frame.minX, y: screen.frame.maxY - light.frame.maxY,
+                                                              width: light.frame.width, height: light.frame.height)))
+            }
+            for isDark in [false, true] {
+                menuBars[isDark]?.removeFirst()
+                itemsAlone[isDark]?.removeFirst()
+            }
+        }
         for item in systemItems { NSStatusBar.system.removeStatusItem(item) }
         systemItems = []
         safelightItem?.isVisible = false
@@ -266,7 +311,7 @@ final class DesktopMaker {
         }
         let closed = drawDesktop(wallpaperIsDark: wallpaperIsDark, menuBar: itemsAlone[isDark] ?? [])
         done?(Desktop(image: image, closed: closed, layers: layers, drawn: draw, size: screen.frame.size, scale: screen.backingScaleFactor, displayID: id, arrowTip: tip, menuBarItems: placed,
-                      millimetres: CGDisplayScreenSize(id), others: others))
+                      millimetres: CGDisplayScreenSize(id), others: others, clocks: clocks))
     }
 
     private static func number(of screen: NSScreen) -> CGDirectDisplayID? {
@@ -359,6 +404,15 @@ final class DesktopMaker {
         context.draw(picture, in: CGRect(x: (CGFloat(width) - size.width) / 2, y: (CGFloat(height) - size.height) / 2, width: size.width, height: size.height))
     }
 
+    /// A menu bar item's picture drawn into Display P3 at its own size, as the desktop's menu bar is drawn
+    private static func inDisplayP3(_ image: CGImage) -> CGImage? {
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.displayP3),
+              let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return context.makeImage()
+    }
+
     /// How far from the left a picture's last column with anything drawn in it ends, in pixels
     private static func inkRight(of image: CGImage) -> CGFloat? {
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
@@ -375,20 +429,43 @@ final class DesktopMaker {
     // MARK: As scripts/screenshots/main.swift draws the menu bar
 
     /// Wi-Fi, Spotlight, Control Center and the clock, as on a new Mac, from right to left. The clock
-    /// says 21:00, as FixedTime.swift does, on a day of its own, so the picture is the same every day.
-    private static func makeSystemItems() -> [NSStatusItem] {
+    /// says 21:00, as FixedTime.swift does, on a day of its own, so the picture is the same every day;
+    /// or for a scene with a clock of its own, `clock`, with all its digits as wide, as macOS's own clock
+    /// has them (its digits change in place as the minutes go by, the rest of it staying put: measured
+    /// in captures of the menu bar on 4 November 2026, where 10:41's glyphs were where SF's monospaced
+    /// digits put them, and not its proportional ones, which the clock in other scenes has)
+    private static func makeSystemItems(clock title: String?) -> [NSStatusItem] {
         let date = DateComponents(calendar: .current, year: 2026, month: 12, day: 21, hour: 21).date ?? Date()
-        let dayFormatter = DateFormatter(), timeFormatter = DateFormatter()
-        dayFormatter.setLocalizedDateFormatFromTemplate("EEEdMMM")
-        timeFormatter.setLocalizedDateFormatFromTemplate("jmm")
         let clock = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        clock.button?.title = dayFormatter.string(from: date) + "  " + timeFormatter.string(from: date)
+        if let title {
+            clock.button?.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize, weight: .regular)
+            clock.button?.title = title
+        } else {
+            clock.button?.title = clockTitle(at: date)
+        }
         return [clock] + ["switch.2", "magnifyingglass", "wifi"].map { symbol in
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             item.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
             return item
         }
     }
+
+    /// What the menu bar's clock says at `date`: the day and the time, as macOS's says them by default
+    static func clockTitle(at date: Date) -> String {
+        dayFormatter.string(from: date) + "  " + timeFormatter.string(from: date)
+    }
+
+    private static let dayFormatter = { () -> DateFormatter in
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("EEEdMMM")
+        return formatter
+    }()
+
+    private static let timeFormatter = { () -> DateFormatter in
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("jmm")
+        return formatter
+    }()
 
     /// A menu bar item as the menu bar shows it, in Dark or Light, and where on screen, `movedBy` so much.
     /// Its button draws itself, its window moved onto the Retina display while it does.

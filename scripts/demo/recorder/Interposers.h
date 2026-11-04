@@ -5,6 +5,10 @@
 /// timestamps are in (CLOCK_UPTIME_RAW), a little later for each read
 void scene_clock_set(uint64_t nanoseconds);
 
+/// What the wall clock (CLOCK_REALTIME, gettimeofday, CFAbsoluteTimeGetCurrent) reads on the main thread
+/// when the scene's clock reads 0, in seconds since 1970
+void scene_wall_clock_set(uint64_t seconds);
+
 /// How many clock reads on the main thread have given the scene's time
 unsigned long scene_clock_readings(void);
 

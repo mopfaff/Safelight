@@ -19,6 +19,8 @@
 #      change began, fading out: the screen as it was on the frame drawn last before.
 #      The popover's window grows and shrinks with what's in it (log.json's "window" on each frame), and
 #      what the window server draws round it is taken for each of its sizes.
+#      In a scene with a clock of its own, the menu bar's clock says the time of day on each frame: its
+#      picture for that minute (clock/), in the menu bar's appearance, over the menu bar, which is without it.
 #   2. pipeline.shown() turns the whole screen into the light the display gives off with that frame's
 #      settings, as log.json has them: Color Tint's hue and intensity, and the display's brightness.
 #      For a scene with "otherDisplays": true, the Mac's other displays are on the stage as well, each
@@ -46,6 +48,10 @@
 #                               needs, a line for each: the popover's appearance, the wallpaper's picture
 #                               under it, and YES or NO, whether the displays are adjusted independently,
 #                               which sets the popover's size (make-demo.sh takes them)
+#   compose.py schedule <scene> for a scene with a schedule: the settings Safelight has on each frame against
+#                               the schedule's for the minute its clock reads, worked out here as ColorKeyframe
+#                               does, and against each keyframe's own at its time; what it has set the Mac to,
+#                               within what it leaves unwritten; and when the appearance changes over
 #   compose.py hues <scene>     for a scene that moves Tint: the masters' desktop, decoded, at red, yellow,
 #                               green, cyan, blue and magenta, against pipeline.shown() with MediaAccessibility's
 #                               matrix for the Tint slider's value on each of those frames
@@ -252,7 +258,19 @@ class Shot:
         # The desktop as one picture while it and the popover's appearance don't change, as recorded before
         # scenes could change the appearance; in layers otherwise (desktop_state)
         states = {(f["popover"], f["desktop"]["wallpaper"], f["desktop"]["menuBar"]) if "desktop" in f else None for f in frames}
-        self.layered = len(states) > 1
+        # The menu bar's clock for each minute, with a clock of the scene's: its pictures in Light and Dark,
+        # matched to the display's colours with their alpha, and where it goes, in pixels
+        self.clocks = {}
+        for clock in desktop.get("clocks") or []:
+            pictures = []
+            for appearance in ("light", "dark"):
+                pixels, icc = read_png(self.folder / clock[appearance])
+                pictures.append(np.dstack([to_display(pixels[..., :3], icc, self.display), pixels[..., 3:]]))
+            frame = [round(v * self.scale) for v in clock["frame"]]
+            if pictures[0].shape[:2] != (frame[3], frame[2]):
+                raise SystemExit(f"{clock['light']} isn't the size of its place in the menu bar")
+            self.clocks[clock["title"]] = (dict(zip(("light", "dark"), pictures)), frame)
+        self.layered = len(states) > 1 or bool(self.clocks)
         self.layers = {}
         # What the window server draws round the popover, for each appearance and size it has, and its
         # picture of the popover's edge over each picture of the wallpaper under it
@@ -342,7 +360,16 @@ class Shot:
         light_wallpaper, dark_wallpaper = self.layers["light"][0][y0:y1, x0:x1], self.layers["dark"][0][y0:y1, x0:x1]
         wallpaper = light_wallpaper if dark == 0 else dark_wallpaper if dark == 1 else (1 - dark) * light_wallpaper + dark * dark_wallpaper
         menu_bar = self.layers[state["menuBar"]][1][y0:y1, x0:x1]
-        return menu_bar[..., :3] * menu_bar[..., 3:] + (1 - menu_bar[..., 3:]) * wallpaper
+        desktop = menu_bar[..., :3] * menu_bar[..., 3:] + (1 - menu_bar[..., 3:]) * wallpaper
+        # The clock as it says the frame's time, over what's under it, in the menu bar's appearance
+        if title := self.log["frames"][frame].get("menuBarClock"):
+            pictures, (cx, cy, cw, ch) = self.clocks[title]
+            ix0, iy0, ix1, iy1 = max(x0, cx), max(y0, cy), min(x1, cx + cw), min(y1, cy + ch)
+            if ix0 < ix1 and iy0 < iy1:
+                clock = pictures[state["menuBar"]][iy0 - cy:iy1 - cy, ix0 - cx:ix1 - cx]
+                under = desktop[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0]
+                desktop[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0] = clock[..., :3] * clock[..., 3:] + (1 - clock[..., 3:]) * under
+        return desktop
 
     def ring(self, frame):
         """The window server's picture of the popover's edge on `frame`, for its appearance and size: over
@@ -865,6 +892,100 @@ def hues(scene, folder, size=40):
                   f"most off {diff.max():.0f} levels, mean {diff.mean():.2f}; a square {theirs[0].astype(int)} made, {ours[0].astype(int)} decoded")
 
 
+def schedule_settings(keyframes, minute):
+    """The settings a schedule has reached `minute` minutes after midnight, worked out as Safelight's
+    ColorKeyframe.settings(in:at:) does, in its single-precision floats: intensity (0 where the filter's off),
+    tint, brightness and whether it's Dark, from the scene's keyframes"""
+    f = np.float32
+    frames = sorted(({"minute": int(k["time"][:2]) * 60 + int(k["time"][3:5]), **k} for k in keyframes), key=lambda k: k["minute"])
+    start_index = max((i for i, k in enumerate(frames) if k["minute"] <= minute), default=None)
+    start = frames[start_index if start_index is not None else -1]
+    end = frames[((start_index if start_index is not None else -1) + 1) % len(frames)]
+    start_minute = float(start["minute"]) - (1440 if start_index is None else 0)
+    end_minute = float(end["minute"])
+    if end_minute <= start_minute:
+        end_minute += 1440
+    progress = f((minute - start_minute) / (end_minute - start_minute))
+    start_tint = f(start["tint"]) if start["colorFilter"] or not end["colorFilter"] else f(end["tint"])
+    end_tint = f(end["tint"]) if end["colorFilter"] or not start["colorFilter"] else f(start["tint"])
+    change = f(np.fmod(f(end_tint - start_tint), f(360)))
+    if change > 180:
+        change = f(change - f(360))
+    elif change < -180:
+        change = f(change + f(360))
+    tint = f(np.fmod(f(start_tint + f(change * progress)), f(360)))
+    if tint < 0:
+        tint = f(tint + f(360))
+    start_intensity = f(start["intensity"]) if start["colorFilter"] else f(0)
+    end_intensity = f(end["intensity"]) if end["colorFilter"] else f(0)
+    intensity = f(start_intensity + f(f(end_intensity - start_intensity) * progress))
+    brightness = f(f(start["brightness"]) + f(f(f(end["brightness"]) - f(start["brightness"])) * progress))
+    return intensity, tint, brightness, start["appearance"] == "dark"
+
+
+def check_schedule(scene, folder):
+    """Safelight's settings on each frame of a scene with a schedule against the schedule's for the minute
+    the clock reads then (its timer sets them on each whole minute), worked out as Safelight does
+    (schedule_settings); what it has set the Mac to, which it only writes when it's changed by more than
+    a little (Color Tint by 0.0001, the brightness by 0.001); each keyframe's own settings on the frame
+    its minute is reached; and the appearance: the app's from the keyframe's minute, the system's from
+    when the change is posted (AppearanceTransition.swift) """
+    folder = Path(folder) if folder else BUILD / scene
+    spec = json.loads((SCENES / f"{scene}.json").read_text())
+    log = json.loads((folder / "log.json").read_text())
+    keyframes = spec.get("schedule")
+    if not keyframes or "clock" not in spec:
+        raise SystemExit(f"{scene} has no schedule and clock of its own")
+    display = log["desktop"]["display"]
+    low = np.float32(0.25)
+    worst = collections.defaultdict(float)
+    reached = {}
+    switches = []
+    last_dark = None
+    for record in log["frames"]:
+        hours, minutes, seconds = record["timeOfDay"].split(":")
+        minute = int(hours) * 60 + int(minutes)
+        intensity, tint, brightness, dark = schedule_settings(keyframes, minute)
+        on = intensity >= low
+        app, system = record["app"], record["system"]
+        expected = {"intensity": float(min(max(intensity, low), np.float32(1))), "tint": float(tint), "brightness": float(brightness)}
+        for name, value in expected.items():
+            worst["app " + name] = max(worst["app " + name], abs(app[name] - value))
+        if app["isColorFilterOn"] != bool(on) or app["isDarkAppearance"] != dark:
+            raise SystemExit(f"Frame {record['frame']} ({record['timeOfDay']}): the app has the filter {'on' if app['isColorFilterOn'] else 'off'} "
+                             f"and {'Dark' if app['isDarkAppearance'] else 'Light'}, the schedule {'on' if on else 'off'} and {'Dark' if dark else 'Light'}")
+        if system["colorFilter"] != bool(on):
+            raise SystemExit(f"Frame {record['frame']} ({record['timeOfDay']}): the Mac has the filter {'on' if system['colorFilter'] else 'off'}")
+        worst["system hue"] = max(worst["system hue"], abs(system["hue"] - float(np.float32(tint / np.float32(360)))))
+        worst["system intensity"] = max(worst["system intensity"], abs(system["intensity"] - expected["intensity"]))
+        shown = next(d["brightness"] for d in system["displays"] if d["id"] == display)
+        worst["system brightness"] = max(worst["system brightness"], abs(shown - expected["brightness"]))
+        for keyframe in keyframes:
+            if keyframe["time"] == f"{hours}:{minutes}" and keyframe["time"] not in reached:
+                reached[keyframe["time"]] = (record, keyframe)
+        if system["appearance"] != last_dark:
+            switches.append((record["frame"], record["timeOfDay"], system["appearance"]))
+            last_dark = system["appearance"]
+    print(f"{scene}: {len(log['frames'])} frames from {log['frames'][0]['timeOfDay']} to {log['frames'][-1]['timeOfDay']}, against the schedule's settings for each minute:")
+    limits = {"app intensity": 1e-6, "app tint": 1e-4, "app brightness": 1e-6, "system hue": 1e-4, "system intensity": 1e-4, "system brightness": 1e-3}
+    for name, value in worst.items():
+        print(f"  {name}: most off {value:.2g}{'' if value <= limits[name] else '  TOO FAR'}")
+    for time, (record, keyframe) in sorted(reached.items()):
+        app, system = record["app"], record["system"]
+        shown = next(d["brightness"] for d in system["displays"] if d["id"] == display)
+        exact = (app["isColorFilterOn"] == keyframe["colorFilter"] and app["tint"] == float(np.float32(keyframe["tint"]))
+                 and app["brightness"] == float(np.float32(keyframe["brightness"])) and app["isDarkAppearance"] == (keyframe["appearance"] == "dark")
+                 and (not keyframe["colorFilter"] or app["intensity"] == float(np.float32(keyframe["intensity"]))))
+        print(f"  keyframe {time} reached on frame {record['frame']} ({record['time']:.3f} s into the shot, {record['timeOfDay']}): "
+              f"app {'on' if app['isColorFilterOn'] else 'off'} {app['intensity']:.4f} {app['tint']:.2f}° {app['brightness']:.4f} {'Dark' if app['isDarkAppearance'] else 'Light'}, "
+              f"Mac hue {system['hue'] * 360:.2f}° {system['intensity']:.4f} brightness {shown:.4f} {system['appearance']}: "
+              f"{'the keyframe exactly' if exact else 'NOT the keyframe'}")
+    for frame, time, appearance in switches[1:]:
+        print(f"  the Mac's appearance {appearance} from frame {frame} ({time})")
+    if any(value > limits[name] for name, value in worst.items()):
+        raise SystemExit("Safelight's settings are off the schedule's")
+
+
 def Foundation_url(path):
     import Foundation
     return Foundation.NSURL.fileURLWithPath_(str(path))
@@ -885,7 +1006,7 @@ def pixel_buffer(buffer):
 
 def main():
     parser = argparse.ArgumentParser(description="Makes a recorded demo shot's videos.")
-    parser.add_argument("command", nargs="?", choices=["check", "verify", "hues", "needs"])
+    parser.add_argument("command", nargs="?", choices=["check", "verify", "hues", "needs", "schedule"])
     parser.add_argument("scene")
     parser.add_argument("--folder", help="where the recording is, and the videos go: build/demo/<scene>/ unless given")
     parser.add_argument("--workers", type=int, default=min(multiprocessing.cpu_count(), 8))
@@ -896,6 +1017,8 @@ def main():
         verify(args.scene, args.folder)
     elif args.command == "hues":
         hues(args.scene, args.folder)
+    elif args.command == "schedule":
+        check_schedule(args.scene, args.folder)
     elif args.command == "needs":
         log = Shot.__new__(Shot)
         log.log = json.loads(((Path(args.folder) if args.folder else BUILD / args.scene) / "log.json").read_text())

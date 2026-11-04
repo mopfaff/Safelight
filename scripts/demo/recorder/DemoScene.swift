@@ -32,8 +32,15 @@ struct DemoScene: Decodable {
     /// Where the pointer is to begin with, or nowhere (no pointer is drawn) if left out
     var pointer: Place?
     var actions: [Action] = []
+    /// The Schedule's keyframes, with the Schedule switch on as the shot begins, so Safelight sets the
+    /// Mac from them as the time of day moves on (`clock`); left out, the Schedule is off and its own
+    var schedule: [Keyframe]?
+    /// The time of day through the shot, which every clock on the main thread gives, the wall clock and
+    /// the one the main queue and animations run on (Interposers.c), so time can run faster than it does
+    /// in the shot; left out, it runs as the shot does, from 21:16:40
+    var clock: [ClockKey]?
 
-    private enum Keys: String, CodingKey { case about, fps, duration, appearance, accentColor, language, locale, canvas, desktop, otherDisplays, settings, pointer, actions }
+    private enum Keys: String, CodingKey { case about, fps, duration, appearance, accentColor, language, locale, canvas, desktop, otherDisplays, settings, pointer, actions, schedule, clock }
 
     init(from decoder: Decoder) throws {
         let keys = try decoder.container(keyedBy: Keys.self)
@@ -50,6 +57,103 @@ struct DemoScene: Decodable {
         settings = try keys.decode(Settings.self, forKey: .settings)
         pointer = try keys.decodeIfPresent(Place.self, forKey: .pointer)
         actions = try keys.decodeIfPresent([Action].self, forKey: .actions) ?? actions
+        schedule = try keys.decodeIfPresent([Keyframe].self, forKey: .schedule)
+        clock = try keys.decodeIfPresent([ClockKey].self, forKey: .clock)
+        if let clock {
+            guard clock.first?.at == 0, let last = clock.last, last.at >= duration, zip(clock, clock.dropFirst()).allSatisfy({ $0.at < $1.at }) else {
+                throw DecodingError.dataCorruptedError(forKey: .clock, in: keys, debugDescription: "The clock's keys go from 0 to the shot's end, one after another")
+            }
+            guard clock[0].seconds == clock[0].seconds.rounded() else {
+                throw DecodingError.dataCorruptedError(forKey: .clock, in: keys, debugDescription: "The clock starts on a whole second")
+            }
+            guard actions.isEmpty else {
+                throw DecodingError.dataCorruptedError(forKey: .clock, in: keys, debugDescription: "A shot with a clock of its own has nothing for the pointer to do, as its events are timed by the shot")
+            }
+        } else if schedule != nil {
+            throw DecodingError.dataCorruptedError(forKey: .schedule, in: keys, debugDescription: "A shot with a schedule has a clock of its own, for the time of day the Schedule follows")
+        }
+    }
+
+    /// A keyframe of the Schedule, as its row in the Schedule window has it: the time of day it's
+    /// reached ("19:30"), the Color filters switch, Intensity (0.25...1), Tint (degrees), Brightness
+    /// and Appearance ("light" or "dark")
+    struct Keyframe: Decodable {
+        var time: String
+        var colorFilter: Bool
+        var intensity: Double
+        var tint: Double
+        var brightness: Double
+        var appearance: String
+
+        /// Minutes after midnight
+        func minute() throws -> Int {
+            let seconds = try ClockKey.secondsOfDay(time)
+            guard seconds.truncatingRemainder(dividingBy: 60) == 0, seconds < 86400 else {
+                throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "A keyframe's time is a minute of the day, not \(time)"))
+            }
+            return Int(seconds / 60)
+        }
+    }
+
+    /// A time of day the clock reads `at` a time in the shot ("20:30", "20:30:03" or "20:30:03.5", on 21
+    /// December 2026, as the menu bar's clock has it in every shot, in the Mac's time zone; a time
+    /// earlier than the key before's is the next day's). From the key before, it gets there along
+    /// `easing`'s curve, linear unless given, so the clock runs as fast as the time between them over
+    /// the shot's: in step with the shot where they're as far apart, faster where they're further.
+    struct ClockKey: Decodable {
+        var at: Double
+        var time: String
+        var easing: Easing = .linear
+        /// Seconds after the midnight that starts the scene's day
+        let seconds: Double
+
+        private enum Keys: String, CodingKey { case at, time, easing }
+
+        init(from decoder: Decoder) throws {
+            let keys = try decoder.container(keyedBy: Keys.self)
+            at = try keys.decode(Double.self, forKey: .at)
+            time = try keys.decode(String.self, forKey: .time)
+            easing = try keys.decodeIfPresent(Easing.self, forKey: .easing) ?? easing
+            seconds = try Self.secondsOfDay(time)
+        }
+
+        /// "HH:MM", "HH:MM:SS" or "HH:MM:SS.s…" as seconds after midnight
+        static func secondsOfDay(_ time: String) throws -> Double {
+            let parts = time.split(separator: ":").map(String.init)
+            guard (2...3).contains(parts.count), let hours = Int(parts[0]), let minutes = Int(parts[1]), (0..<24).contains(hours), (0..<60).contains(minutes) else {
+                throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "\(time) isn't a time of day, HH:MM or HH:MM:SS"))
+            }
+            let seconds = parts.count == 3 ? Double(parts[2]) : 0
+            guard let seconds, (0..<60).contains(seconds) else {
+                throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "\(time) isn't a time of day, HH:MM or HH:MM:SS"))
+            }
+            return Double(hours * 3600 + minutes * 60) + seconds
+        }
+    }
+
+    /// The scene's day: 21 December 2026, as the menu bar's clock has it in every shot, at midnight in
+    /// the Mac's time zone, in seconds since 1970
+    static let day: Double = {
+        guard let midnight = DateComponents(calendar: Calendar.current, year: 2026, month: 12, day: 21).date else { fatalError("There's no 21 December 2026") }
+        return midnight.timeIntervalSince1970
+    }()
+
+    /// How far the clock has run `time` into the shot, in seconds from its first frame, with a clock of
+    /// its own: from the first key's time of day to the time it reads then. Without, the shot's time.
+    func clockTime(at time: Double) -> Double {
+        guard let clock else { return time }
+        // Each key's time of day, a day later for one that's earlier than the key before's
+        var times: [Double] = []
+        for key in clock {
+            var seconds = key.seconds
+            while let last = times.last, seconds < last { seconds += 86400 }
+            times.append(seconds)
+        }
+        guard let later = clock.indices.first(where: { clock[$0].at > time }) else { return times[times.count - 1] - times[0] }
+        if later == 0 { return 0 }
+        let (from, to) = (clock[later - 1], clock[later])
+        let progress = to.easing((time - from.at) / (to.at - from.at))
+        return times[later - 1] + (times[later] - times[later - 1]) * progress - times[0]
     }
 
     struct Canvas: Decodable {

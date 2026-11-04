@@ -1,0 +1,55 @@
+{
+  "about": "A day's evening on Safelight's Schedule as a timelapse, from 17:15 to 22:45: the screen plain white in the afternoon, then from 17:30 warmer and dimmer, the color filter coming on in amber at 18:25 and deepening to orange, the switch to Dark at 20:30, played in real time as macOS fades the screen and dissolves the wallpaper, and a deep, dim red by 22:30. Safelight's own schedule code sets every minute from its own timer; the menu bar's clock shows the time",
+  "fps": 60,
+  "duration": 11.3,
+  "appearance": "light",
+  "accentColor": "blue",
+  "language": "en-US",
+  "locale": "en_GB",
+  "desktop": true,
+  "settings": {
+    "colorFilter": false,
+    "tint": 25,
+    "intensity": 0.25,
+    "brightness": 1,
+    "wallpaper": {
+      "light": "/System/Library/Desktop Pictures/.wallpapers/Sonoma Horizon/Sonoma Horizon.heic",
+      "dark": "/System/Library/Desktop Pictures/Sonoma.heic"
+    }
+  },
+  "schedule": [
+    { "time": "06:30", "colorFilter": true, "intensity": 1, "tint": 0, "brightness": 0.4, "appearance": "dark" },
+    { "time": "07:00", "colorFilter": false, "intensity": 0.55, "tint": 25, "brightness": 1, "appearance": "light" },
+    { "time": "17:30", "colorFilter": false, "intensity": 0.55, "tint": 25, "brightness": 1, "appearance": "light" },
+    { "time": "19:30", "colorFilter": true, "intensity": 0.55, "tint": 25, "brightness": 0.8, "appearance": "light" },
+    { "time": "20:30", "colorFilter": true, "intensity": 0.75, "tint": 15, "brightness": 0.65, "appearance": "dark" },
+    { "time": "22:30", "colorFilter": true, "intensity": 1, "tint": 0, "brightness": 0.4, "appearance": "dark" }
+  ],
+  "clock": [
+    { "at": 0, "time": "17:15" },
+    { "at": 2.0, "time": "18:30" },
+    { "at": 4.2, "time": "20:18" },
+    { "at": 4.8, "time": "20:30", "easing": "easeOut" },
+    { "at": 7.8, "time": "20:30:03" },
+    { "at": 8.5, "time": "20:48", "easing": "easeIn" },
+    { "at": 10.8, "time": "22:30" },
+    { "at": 11.3, "time": "22:45" }
+  ],
+  "camera": {
+    "16:9": {
+      "size": [3840, 2160],
+      "keys": [
+        { "at": 2.0, "centre": [1991, 320], "height": 640 },
+        { "at": 3.2, "centre": [1280, 720], "height": 1440, "easing": "easeInOut" }
+      ]
+    },
+    "9:16": {
+      "size": [2160, 3840],
+      "keys": [
+        { "at": 2.0, "centre": [2279, 500], "height": 1000 },
+        { "at": 3.2, "centre": [2155, 720], "height": 1440, "easing": "easeInOut" }
+      ]
+    }
+  },
+  "stills": [100, 115, 240, 287, 318, 360, 400, 470, 560, 648]
+}
