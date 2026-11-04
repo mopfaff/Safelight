@@ -11,7 +11,8 @@ import Cocoa
 //   matches exactly (78–81% of pixels within 2 levels of its Fit to Screen, 2026-11-01), so this is
 //   Core Graphics' high quality.
 // - The menu bar is drawn as scripts/screenshots/main.swift draws it, with the same stand-ins for
-//   Wi-Fi, Spotlight, Control Center and the clock: each status item's button draws itself, as the
+//   Wi-Fi, Spotlight, Control Center and the clock (here with monospaced digits, as macOS's own clock
+//   has them, so it's as wide in every shot): each status item's button draws itself, as the
 //   menu bar draws them out of the app where no picture can be taken, and the capsule behind
 //   Safelight's icon shows its popover is open. The items are at the right of the menu bar, Safelight's
 //   to the left of the stand-ins. The menu bar has no background of its own, as on macOS 27 by default,
@@ -429,20 +430,17 @@ final class DesktopMaker {
     // MARK: As scripts/screenshots/main.swift draws the menu bar
 
     /// Wi-Fi, Spotlight, Control Center and the clock, as on a new Mac, from right to left. The clock
-    /// says 21:00, as FixedTime.swift does, on a day of its own, so the picture is the same every day;
-    /// or for a scene with a clock of its own, `clock`, with all its digits as wide, as macOS's own clock
-    /// has them (its digits change in place as the minutes go by, the rest of it staying put: measured
-    /// in captures of the menu bar on 4 November 2026, where 10:41's glyphs were where SF's monospaced
-    /// digits put them, and not its proportional ones, which the clock in other scenes has)
+    /// says 21:00, as FixedTime.swift does, on a day of its own, so the picture is the same every day,
+    /// or for a scene with a clock of its own, `clock`; either way with all its digits as wide, as macOS's
+    /// own clock has them (its digits change in place as the minutes go by, the rest of it staying put:
+    /// measured in captures of the menu bar on 4 November 2026, where 10:41's glyphs were where SF's
+    /// monospaced digits put them, and not its proportional ones). So the clock, and the items left of
+    /// it, are as wide and in the same places in every shot.
     private static func makeSystemItems(clock title: String?) -> [NSStatusItem] {
         let date = DateComponents(calendar: .current, year: 2026, month: 12, day: 21, hour: 21).date ?? Date()
         let clock = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let title {
-            clock.button?.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize, weight: .regular)
-            clock.button?.title = title
-        } else {
-            clock.button?.title = clockTitle(at: date)
-        }
+        clock.button?.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize, weight: .regular)
+        clock.button?.title = title ?? clockTitle(at: date)
         return [clock] + ["switch.2", "magnifyingglass", "wifi"].map { symbol in
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             item.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
