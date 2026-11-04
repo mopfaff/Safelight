@@ -25,6 +25,12 @@
 #                                   (check-<appearance>-independently/). The popover and the desktop round it
 #                                   are on the Retina display for a second, behind other windows; the
 #                                   displays have to be awake.
+#   scripts/make-demo.sh --edit [<edit>...]
+#                                   cuts the demo videos from the finished shots' masters, as each
+#                                   scripts/demo/edits/<edit>.json has it (all of them if none is named):
+#                                   build/demo/edits/<edit>/safelight-<edit>.mp4, with stills/ and sheet.png
+#                                   (scripts/demo/edit.py). --edit verify [<edit>...] decodes them as macOS's
+#                                   players do and compares them with the frames they were made from
 #
 # It builds a copy of Safelight.swift into "Safelight Demo Recorder.app" with scripts/demo/recorder/,
 # whose RecordedSystem.swift stands in for the functions that change the color filter, brightness and
@@ -49,6 +55,38 @@
 
 set -eu
 cd "${0:A:h}/.."
+
+# The demo itself, cut from the finished shots: scripts/demo/edit.py, after Safelight's icon is drawn for
+# its end card, as macOS draws an app's, by an app with the icon (scripts/demo/EditIcon.swift)
+if [[ "${1-}" == --edit ]]; then
+    shift
+    ICON_DIR="build/demo/edits/icon"
+    ICON_NAME="Safelight Edit Icon"
+    ICON_APP="$ICON_DIR/$ICON_NAME.app"
+    rm -rf "$ICON_DIR"
+    mkdir -p "$ICON_APP/Contents/MacOS" "$ICON_APP/Contents/Resources"
+    PLIST="$ICON_APP/Contents/Info.plist"
+    plutil -create xml1 "$PLIST"
+    for key value in CFBundleExecutable "$ICON_NAME" CFBundleIconFile AppIcon CFBundleIconName AppIcon \
+            CFBundleIdentifier Mo.Safelight.EditIcon CFBundleName "$ICON_NAME" CFBundlePackageType APPL; do
+        plutil -insert "$key" -string "$value" "$PLIST"
+    done
+    plutil -insert LSUIElement -bool YES "$PLIST"
+    if ! xcrun actool "$PWD/Safelight/AppIcon.icon" --compile "$PWD/$ICON_APP/Contents/Resources" --platform macosx --minimum-deployment-target 15.5 \
+            --app-icon AppIcon --output-partial-info-plist "$PWD/$ICON_DIR/icon.plist" >"$ICON_DIR/actool.log" 2>&1; then
+        echo "Couldn't compile the app icon (full log: $ICON_DIR/actool.log)" >&2
+        exit 2
+    fi
+    if ! xcrun swiftc -swift-version 5 -O -o "$ICON_APP/Contents/MacOS/$ICON_NAME" scripts/demo/EditIcon.swift >"$ICON_DIR/build.log" 2>&1; then
+        echo "Icon app build failed (full log: $ICON_DIR/build.log)" >&2
+        exit 2
+    fi
+    codesign --force --sign - "$ICON_APP" 2>/dev/null
+    # Without this macOS may not have looked at the new app yet, and draws its icon with a no-entry sign
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$ICON_APP"
+    "$ICON_APP/Contents/MacOS/$ICON_NAME" "$PWD/$ICON_DIR/icon.png"
+    exec python3 scripts/demo/edit.py "$@"
+fi
 
 VERIFY=0 CHECK=0 RECORD_ONLY=0
 if [[ "${1-}" == --verify ]]; then
