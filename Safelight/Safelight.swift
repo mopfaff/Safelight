@@ -12,6 +12,7 @@ import simd
 import Photos // For the Photos library's albums, which Add Photo… offers to shuffle
 import PhotosUI
 import QuickLookThumbnailing // For thumbnails of large pictures, as System Settings makes them
+import ScreenSaver // For when the screen saver starts, in its own preferences
 #if canImport(Sparkle) // Not in scripts/screenshots.sh's copy, which leaves updates out
 import Sparkle
 #endif
@@ -75,6 +76,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Shuffles that change at login do now, and the others carry on where they were
         WallpaperShuffler.shared.resume()
+        // The appearance's screen saver, should it have changed while Safelight wasn't running, once the
+        // wallpapers have been read
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            ScreenSaverManager.shared.start()
+        }
     }
     
     /// A click opens the popover; a right-click or Control-click opens the menu instead.
@@ -1273,6 +1279,7 @@ struct WallpaperGallery: View {
     @State private var fillColor: CGColor?
     @State private var isChoosingPhoto = false
     @State private var photo: PhotosPickerItem?
+    @State private var isShowingScreenSaver = false
     /// Whether the sections have the focus, as System Settings' list of them takes it when the window
     /// becomes key and whenever a wallpaper is clicked: only there are the rings in the accent colour
     @FocusState private var isListFocused: Bool
@@ -1318,6 +1325,15 @@ struct WallpaperGallery: View {
             .padding(.top, 16)
             displayPicker
             options
+            // System Settings' Screen Saver…, under its options, at their trailing edge
+            HStack {
+                Spacer()
+                Button(SystemStrings.screenSaverButton) {
+                    isShowingScreenSaver = true
+                }
+            }
+            .padding(.horizontal, Self.margin)
+            .padding(.bottom, Self.margin)
             Divider()
             // Read here, as the sections are drawn by the scroll view's own hosting view, whose updates
             // come from this one's
@@ -1347,6 +1363,9 @@ struct WallpaperGallery: View {
             }
         }
         .frame(width: Self.width, height: 720)
+        .sheet(isPresented: $isShowingScreenSaver) {
+            ScreenSaverSheet()
+        }
         .photosPicker(isPresented: $isChoosingPhoto, selection: $photo, matching: .images, preferredItemEncoding: .current)
         .onChange(of: photo) { _, photo in
             guard let photo else { return }
@@ -2442,6 +2461,349 @@ struct WallpaperThumbnail: View {
     /// has Quick Look load
     private static let maxPixelSize = 512
     private static let quickLookSize = 1024
+}
+
+// MARK: - Screen Saver Sheet
+/// System Settings › Wallpaper › Screen Saver…, as a sheet of the Wallpaper window, laid out with System
+/// Settings' measures, for the appearance being chosen there: Light's and Dark's screen savers side by side
+/// above, ringed as the Wallpaper window's pictures are, where System Settings has its one preview. Under
+/// them, in a grouped box, when the screen saver starts, which is the Mac's and not an appearance's, and
+/// whether the appearance's screen saver is the desktop's wallpaper (Automatic) or one chosen (Custom),
+/// with its name and its options. With Custom, System Settings' sections of screen savers under them,
+/// laid out as the Wallpaper window's. Done is in the sheet's bar at the bottom.
+struct ScreenSaverSheet: View {
+    @ObservedObject var screenSaver = ScreenSaverManager.shared
+    @ObservedObject var window = WallpaperWindow.shared
+    @ObservedObject var wallpaper = WallpaperManager.shared
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.appearsActive) private var appearsActive
+    @State private var expandedSections: Set<String> = []
+    @FocusState private var isListFocused: Bool
+    /// The grouped box's height, with its margins, which System Settings' sheet rounds up to a whole
+    /// point, as its frame there is (156 points for its three rows: 20 above the box, and 20.5 below)
+    @State private var settingsHeight: CGFloat?
+
+    /// System Settings' sheet: its width, the height of its list of screen savers, and its margins; the
+    /// rest is the Wallpaper window's
+    private static let width: CGFloat = 500
+    private static let listHeight: CGFloat = 210
+    private static let margin: CGFloat = 20
+    private static let sectionSpacing: CGFloat = 20
+    private static let spacing: CGFloat = 10
+    private static let thumbnailSize = CGSize(width: 107.5, height: 71)
+    private static let thumbnailCornerRadius: CGFloat = 4
+    /// How far past the thumbnail's edges the sheet lays its picture out before cropping it, which shows
+    /// each 1.09 to 1.14 times as large as System Settings' pane does (measured against its sheet)
+    private static let thumbnailBleed: CGFloat = 5
+    private static let previewSize = CGSize(width: 160, height: 100)
+    private static let previewCornerRadius: CGFloat = 8
+    private static let ringPadding: CGFloat = 3.5
+
+    private var library: ScreenSaverLibrary {
+        ScreenSaverLibrary.shared
+    }
+
+    private var choice: String? {
+        screenSaver.choice(isDark: window.isDark)
+    }
+
+    private var isAutomatic: Bool {
+        choice == ScreenSaverManager.automatic
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 24) {
+                preview(SystemStrings.light, isDark: false)
+                preview(SystemStrings.dark, isDark: true)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, Self.margin)
+            settings
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { settingsHeight = $0 }
+                .frame(height: settingsHeight?.rounded(.up), alignment: .top)
+            if !isAutomatic {
+                Divider()
+                let expandedSections = expandedSections
+                PaneScrollView {
+                    VStack(spacing: Self.sectionSpacing) {
+                        ForEach(library.sections) { section in
+                            group(section, isExpanded: expandedSections.contains(section.id))
+                        }
+                    }
+                    .padding(Self.margin)
+                    .focusable()
+                    .focusEffectDisabled()
+                    .focused($isListFocused)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(height: Self.listHeight)
+                .accessibilityLabel(SystemStrings.screenSavers)
+            }
+        }
+        .frame(width: Self.width)
+        // In the sheet's bar at the bottom, which macOS draws for its confirmation, as System Settings has it
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button(SystemStrings.done) {
+                    dismiss()
+                }
+            }
+        }
+        .onAppear {
+            screenSaver.reload()
+        }
+    }
+
+    /// An appearance's screen saver, the size of System Settings' preview: the desktop's wallpaper for
+    /// Automatic, and otherwise the screen saver's thumbnail, ringed while it's the one being chosen.
+    /// Clicking it chooses it instead.
+    private func preview(_ name: String, isDark: Bool) -> some View {
+        let isSelected = window.isDark == isDark
+        return Button {
+            window.isDark = isDark
+        } label: {
+            VStack(spacing: 4) {
+                previewPicture(isDark: isDark)
+                    .frame(width: Self.previewSize.width, height: Self.previewSize.height)
+                    .clipShape(RoundedRectangle(cornerRadius: Self.previewCornerRadius))
+                    .padding(Self.ringPadding)
+                    .overlay {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: Self.previewCornerRadius + Self.ringPadding)
+                                .strokeBorder(appearsActive ? Color.accentColor : Color(nsColor: .unemphasizedSelectedContentBackgroundColor), lineWidth: 3)
+                        }
+                    }
+                    .shadow(color: .black.opacity(0.33), radius: isSelected ? 0 : 2)
+                Text(name)
+                    .fontWeight(isSelected ? .semibold : .regular)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+                    .fixedSize()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .help(screenSaver.choice(isDark: isDark).flatMap(name(of:)) ?? "")
+    }
+
+    @ViewBuilder
+    private func previewPicture(isDark: Bool) -> some View {
+        let choice = screenSaver.choice(isDark: isDark)
+        if choice == ScreenSaverManager.automatic, let thumbnails = wallpaper.thumbnails {
+            DesktopThumbnail(thumbnail: isDark ? thumbnails.dark : thumbnails.light, size: Self.previewSize)
+        } else if let shuffle = choice.flatMap({ WallpaperLibrary.shared.shuffle($0) }) {
+            ShuffleThumbnail(files: shuffle.thumbnails, size: Self.previewSize)
+        } else if let item = choice.flatMap({ library.item($0) }) {
+            // One with a picture for each appearance shows the one it's set to, or the appearance's own
+            let showsDark = WallpaperManager.PictureOptions(appearance: screenSaver.appearance(isDark: isDark).flatMap(WallpaperManager.AppearanceOption.init(rawValue:)))
+                .showsDark(isDark: isDark)
+            WallpaperThumbnail(file: item.badge == .dynamic ? (showsDark ? item.darkThumbnail : item.lightThumbnail) ?? item.thumbnail : item.thumbnail)
+        } else {
+            Rectangle()
+                .fill(.quaternary)
+        }
+    }
+
+    private func name(of choice: String) -> String? {
+        choice == ScreenSaverManager.automatic ? SystemStrings.automatic : library.name(of: choice)
+    }
+
+    /// System Settings' grouped box: Start Screen Saver…, Use Screen Saver, and with Custom, the screen
+    /// saver's name with its options: for one of macOS's wallpapers with a picture for each appearance,
+    /// which it shows, and for a classic screen saver with options of its own, Options…, which only
+    /// System Settings can show, as only it may load a screen saver's settings, so it opens there
+    private var settings: some View {
+        Form {
+            Section {
+                startPicker
+                // A grouped form lays its radio buttons out in a row at its trailing edge, as System
+                // Settings has them
+                Picker(SystemStrings.useScreenSaver, selection: Binding { isAutomatic } set: { automatic in
+                    let isDark = window.isDark
+                    screenSaver.choose(automatic ? ScreenSaverManager.automatic : screenSaver.customChoice(isDark: isDark),
+                                       appearance: screenSaver.appearance(isDark: isDark), isDark: isDark)
+                }) {
+                    Text(SystemStrings.automatic)
+                        .tag(true)
+                    Text(SystemStrings.custom)
+                        .tag(false)
+                }
+                .pickerStyle(.radioGroup)
+                if !isAutomatic, let choice {
+                    nameRow(choice)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollDisabled(true)
+        .scrollContentBackground(.hidden)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// When the screen saver starts: never, or after one of System Settings' times, or after another set
+    /// some other way, which it lists as custom while it's set. A time a profile sets can't be changed.
+    private var startPicker: some View {
+        let delays = [0] + ScreenSaverManager.startDelays
+        let current = screenSaver.startDelay
+        let all = delays.contains(current) ? delays : delays + [current]
+        return Picker(SystemStrings.startScreenSaver, selection: Binding { current } set: { screenSaver.setStartDelay($0) }) {
+            ForEach(all, id: \.self) { delay in
+                Text(SystemStrings.startScreenSaver(after: delay, isOffered: delays.contains(delay)))
+                    .tag(delay)
+            }
+        }
+        .disabled(screenSaver.isStartDelayForced)
+    }
+
+    @ViewBuilder
+    private func nameRow(_ choice: String) -> some View {
+        let name = name(of: choice) ?? ""
+        if ScreenSaverManager.hasAppearanceOption(choice), let item = library.item(choice) {
+            let isDark = window.isDark
+            Picker(name, selection: Binding {
+                screenSaver.appearance(isDark: isDark).flatMap(WallpaperManager.AppearanceOption.init(rawValue:)) ?? .automatic
+            } set: {
+                screenSaver.choose(choice, appearance: $0.rawValue, isDark: isDark)
+            }) {
+                ForEach(WallpaperManager.AppearanceOption.allCases, id: \.self) { option in
+                    Text(SystemStrings.appearanceOption(option, of: item.id))
+                        .tag(option)
+                }
+            }
+        } else if library.hasOptions(choice) {
+            LabeledContent(name) {
+                Button(SystemStrings.screenSaverOptions) {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.Wallpaper-Settings.extension") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+        } else {
+            Text(name)
+        }
+    }
+
+    /// A section, as the Wallpaper window's: its title with Show All beside it when there's more than a
+    /// row, and a row of its screen savers that scrolls sideways under the margins, or all of them
+    private func group(_ section: WallpaperLibrary.Section, isExpanded: Bool) -> some View {
+        let shown = tiles(of: section, isExpanded: isExpanded)
+        let count = tiles(of: section, isExpanded: true).count
+        return VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(section.title)
+                    .lineLimit(1)
+                    .fontWeight(.medium)
+                Spacer()
+                if count > 4 || section.row.map({ $0.count < section.items.count }) == true {
+                    Button(isExpanded ? SystemStrings.showLess : String(format: SystemStrings.showAll, "\(count)")) {
+                        if isExpanded {
+                            expandedSections.remove(section.id)
+                        } else {
+                            expandedSections.insert(section.id)
+                        }
+                    }
+                    .buttonStyle(ShowAllButtonStyle())
+                }
+            }
+            .contentShape(Rectangle())
+            if isExpanded {
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(Self.thumbnailSize.width), spacing: Self.spacing), count: 4), alignment: .leading, spacing: Self.spacing) {
+                    ForEach(shown, id: \.id) { tile in
+                        view(of: tile)
+                    }
+                }
+                .padding(.top, 10)
+            } else {
+                ScrollView(.horizontal) {
+                    LazyHStack(spacing: Self.spacing) {
+                        ForEach(shown, id: \.id) { tile in
+                            view(of: tile)
+                        }
+                    }
+                    .padding(.top, 10)
+                }
+                .padding(.horizontal, -Self.margin)
+                .contentMargins(.horizontal, Self.margin, for: .automatic)
+                .scrollClipDisabled()
+                .scrollIndicators(.never)
+            }
+        }
+    }
+
+    /// One of a section's tiles: a shuffle of aerials, or a screen saver
+    private enum Tile {
+        case shuffle(WallpaperShuffle)
+        case item(WallpaperItem)
+
+        var id: String {
+            switch self {
+            case .shuffle(let shuffle): shuffle.id
+            case .item(let item): item.id
+            }
+        }
+    }
+
+    private func tiles(of section: WallpaperLibrary.Section, isExpanded: Bool) -> [Tile] {
+        section.shuffles.map(Tile.shuffle) + ((isExpanded ? nil : section.row) ?? section.items).map(Tile.item)
+    }
+
+    @ViewBuilder
+    private func view(of tile: Tile) -> some View {
+        switch tile {
+        case .shuffle(let shuffle):
+            self.tile(id: shuffle.id, name: shuffle.name, badge: .video) {
+                ShuffleThumbnail(files: shuffle.thumbnails, size: Self.thumbnailSize, cornerRadius: Self.thumbnailCornerRadius)
+            }
+        case .item(let item):
+            self.tile(id: item.id, name: item.name, badge: item.badge, isDownloaded: item.download == nil || wallpaper.isDownloaded(item)) {
+                // Its picture fills a frame 5 points larger each way than the thumbnail, as the sheet's
+                // thumbnails are drawn, which then crops it
+                WallpaperThumbnail(file: item.thumbnail)
+                    .frame(width: Self.thumbnailSize.width + 2 * Self.thumbnailBleed, height: Self.thumbnailSize.height + 2 * Self.thumbnailBleed)
+                    .modifier(ThumbnailClip(size: Self.thumbnailSize, cornerRadius: Self.thumbnailCornerRadius))
+            }
+        }
+    }
+
+    /// A thumbnail as System Settings draws one in the sheet, as in its pane: ringed while it's the
+    /// appearance's screen saver, with its badges, and its name under it. Clicking it chooses it, keeping
+    /// the option for which picture it shows, as System Settings keeps options.
+    private func tile(id: String, name: String, badge: WallpaperItem.Badge?, isDownloaded: Bool = true, @ViewBuilder thumbnail: () -> some View) -> some View {
+        let isSelected = choice == id
+        return VStack {
+            thumbnail()
+                .overlay {
+                    SelectionRings(shape: RoundedRectangle(cornerRadius: Self.thumbnailCornerRadius, style: .continuous), isSelected: isSelected,
+                                   isOutlined: true, style: .selection)
+                }
+                .overlay(alignment: .bottomLeading) {
+                    if let badge {
+                        ThumbnailBadge(image: badge == .dynamic ? ThumbnailBadge.dynamic : Image(systemName: "play.rectangle.fill"))
+                            .padding([.bottom, .leading], 5)
+                    }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if !isDownloaded {
+                        ThumbnailBadge(image: Image(systemName: "arrow.down.circle"))
+                            .padding([.bottom, .trailing], 5)
+                    }
+                }
+            Text(name)
+                .font(.caption)
+                .lineLimit(2, reservesSpace: true)
+                .truncationMode(.middle)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: Self.thumbnailSize.width)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .contentShape(Rectangle())
+        .choosable(name, isSelected: isSelected, focusing: $isListFocused) {
+            let isDark = window.isDark
+            screenSaver.choose(id, appearance: screenSaver.appearance(isDark: isDark), isDark: isDark)
+        }
+        .help(name)
+    }
 }
 
 // MARK: - Schedule Window
@@ -8054,6 +8416,12 @@ final class WallpaperLibrary {
         aerialItems[id].flatMap { items[$0] }
     }
 
+    /// The ID macOS's wallpaper service knows an aerial by: its own, or for one with a video for each
+    /// appearance, its subcategory's
+    func aerialID(of item: WallpaperItem.ID) -> String? {
+        aerialItems.first { $0.value == item }?.key
+    }
+
     /// One of macOS's colours by the name its wallpaper service gives it, "blueViolet" for Blue Violet
     func color(named name: String) -> WallpaperItem? {
         Self.colors.first { $0.replacingOccurrences(of: " ", with: "").lowercased() == name.lowercased() }.flatMap { items["color:\($0)"] }
@@ -8434,6 +8802,565 @@ final class PhotoLibrarySets: NSObject, ObservableObject, PHPhotoLibraryChangeOb
     }
 }
 
+// MARK: - 9b. Screen Saver (System Settings › Wallpaper › Screen Saver…)
+/// System Settings › Wallpaper › Screen Saver…'s screen savers, in its sections and its order: macOS's,
+/// which are its wallpapers that can be a screen saver and Ventura's and Monterey's classic screen savers,
+/// then the aerials' categories and their shuffles, as in System Settings › Wallpaper, and the other
+/// classic screen savers. Its wallpapers are `WallpaperLibrary`'s; a classic screen saver is an item of
+/// its own here, by its bundle's name (`saver:Drift`), with its bundle's thumbnail, or else the one System
+/// Settings' classic screen savers' extension has for it.
+final class ScreenSaverLibrary {
+    static let shared = ScreenSaverLibrary()
+
+    let sections: [WallpaperLibrary.Section]
+    private let savers: [WallpaperItem.ID: WallpaperItem]
+    /// The classic screen savers' bundles, and those that have options of their own
+    private let modules: [WallpaperItem.ID: URL]
+    private let modulesWithOptions: Set<WallpaperItem.ID>
+
+    /// Where the classic screen savers are: macOS's extensions and bundles, and those installed for every
+    /// user and for this one
+    private static let extensions = URL(fileURLWithPath: "/System/Library/ExtensionKit/Extensions", isDirectory: true)
+    private static let folders = [URL(fileURLWithPath: "/System/Library/Screen Savers", isDirectory: true),
+                                  URL(fileURLWithPath: "/Library/Screen Savers", isDirectory: true),
+                                  FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Screen Savers", isDirectory: true)]
+    /// System Settings' classic screen savers' extension, which has thumbnails for those without
+    private static let legacyExtension = "/System/Library/ExtensionKit/Extensions/WallpaperLegacyExtension.appex"
+    /// macOS's wallpapers that System Settings offers as a screen saver, by their IDs in `WallpaperLibrary`:
+    /// its Light and Dark aerials besides these
+    private static let dynamicScreenSavers: Set<WallpaperItem.ID> = ["picture:Tahoe", WallpaperManager.DrawnWallpaper.sequoia.rawValue,
+                                                                     WallpaperManager.DrawnWallpaper.macintosh.rawValue, "picture:Sonoma"]
+    /// The classic screen savers with macOS's, after its wallpapers, and the order System Settings has the
+    /// others in, by their bundles' names; any others come after them, by name, and Random last. Floating
+    /// Message is left out, as System Settings leaves it out for Message (Computer Name's bundle).
+    private static let macOSModules = ["Ventura", "Monterey"]
+    private static let moduleOrder = ["iLifeSlideshows", "Flurry", "Hello", "Shell", "Drift", "Arabesque", "Computer Name", "Album Artwork", "Word of the Day"]
+    private static let hiddenModules: Set<String> = ["FloatingMessage"]
+    static let random = "saver:Random"
+
+    private init() {
+        let fileManager = FileManager.default
+        var savers: [WallpaperItem.ID: WallpaperItem] = [:]
+        var modules: [WallpaperItem.ID: URL] = [:]
+        var modulesWithOptions: Set<WallpaperItem.ID> = []
+        // The classic screen savers: extensions of macOS's screen saver extension point, and bundles
+        var bundles = ((try? fileManager.contentsOfDirectory(at: Self.extensions, includingPropertiesForKeys: nil)) ?? []).filter { url in
+            url.pathExtension == "appex" && (Bundle(url: url)?.object(forInfoDictionaryKey: "NSExtension") as? [String: Any])?["NSExtensionPointIdentifier"] as? String == "com.apple.screensaver"
+        }
+        for folder in Self.folders {
+            bundles += ((try? fileManager.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []).filter { ["saver", "appex"].contains($0.pathExtension) }
+        }
+        for bundle in bundles {
+            let name = bundle.deletingPathExtension().lastPathComponent
+            let id = "saver:\(name)"
+            guard !Self.hiddenModules.contains(name), savers[id] == nil else { continue }
+            let thumbnail = Self.thumbnail(ofModule: bundle)
+            savers[id] = WallpaperItem(id: id, name: SystemStrings.screenSaverName(at: bundle.path), light: .file(bundle), dark: .file(bundle),
+                                       lightThumbnail: thumbnail, darkThumbnail: thumbnail, thumbnail: thumbnail)
+            modules[id] = bundle
+            if Bundle(url: bundle)?.object(forInfoDictionaryKey: "SSEHasConfigureSheet") as? Bool == true {
+                modulesWithOptions.insert(id)
+            }
+        }
+
+        let library = WallpaperLibrary.shared
+        let dynamic = (library.sections.first { $0.id == "dynamic" }?.items ?? []).filter { $0.id.hasPrefix("aerial:") || Self.dynamicScreenSavers.contains($0.id) }
+        let macOS = dynamic + Self.macOSModules.compactMap { savers["saver:\($0)"] }
+        let order = { (id: WallpaperItem.ID) -> (Int, String) in
+            let name = String(id.dropFirst("saver:".count))
+            if id == Self.random { return (Int.max, "") }
+            return (Self.moduleOrder.firstIndex(of: name) ?? Self.moduleOrder.count, savers[id]?.name ?? name)
+        }
+        let others = savers.keys.filter { !Self.macOSModules.contains(String($0.dropFirst("saver:".count))) }.sorted { order($0) < order($1) }.compactMap { savers[$0] }
+        // The aerials' categories and their shuffles, as System Settings › Wallpaper has them
+        let aerials = library.sections.filter { !["dynamic", WallpaperLibrary.yourPhotos, "pictures", "colors"].contains($0.id) }
+        var sections = [WallpaperLibrary.Section(id: "screen-savers-macos", title: SystemStrings.macOSScreenSavers, items: macOS)]
+        sections += aerials
+        sections.append(WallpaperLibrary.Section(id: "screen-savers-other", title: SystemStrings.otherScreenSavers, items: others))
+        self.sections = sections.filter { !$0.items.isEmpty || !$0.shuffles.isEmpty }
+        self.savers = savers
+        self.modules = modules
+        self.modulesWithOptions = modulesWithOptions
+    }
+
+    /// A screen saver: a classic one, or one of System Settings' wallpapers
+    func item(_ id: WallpaperItem.ID) -> WallpaperItem? {
+        savers[id] ?? WallpaperLibrary.shared.item(id)
+    }
+
+    func name(of id: WallpaperItem.ID) -> String? {
+        item(id)?.name ?? WallpaperLibrary.shared.name(of: id)
+    }
+
+    /// A classic screen saver's bundle
+    func module(_ id: WallpaperItem.ID) -> URL? {
+        modules[id]
+    }
+
+    /// The classic screen saver whose bundle is at `url`, as macOS's wallpaper service names it
+    func saver(ofModule url: URL) -> WallpaperItem.ID {
+        let path = url.standardizedFileURL.path
+        return modules.first { $0.value.standardizedFileURL.path == path }?.key ?? "saver:\(url.deletingPathExtension().lastPathComponent)"
+    }
+
+    /// Whether a classic screen saver has options of its own, which System Settings shows Options… for
+    func hasOptions(_ id: WallpaperItem.ID) -> Bool {
+        modulesWithOptions.contains(id)
+    }
+
+    /// A classic screen saver's thumbnail, written out so it's loaded as the other thumbnails are: its
+    /// bundle's own, or the one System Settings' classic screen savers' extension has for it, or else its
+    /// default one, as System Settings shows them
+    private static func thumbnail(ofModule bundle: URL) -> URL? {
+        let name = bundle.deletingPathExtension().lastPathComponent
+        let image = Bundle(url: bundle)?.image(forResource: "thumbnail") ?? Bundle(path: legacyExtension)?.image(forResource: name)
+            ?? Bundle(path: legacyExtension)?.image(forResource: "Default")
+        guard let image, let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        let folder = caches.appendingPathComponent(Bundle.main.bundleIdentifier ?? "Safelight", isDirectory: true).appendingPathComponent("Screen Savers", isDirectory: true)
+        let file = folder.appendingPathComponent("\(name).png")
+        // The largest of its pictures, which are the thumbnail's size at 1x and at 2x
+        let largest = image.representations.max { $0.pixelsWide < $1.pixelsWide }
+        var rect = CGRect(origin: .zero, size: largest.map { CGSize(width: $0.pixelsWide, height: $0.pixelsHigh) } ?? image.size)
+        guard let picture = image.cgImage(forProposedRect: &rect, context: nil, hints: [.ctm: AffineTransform.identity]),
+              let data = NSBitmapImageRep(cgImage: picture).representation(using: .png, properties: [:]) else { return nil }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        if (try? Data(contentsOf: file)) != data {
+            try? data.write(to: file, options: .atomic)
+        }
+        return file
+    }
+}
+
+/// Sets the screen saver, as System Settings › Wallpaper › Screen Saver… does, with one for Light and one
+/// for Dark: when the appearance changes, the screen saver does too. macOS has no public way to set it;
+/// System Settings asks WallpaperAgent, which keeps the desktop and the screen saver of every display and
+/// Space, through a service only Apple's code may use. What works is what the agent itself does: Safelight
+/// writes the screen saver into the agent's store, as the agent writes it there, and restarts the agent,
+/// which reads its store as it starts (tested on macOS 27.2). The agent draws the desktop too, so every
+/// display goes a flat grey for about 0.3 s as it restarts, which is why it's only restarted when the
+/// screen saver has to change. When the screen saver starts is in the screen saver's preferences, which
+/// System Settings and loginwindow read.
+final class ScreenSaverManager: ObservableObject {
+    static let shared = ScreenSaverManager()
+
+    /// Automatic's choice: the desktop's wallpaper is the screen saver too, when it can be one, and
+    /// otherwise macOS's default screen saver, as System Settings' Automatic
+    static let automatic = "screen-saver:automatic"
+
+    /// The screen saver chosen here for each appearance, and the last chosen that wasn't Automatic, which
+    /// Custom goes back to, with the option it has for which picture it shows, for one with a picture
+    /// for each appearance (`AppearanceOption`'s ID)
+    struct Choices: Codable, Equatable {
+        var light: String?
+        var dark: String?
+        var lightCustom: String?
+        var darkCustom: String?
+        var lightAppearance: String?
+        var darkAppearance: String?
+
+        func choice(isDark: Bool) -> String? {
+            isDark ? dark : light
+        }
+
+        func custom(isDark: Bool) -> String? {
+            isDark ? darkCustom : lightCustom
+        }
+
+        func appearance(isDark: Bool) -> String? {
+            isDark ? darkAppearance : lightAppearance
+        }
+
+        mutating func set(_ choice: String?, appearance: String?, isDark: Bool) {
+            if isDark {
+                dark = choice
+                darkAppearance = appearance
+                if let choice, choice != ScreenSaverManager.automatic { darkCustom = choice }
+            } else {
+                light = choice
+                lightAppearance = appearance
+                if let choice, choice != ScreenSaverManager.automatic { lightCustom = choice }
+            }
+        }
+    }
+
+    /// What macOS's store has as the screen saver: a choice, and for one with a picture for each
+    /// appearance, its appearance option, Automatic unless it's set
+    struct Stored: Equatable {
+        var choice: String?
+        var appearance: String?
+
+        init(choice: String? = nil, appearance: String? = nil) {
+            self.choice = choice
+            self.appearance = choice.map(ScreenSaverManager.hasAppearanceOption) == true ? appearance ?? "automatic" : nil
+        }
+    }
+
+    /// The screen savers chosen here, none until one's chosen, kept between launches
+    @Published private(set) var choices: Choices {
+        didSet { UserDefaults.standard.set(try? PropertyListEncoder().encode(choices), forKey: Self.choicesKey) }
+    }
+    /// The screen saver macOS has now, as its store says
+    @Published private(set) var stored = Stored()
+    /// How long the Mac is left idle before the screen saver starts, in seconds, or 0 for never
+    @Published private(set) var startDelay = 0
+    /// Whether that's managed, by a profile, so it can't be changed, as System Settings has it
+    @Published private(set) var isStartDelayForced = false
+    /// What Safelight last put in the store, and for which appearance, so a screen saver chosen in System
+    /// Settings since is told apart: it's that appearance's then. Kept between launches.
+    private var written: (stored: Stored, isDark: Bool)? {
+        didSet {
+            UserDefaults.standard.set(written.map { ["choice": $0.stored.choice ?? "", "appearance": $0.stored.appearance ?? "", "isDark": $0.isDark] as [String: Any] },
+                                      forKey: Self.writtenKey)
+        }
+    }
+
+    private static let choicesKey = "ScreenSaverChoices"
+    private static let writtenKey = "ScreenSaverWritten"
+    /// macOS's wallpaper service's store, and its agent
+    private static let store = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/com.apple.wallpaper/Store/Index.plist")
+    private static let agent = "com.apple.wallpaper.agent"
+    /// The screen saver's preferences, which are the Mac's own (ByHost), and System Settings' times for
+    /// Start Screen Saver…, besides Never
+    private static let preferences = "com.apple.screensaver"
+    static let startDelays = [60, 120, 180, 300, 600, 1200, 1800, 3600, 5400, 7200, 9000, 10800]
+    /// macOS's default screen saver, as the screen saver's defaults name it, which Custom has until
+    /// another is chosen while the desktop's wallpaper can't be one
+    private static let defaultModule = "saver:Ventura"
+
+    init() {
+        let defaults = UserDefaults.standard
+        choices = defaults.data(forKey: Self.choicesKey).flatMap { try? PropertyListDecoder().decode(Choices.self, from: $0) } ?? Choices()
+        if let written = defaults.dictionary(forKey: Self.writtenKey), let isDark = written["isDark"] as? Bool {
+            let choice = written["choice"] as? String, appearance = written["appearance"] as? String
+            self.written = (Stored(choice: choice?.isEmpty == false ? choice : nil, appearance: appearance?.isEmpty == false ? appearance : nil), isDark)
+        }
+        reload()
+        // The appearance's screen saver once the change is over, as the agent draws its fade
+        DistributedNotificationCenter.default().addObserver(forName: AppearanceManager.changedNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.followAppearance(after: 3)
+        }
+    }
+
+    /// Has the screen saver the one chosen for the appearance the Mac has, as it may have changed while
+    /// Safelight wasn't running
+    func start() {
+        followAppearance(after: 5)
+    }
+
+    private static var isDark: Bool {
+        AppearanceManager.shared.isDark() ?? (UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark")
+    }
+
+    /// The screen saver an appearance has: the one chosen here, or with none, the one macOS has
+    func choice(isDark: Bool) -> String? {
+        choices.choice(isDark: isDark) ?? stored.choice
+    }
+
+    /// Which picture an appearance's screen saver shows, for one with a picture for each appearance
+    func appearance(isDark: Bool) -> String? {
+        choices.choice(isDark: isDark) == nil ? stored.appearance : choices.appearance(isDark: isDark)
+    }
+
+    /// Reads the screen saver macOS has again, and when it starts, as System Settings can change both. One
+    /// chosen in System Settings since Safelight set one is the screen saver of the appearance it was set for.
+    func reload() {
+        stored = Self.readStored()
+        let delay = Self.readStartDelay()
+        if delay != startDelay { startDelay = delay }
+        let forced = CFPreferencesAppValueIsForced("idleTime" as CFString, Self.preferences as CFString)
+        if forced != isStartDelayForced { isStartDelayForced = forced }
+        guard let written, stored != written.stored, choices.choice(isDark: written.isDark) != nil, stored.choice != nil else { return }
+        choices.set(stored.choice, appearance: stored.appearance, isDark: written.isDark)
+        self.written = (stored, written.isDark)
+    }
+
+    /// Chooses an appearance's screen saver, and has the Mac show it now when that's the appearance it
+    /// has. The other appearance keeps the one macOS has until one is chosen for it too.
+    func choose(_ choice: String, appearance: String? = nil, isDark: Bool) {
+        reload()
+        var choices = self.choices
+        if choices.light == nil && choices.dark == nil {
+            choices.set(stored.choice, appearance: stored.appearance, isDark: !isDark)
+        }
+        choices.set(choice, appearance: appearance, isDark: isDark)
+        self.choices = choices
+        if isDark == Self.isDark {
+            followAppearance(after: 0.3)
+        }
+    }
+
+    /// Custom's screen saver for an appearance: the one it had last, or the desktop's wallpaper when that
+    /// can be one, or macOS's default
+    func customChoice(isDark: Bool) -> String {
+        if let custom = choices.custom(isDark: isDark) {
+            return custom
+        }
+        if let desktop = WallpaperManager.shared.choice(isDark: isDark), ScreenSaverLibrary.shared.sections.contains(where: { section in
+            section.items.contains { $0.id == desktop } || section.shuffles.contains { $0.id == desktop }
+        }) {
+            return desktop
+        }
+        return Self.defaultModule
+    }
+
+    /// Sets when the screen saver starts, as System Settings does: in the screen saver's preferences
+    func setStartDelay(_ seconds: Int) {
+        guard let defaults = ScreenSaverDefaults(forModuleWithName: Self.preferences) else { return }
+        defaults.set(seconds, forKey: "idleTime")
+        defaults.synchronize()
+        startDelay = Self.readStartDelay()
+    }
+
+    private static func readStartDelay() -> Int {
+        ScreenSaverDefaults(forModuleWithName: preferences)?.integer(forKey: "idleTime") ?? 0
+    }
+
+    // MARK: Following the appearance
+
+    private var pending: DispatchWorkItem?
+
+    private func followAppearance(after delay: TimeInterval) {
+        pending?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.showChoice() }
+        pending = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    /// Puts the screen saver chosen for the appearance the Mac has in the store, when it hasn't it
+    private func showChoice() {
+        guard choices.light != nil || choices.dark != nil else { return }
+        // Not while a wallpaper is being put on the desktop, which the agent writes to its store
+        guard !WallpaperManager.shared.isChanging else { return followAppearance(after: 2) }
+        reload()
+        let isDark = Self.isDark
+        guard let choice = choices.choice(isDark: isDark) else { return }
+        let wanted = Stored(choice: choice, appearance: choices.appearance(isDark: isDark))
+        guard wanted != stored else {
+            written = (stored, isDark)
+            return
+        }
+        write(wanted, isDark: isDark)
+    }
+
+    /// Whether a screen saver has System Settings' option for which picture it shows: one of macOS's
+    /// wallpapers with a picture for each appearance
+    static func hasAppearanceOption(_ choice: String) -> Bool {
+        guard let item = WallpaperLibrary.shared.item(choice) else { return false }
+        return item.badge == .dynamic
+    }
+
+    // MARK: The store
+
+    /// The screen saver macOS has now: its store's for every display and Space, or else the one set last
+    private static func readStored() -> Stored {
+        readIndex().map(stored(ofIndex:)) ?? Stored()
+    }
+
+    private static func readIndex() -> [String: Any]? {
+        (try? Data(contentsOf: store)).flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any] }
+    }
+
+    /// When an owner's screen saver was set
+    private static func lastSet(of owner: [String: Any]) -> Date {
+        ((owner["Type"] as? String == "linked" ? owner["Linked"] : owner["Idle"]) as? [String: Any])?["LastSet"] as? Date ?? .distantPast
+    }
+
+    private static func plist(_ value: Any?) -> [String: Any] {
+        (value as? Data).flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any] } ?? [:]
+    }
+
+    /// An owner's screen saver, as a choice: Automatic, while it has one wallpaper for both
+    private static func stored(of owner: [String: Any]) -> Stored {
+        if owner["Type"] as? String == "linked" {
+            return Stored(choice: automatic)
+        }
+        guard let content = (owner["Idle"] as? [String: Any])?["Content"] as? [String: Any],
+              let choice = (content["Choices"] as? [[String: Any]])?.first, let provider = choice["Provider"] as? String else { return Stored() }
+        let configuration = plist(choice["Configuration"])
+        let options = plist(content["EncodedOptionValues"])["values"] as? [String: Any] ?? [:]
+        func option(_ name: String) -> String? {
+            (((options[name] as? [String: Any])?["picker"] as? [String: Any])?["_0"] as? [String: Any])?["id"] as? String
+        }
+        let library = WallpaperLibrary.shared
+        switch provider {
+        case "com.apple.wallpaper.choice.screen-saver":
+            let module = ((configuration["module"] as? [String: Any])?["relative"] as? String).flatMap(URL.init(string:))
+            return Stored(choice: module.map { ScreenSaverLibrary.shared.saver(ofModule: $0) })
+        case "com.apple.wallpaper.choice.aerials":
+            let id = configuration["assetID"] as? String
+            if let item = id.flatMap(library.item(ofAerial:)) {
+                return Stored(choice: item.id, appearance: option("appearance"))
+            }
+            return Stored(choice: id.map { $0 == "shuffle-all-aerials" ? WallpaperShuffle.aerials : "shuffle:\($0)" })
+        case "com.apple.wallpaper.choice.sequoia":
+            return Stored(choice: WallpaperManager.DrawnWallpaper.sequoia.rawValue, appearance: option("appearance"))
+        case "com.apple.wallpaper.choice.macintosh":
+            return Stored(choice: WallpaperManager.DrawnWallpaper.macintosh.rawValue, appearance: option("appearanceMode"))
+        case "com.apple.wallpaper.choice.sonoma":
+            return Stored(choice: "picture:Sonoma", appearance: option("appearance"))
+        case "com.apple.NeptuneOneExtension":
+            return Stored(choice: "picture:Tahoe", appearance: option("appearance"))
+        default:
+            return Stored()
+        }
+    }
+
+    /// What the store keeps for a screen saver: the provider that shows it, and its configuration
+    private static func content(of choice: String) -> (provider: String, configuration: Data)? {
+        func data(_ plist: [String: Any]) -> Data? {
+            try? PropertyListSerialization.data(fromPropertyList: plist, format: .binary, options: 0)
+        }
+        func aerial(_ id: String) -> (String, Data)? {
+            data(["assetID": id]).map { ("com.apple.wallpaper.choice.aerials", $0) }
+        }
+        switch choice {
+        case WallpaperManager.DrawnWallpaper.sequoia.rawValue: return ("com.apple.wallpaper.choice.sequoia", Data())
+        case WallpaperManager.DrawnWallpaper.macintosh.rawValue: return ("com.apple.wallpaper.choice.macintosh", Data())
+        case "picture:Sonoma": return ("com.apple.wallpaper.choice.sonoma", Data())
+        case "picture:Tahoe": return ("com.apple.NeptuneOneExtension", Data())
+        case WallpaperShuffle.aerials: return aerial("shuffle-all-aerials")
+        case _ where choice.hasPrefix("saver:"):
+            // Its bundle's URL, with no slash at the end, as the agent writes it
+            guard let module = ScreenSaverLibrary.shared.module(choice) else { return nil }
+            let url = URL(fileURLWithPath: module.path, isDirectory: false).absoluteString
+            return data(["module": ["relative": url]]).map { ("com.apple.wallpaper.choice.screen-saver", $0) }
+        case _ where choice.hasPrefix("shuffle:"):
+            return aerial(String(choice.dropFirst("shuffle:".count)))
+        default:
+            return WallpaperLibrary.shared.aerialID(of: choice).flatMap(aerial)
+        }
+    }
+
+    /// The store's owners, with where each is in it
+    private static func ownerList(of index: [String: Any]) -> [(path: [String], owner: [String: Any])] {
+        var owners: [(path: [String], owner: [String: Any])] = []
+        for key in ["AllSpacesAndDisplays", "SystemDefault"] {
+            if let owner = index[key] as? [String: Any] { owners.append(([key], owner)) }
+        }
+        for (display, owner) in index["Displays"] as? [String: Any] ?? [:] {
+            if let owner = owner as? [String: Any] { owners.append((["Displays", display], owner)) }
+        }
+        for (key, value) in index["Spaces"] as? [String: Any] ?? [:] {
+            guard let space = value as? [String: Any] else { continue }
+            if let owner = space["Default"] as? [String: Any] { owners.append((["Spaces", key, "Default"], owner)) }
+            for (display, owner) in space["Displays"] as? [String: Any] ?? [:] {
+                if let owner = owner as? [String: Any] { owners.append((["Spaces", key, "Displays", display], owner)) }
+            }
+        }
+        return owners
+    }
+
+    /// `value` put at `path` in a store
+    private static func setting(_ value: [String: Any], at path: [String], in dictionary: [String: Any]) -> [String: Any] {
+        var dictionary = dictionary
+        guard let key = path.first else { return dictionary }
+        if path.count == 1 {
+            dictionary[key] = value
+        } else {
+            dictionary[key] = setting(value, at: Array(path.dropFirst()), in: dictionary[key] as? [String: Any] ?? [:])
+        }
+        return dictionary
+    }
+
+    /// An owner with `wanted` as its screen saver: Automatic has its desktop's wallpaper as the one for
+    /// both, as the agent keeps it (`linked`); another has its desktop as before, and the screen saver as
+    /// the agent keeps one, with the options it had, and the appearance option set
+    private static func owner(_ owner: [String: Any], with wanted: Stored, content: (provider: String, configuration: Data)?, now: Date) -> [String: Any] {
+        var owner = owner
+        let isLinked = owner["Type"] as? String == "linked"
+        if wanted.choice == automatic {
+            guard !isLinked, var desktop = owner["Desktop"] as? [String: Any] else { return owner }
+            desktop["LastSet"] = now
+            owner["Type"] = "linked"
+            owner["Linked"] = desktop
+            owner["Desktop"] = nil
+            owner["Idle"] = nil
+            return owner
+        }
+        guard let content else { return owner }
+        if isLinked {
+            guard let linked = owner["Linked"] else { return owner }
+            owner["Desktop"] = linked
+            owner["Linked"] = nil
+            owner["Type"] = "individual"
+        }
+        let old = (owner["Idle"] as? [String: Any])?["Content"] as? [String: Any]
+        var options = plist(old?["EncodedOptionValues"])
+        if wanted.choice.map(hasAppearanceOption) == true {
+            var values = options["values"] as? [String: Any] ?? [:]
+            let name = wanted.choice == WallpaperManager.DrawnWallpaper.macintosh.rawValue ? "appearanceMode" : "appearance"
+            values[name] = ["picker": ["_0": ["id": wanted.appearance ?? "automatic"]]]
+            options["values"] = values
+        }
+        let encodedOptions: Any = options.isEmpty ? "$null" : (try? PropertyListSerialization.data(fromPropertyList: options, format: .binary, options: 0)) as Any? ?? "$null"
+        owner["Idle"] = ["LastSet": now, "LastUse": now,
+                         "Content": ["Choices": [["Provider": content.provider, "Files": [Any](), "Configuration": content.configuration]],
+                                     "Shuffle": "$null", "EncodedOptionValues": encodedOptions]] as [String: Any]
+        return owner
+    }
+
+    /// The desktops a store has, which writing the screen saver mustn't change: each owner's wallpaper
+    private static func desktops(of index: [String: Any]) -> [String] {
+        ownerList(of: index).map { path, owner in
+            let desktop = (owner["Type"] as? String == "linked" ? owner["Linked"] : owner["Desktop"]) as? [String: Any]
+            let choices = (desktop?["Content"] as? [String: Any])?["Choices"] as? [[String: Any]] ?? []
+            return path.joined(separator: "/") + ": " + choices.map { "\($0["Provider"] ?? "")\(($0["Configuration"] as? Data)?.base64EncodedString() ?? "")" }.joined(separator: ",")
+        }.sorted()
+    }
+
+    /// Writes a screen saver into the store for every display and Space, as System Settings has the agent
+    /// do, and restarts the agent so it reads it. Should the agent not be able to read what was written,
+    /// it would start from its defaults, desktop and all, so once it has started again the store's
+    /// desktops are checked against those before, and the store put back as it was if they've changed.
+    /// The agent writes its store as it starts and whenever a desktop changes, so should it have written
+    /// over the screen saver meanwhile, it's written once more.
+    private func write(_ wanted: Stored, isDark: Bool, attempt: Int = 1) {
+        guard let data = try? Data(contentsOf: Self.store),
+              let index = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return }
+        let content = wanted.choice == Self.automatic ? nil : wanted.choice.flatMap(Self.content(of:))
+        guard wanted.choice == Self.automatic || content != nil else { return }
+        let now = Date()
+        var changed = index
+        for (path, owner) in Self.ownerList(of: index) {
+            changed = Self.setting(Self.owner(owner, with: wanted, content: content, now: now), at: path, in: changed)
+        }
+        guard let written = try? PropertyListSerialization.data(fromPropertyList: changed, format: .binary, options: 0),
+              (try? PropertyListSerialization.propertyList(from: written, format: nil)) != nil,
+              (try? written.write(to: Self.store, options: .atomic)) != nil else { return }
+        self.written = (wanted, isDark)
+        Self.restartAgent()
+        let desktops = Self.desktops(of: index)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, let after = Self.readIndex() else { return }
+            if Self.desktops(of: after) != desktops {
+                // The agent couldn't read it, or a desktop changed meanwhile: the store as it was
+                try? data.write(to: Self.store, options: .atomic)
+                Self.restartAgent()
+                self.written = nil
+            } else if Self.stored(ofIndex: after) != wanted, attempt < 2 {
+                self.write(wanted, isDark: isDark, attempt: attempt + 1)
+                return
+            }
+            self.reload()
+        }
+    }
+
+    private static func stored(ofIndex index: [String: Any]) -> Stored {
+        let owners = ownerList(of: index)
+        let all = owners.first { $0.path == ["AllSpacesAndDisplays"] }?.owner
+        let last = owners.max { lastSet(of: $0.owner) < lastSet(of: $1.owner) }?.owner
+        return (all ?? last).map(stored(of:)) ?? Stored()
+    }
+
+    /// Restarts WallpaperAgent, as `killall -9 WallpaperAgent` does: launchd starts it again at once, and
+    /// it reads its store
+    private static func restartAgent() {
+        for app in NSRunningApplication.runningApplications(withBundleIdentifier: agent) {
+            kill(app.processIdentifier, SIGKILL)
+        }
+    }
+}
+
 // MARK: - 10. System Strings (System Settings' Translations)
 /// Every label in the app, read from the string tables System Settings (or Control Center, the Dock,
 /// or an app's menus) loads the same label from, so it comes out in the system language, worded
@@ -8497,6 +9424,42 @@ enum SystemStrings {
     static let showAll = lookup("SHOW_ALL_%@", in: wallpaperSettings, english: "Show All (%@)")
     static let showLess = lookup("SHOW_LESS", in: wallpaperSettings, english: "Show Less")
     static let removeDownload = lookup("REMOVE_DOWNLOAD", in: wallpaperSettings, english: "Remove Download")
+
+    // System Settings › Wallpaper's Screen Saver… and its sheet: when the screen saver starts, whether it's
+    // the desktop's wallpaper or one chosen, its list's name, and its sections, which the classic screen
+    // savers' extension names, with the button for a screen saver's own options
+    private static let legacyScreenSaverSettings = "/System/Library/ExtensionKit/Extensions/WallpaperLegacyExtension.appex"
+    static let screenSaverButton = lookup("SCREEN_SAVER_BUTTON_TITLE", in: wallpaperSettings, english: "Screen Saver…")
+    static let startScreenSaver = lookup("START_SCREEN_SAVER", in: wallpaperSettings, english: "Start Screen Saver…")
+    static let never = lookup("START_SCREEN_SAVER_NEVER", in: wallpaperSettings, english: "Never")
+    static let useScreenSaver = lookup("USE_SCREEN_SAVER", in: wallpaperSettings, english: "Use Screen Saver")
+    static let automatic = lookup("AUTOMATIC", in: wallpaperSettings, english: "Automatic")
+    static let custom = lookup("CUSTOM", in: wallpaperSettings, english: "Custom")
+    static let screenSavers = lookup("SCREEN_SAVERS", in: wallpaperSettings, english: "Screen Savers")
+    static let done = lookup("DONE", in: wallpaperSettings, english: "Done")
+    static let macOSScreenSavers = lookup("DYNAMIC_SCREEN_SAVERS", in: legacyScreenSaverSettings, english: "macOS")
+    static let otherScreenSavers = lookup("OTHER", in: legacyScreenSaverSettings, english: "Other")
+    static let screenSaverOptions = lookup("OPTIONS_BUTTON_TITLE", in: legacyScreenSaverSettings, english: "Options…")
+
+    /// When the screen saver starts, as System Settings' Start Screen Saver… says it: after so long, in
+    /// hours and minutes written out, or for a time it doesn't offer, set some other way, that it's custom
+    static func startScreenSaver(after seconds: Int, isOffered: Bool) -> String {
+        guard seconds > 0 else { return never }
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .full
+        formatter.allowedUnits = [.hour, .minute]
+        let time = formatter.string(from: TimeInterval(seconds)) ?? "\(seconds / 60)"
+        return String(format: isOffered ? lookup("AFTER_%@", in: wallpaperSettings, english: "After %@")
+                                        : lookup("AFTER_%@_CUSTOM", in: wallpaperSettings, english: "After %@ (custom)"), time)
+    }
+
+    /// A classic screen saver's name, as its bundle gives it in the user's language
+    static func screenSaverName(at path: String) -> String {
+        let bundle = Bundle(path: path)
+        let english = bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        return bundle?.localizedString(forKey: "CFBundleDisplayName", value: english, table: "InfoPlist", localizations: languages) ?? english
+    }
 
     // System Settings › Wallpaper's sections, besides the aerials' (whose names come with them), and
     // the names of its colours and its aerials
