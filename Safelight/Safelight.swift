@@ -1280,6 +1280,8 @@ struct WallpaperGallery: View {
     @State private var isChoosingPhoto = false
     @State private var photo: PhotosPickerItem?
     @State private var isShowingScreenSaver = false
+    /// Whether Clock Appearance… is open, while which the pictures show the lock screen over them
+    @State private var isShowingClockAppearance = false
     /// Whether the sections have the focus, as System Settings' list of them takes it when the window
     /// becomes key and whenever a wallpaper is clicked: only there are the rings in the accent colour
     @FocusState private var isListFocused: Bool
@@ -1325,11 +1327,21 @@ struct WallpaperGallery: View {
             .padding(.top, 16)
             displayPicker
             options
-            // System Settings' Screen Saver…, under its options, at their trailing edge
+            // System Settings' Screen Saver… and Clock Appearance…, under its options, at their trailing
+            // edge, the second where macOS lets the lock screen's clock be set
             HStack {
                 Spacer()
                 Button(SystemStrings.screenSaverButton) {
                     isShowingScreenSaver = true
+                }
+                if ClockFont.isAvailable {
+                    Button(SystemStrings.clockAppearance) {
+                        LockScreenClock.shared.reload()
+                        isShowingClockAppearance = true
+                    }
+                    .popover(isPresented: $isShowingClockAppearance, arrowEdge: .bottom) {
+                        ClockAppearancePopover()
+                    }
                 }
             }
             .padding(.horizontal, Self.margin)
@@ -1402,6 +1414,9 @@ struct WallpaperGallery: View {
                     } else {
                         Rectangle()
                             .fill(.quaternary)
+                    }
+                    if isShowingClockAppearance {
+                        LockScreenOverlay()
                     }
                 }
                 .frame(width: Self.previewSize.width, height: Self.previewSize.height)
@@ -2803,6 +2818,147 @@ struct ScreenSaverSheet: View {
             screenSaver.choose(id, appearance: screenSaver.appearance(isDark: isDark), isDark: isDark)
         }
         .help(name)
+    }
+}
+
+// MARK: - Clock Appearance Popover
+/// System Settings › Wallpaper › Clock Appearance…, as the popover under the Wallpaper window's button,
+/// built as System Settings builds it: a grouped form as wide as System Settings' (wider in languages
+/// AppKit widens its controls for) with Show large clock, the faces, and the weight. Double-clicking the
+/// faces gives the face its own weight back, as there.
+struct ClockAppearancePopover: View {
+    @ObservedObject var clock = LockScreenClock.shared
+
+    private static let width = (404 * widthFactor).rounded(.up)
+
+    private static var widthFactor: CGFloat {
+        typealias Factor = @convention(c) () -> CGFloat
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_NSLocalizedUserInterfaceWidthFactor") else { return 1 }
+        return unsafeBitCast(symbol, to: Factor.self)()
+    }
+
+    var body: some View {
+        Form {
+            Picker(SystemStrings.showLargeClock, selection: Binding { clock.largeClock } set: { clock.setLargeClock($0) }) {
+                ForEach(LockScreenClock.LargeClock.allCases) { option in
+                    Text(SystemStrings.largeClock(option))
+                }
+            }
+            ClockFontGrid(selection: Binding { clock.font } set: { clock.setFont($0) }, normalizedWeight: clock.normalizedWeight)
+                .padding(.vertical, 4)
+                .onTapGesture(count: 2) {
+                    clock.resetWeight()
+                }
+            Slider(value: Binding { clock.normalizedWeight } set: { clock.setNormalizedWeight($0) }, in: 0...1) {
+                Text(SystemStrings.weight)
+            }
+        }
+        .formStyle(.grouped)
+        .scrollDisabled(true)
+        .frame(width: Self.width)
+        // As tall as its rows, in the middle of the popover, as System Settings' form is: its popover,
+        // which the Wallpaper extension presents, doesn't stretch it to the whole points it's given, so
+        // its rows fall half a point lower than a stretched form's
+        .fixedSize(horizontal: false, vertical: true)
+        .focusable()
+        .focusEffectDisabled()
+    }
+}
+
+/// System Settings' faces: "12" in each, at the weight being chosen, in a row whose columns share out the
+/// form's width, the chosen one ringed
+struct ClockFontGrid: View {
+    @Binding var selection: ClockFont
+    let normalizedWeight: Double
+
+    var body: some View {
+        HStack {
+            ForEach(ClockFont.allCases) { font in
+                Button {
+                    selection = font
+                } label: {
+                    ClockFontView(isSelected: Binding { selection == font } set: { if $0 { selection = font } }, font: font, normalizedWeight: normalizedWeight)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(SystemStrings.clockFont(font)))
+                .accessibilityAddTraits(selection == font ? .isSelected : [])
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+}
+
+/// A face's sample, as System Settings draws it: 12, in the user's digits, at 32 points, in a 38-point
+/// square, with a 2-point ring a point outside it while it's chosen
+struct ClockFontView: View {
+    @Environment(\.isEnabled) private var isEnabled
+    @Binding var isSelected: Bool
+    let font: ClockFont
+    let normalizedWeight: Double
+
+    var body: some View {
+        Text(12.formatted(IntegerFormatStyle<Int>(locale: .autoupdatingCurrent)))
+            .font(font.font(size: 32, normalizedWeight: normalizedWeight))
+            .foregroundStyle(isEnabled ? Color.primary : Color(nsColor: .disabledControlTextColor))
+            .frame(width: 38, height: 38)
+            .contentShape(RoundedRectangle(cornerRadius: 4))
+            .overlay {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(isEnabled ? Color.accentColor : Color(nsColor: .disabledControlTextColor), style: StrokeStyle(lineWidth: 2))
+                        .padding(-1)
+                }
+            }
+    }
+}
+
+/// What System Settings draws over its picture of the desktop while Clock Appearance… is open: the lock
+/// screen, with the date's place, the time in the face and weight being chosen, and at the bottom the
+/// user's picture and name, when the lock screen shows them, and the password field's place, in light
+/// materials, over the picture darkened a little
+struct LockScreenOverlay: View {
+    @ObservedObject var clock = LockScreenClock.shared
+
+    /// The time as the lock screen writes it: hours and minutes, in the hours the user's region uses,
+    /// without AM or PM
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.setLocalizedDateFormatFromTemplate("Jmm")
+        return formatter
+    }()
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.black.opacity(0.1))
+            VStack(spacing: 2) {
+                VStack(spacing: 1) {
+                    Capsule()
+                        .fill(.thickMaterial)
+                        .frame(width: 34, height: 3)
+                    TimelineView(.everyMinute) { _ in
+                        Text(Date(), formatter: Self.timeFormatter)
+                            .font(clock.font.font(size: 27, normalizedWeight: clock.normalizedWeight))
+                            .foregroundStyle(.thickMaterial)
+                    }
+                }
+                Spacer()
+                if clock.showsUserNameAndPhoto {
+                    Capsule()
+                        .fill(.ultraThickMaterial)
+                        .frame(width: 8, height: 8)
+                    Capsule()
+                        .fill(.thickMaterial)
+                        .frame(width: 16, height: 3)
+                }
+                Capsule()
+                    .fill(.thickMaterial)
+                    .frame(width: 34, height: 3)
+            }
+            .environment(\.colorScheme, .light)
+            .padding(5)
+        }
     }
 }
 
@@ -9361,6 +9517,293 @@ final class ScreenSaverManager: ObservableObject {
     }
 }
 
+// MARK: - 9c. Lock Screen Clock (System Settings › Wallpaper › Clock Appearance…)
+/// The lock screen clock's faces, as System Settings › Wallpaper › Clock Appearance… offers them, in its
+/// order (macOS 26 and later). Each is one of macOS's numeric faces, which CoreText only gives out by the
+/// private names loginwindow and System Settings ask for, with the option for system fonts they pass,
+/// and set to a weight on its weight axis, within the range loginwindow gives the face.
+enum ClockFont: String, CaseIterable, Identifiable {
+    case soft, rounded, stencil, newYork, slab, rail
+
+    var id: String { rawValue }
+
+    /// The face System Settings draws it with, as loginwindow does: Soft is the adaptive face where numbers
+    /// are written in Latin, Arabic or Devanagari digits
+    var fontName: String {
+        switch self {
+        case .soft: Self.usesAdaptiveSoft ? ".SFAdaptiveSoftNumeric-Regular" : ".SFSoftNumeric-Regular"
+        case .rounded: ".SFRoundedNumeric-Regular"
+        case .stencil: ".SFStencilNumeric-Regular"
+        case .newYork: ".NewYorkSoftNumeric-Regular"
+        case .slab: ".ADTSlabSoftNumeric-Regular"
+        case .rail: ".SFRailRoundedNumeric-Regular"
+        }
+    }
+
+    private static var usesAdaptiveSoft: Bool {
+        ["deva", "arab", "latn"].contains(Locale.current.numberingSystem.identifier)
+    }
+
+    /// Its weights, on the font's own scale, which loginwindow keeps; System Settings' Weight slider goes
+    /// across them from 0 to 1. Rail comes in one weight.
+    var weights: ClosedRange<Double> {
+        switch self {
+        case .soft, .rounded, .stencil: 110...860
+        case .newYork, .slab: 300...860
+        case .rail: 400...400
+        }
+    }
+
+    /// The weight it has until one's chosen
+    var defaultWeight: Double {
+        self == .rail ? 400 : 640
+    }
+
+    /// A weight on the font's scale from one on the slider's, and back, as System Settings works them out.
+    /// Rail's one weight is the slider's middle.
+    func weight(normalized: Double) -> Double {
+        weights.lowerBound + normalized * (weights.upperBound - weights.lowerBound)
+    }
+
+    func normalized(_ weight: Double) -> Double {
+        let span = weights.upperBound - weights.lowerBound
+        return span > 0 ? (weight - weights.lowerBound) / span : 0.5
+    }
+
+    /// The face at a size, at a weight on the slider's scale, as System Settings draws its samples and its
+    /// preview's clock
+    func font(size: CGFloat, normalizedWeight: Double) -> Font {
+        let face = CTFontCreateWithFontDescriptorAndOptions(CTFontDescriptorCreateWithNameAndSize(fontName as CFString, size), 0, nil, Self.systemFontOption)
+        let variation = CTFontDescriptorCreateWithAttributes([kCTFontVariationAttribute: [Self.weightAxis: weight(normalized: normalizedWeight)]] as CFDictionary)
+        return Font(CTFontCreateCopyWithAttributes(face, 0, nil, variation))
+    }
+
+    /// CoreText's option for a system font asked for by its private name, and the weight axis's tag
+    private static let systemFontOption = CTFontOptions(rawValue: 0x400)
+    private static let weightAxis = 0x7767_6874 // 'wght'
+
+    /// Whether macOS has the faces, as it does from macOS 26, when the lock screen's clock could first be set
+    static let isAvailable: Bool = {
+        let name = ClockFont.rounded.fontName
+        let face = CTFontCreateWithFontDescriptorAndOptions(CTFontDescriptorCreateWithNameAndSize(name as CFString, 12), 0, nil, systemFontOption)
+        return CTFontCopyPostScriptName(face) as String == name
+    }()
+}
+
+/// The lock screen's clock, as System Settings › Wallpaper › Clock Appearance… sets it: whether it's large
+/// on the lock screen, and on the screen saver too, its face and its weight. They're loginwindow's
+/// preferences, which System Settings reads, and loginwindow copies the user's to the login window as they
+/// change. The face and the weight are the user's own, which System Settings writes first and reads first;
+/// it writes them for the whole Mac too, as the login window's for no one in particular, which only
+/// Apple's code may do without an administrator's password, so Safelight leaves those. Whether the clock is
+/// large is only ever the whole Mac's, so turning it on or off asks for an administrator's password, as
+/// System Settings does; on the screen saver too is the screen saver's own preference.
+final class LockScreenClock: ObservableObject {
+    static let shared = LockScreenClock()
+
+    /// System Settings' Show large clock, in its order
+    enum LargeClock: CaseIterable, Identifiable {
+        case onScreenSaverAndLockScreen, onLockScreen, never
+
+        var id: Self { self }
+    }
+
+    @Published private(set) var font = ClockFont.soft
+    /// The weight, on the Weight slider's scale
+    @Published private(set) var normalizedWeight = ClockFont.soft.normalized(ClockFont.soft.defaultWeight)
+    @Published private(set) var largeClock = LargeClock.onLockScreen
+    /// Whether the lock screen shows the user's picture and name, which System Settings' preview leaves
+    /// out when it doesn't
+    @Published private(set) var showsUserNameAndPhoto = true
+
+    private static let loginwindow = "com.apple.loginwindow" as CFString
+    private static let fontKey = "ClockFontIdentifier"
+    private static let weightKey = "ClockFontWeight"
+    private static let largeClockKey = "UsesLargeDateTime"
+    private static let hidesUserKey = "HideUserAvatarAndName"
+    /// The screen saver's preference for showing the clock (ScreenSaver's `SSDShowClock`)
+    private static let screenSaver = "com.apple.screensaver"
+    private static let showsClockKey = "showClock"
+    /// How long the slider rests before its weight's written, as System Settings waits
+    private static let weightDelay = 0.2
+    private var weightWrite: DispatchWorkItem?
+
+    init() {
+        reload()
+    }
+
+    /// Reads the clock again, as System Settings does each time it opens its popover
+    func reload() {
+        CFPreferencesSynchronize(Self.loginwindow, kCFPreferencesAnyUser, kCFPreferencesAnyHost)
+        let font = Self.storedFont
+        self.font = font
+        normalizedWeight = font.normalized(Self.storedWeight ?? font.defaultWeight)
+        largeClock = Self.storedLargeClock
+        showsUserNameAndPhoto = !(Self.value(Self.hidesUserKey, user: kCFPreferencesAnyUser) as? Bool ?? false)
+    }
+
+    private static func value(_ key: String, user: CFString) -> Any? {
+        CFPreferencesCopyValue(key as CFString, loginwindow, user, kCFPreferencesAnyHost)
+    }
+
+    /// The user's face, or else the whole Mac's, as System Settings reads it
+    private static var storedFont: ClockFont {
+        (value(fontKey, user: kCFPreferencesCurrentUser) as? String).flatMap(ClockFont.init(rawValue:))
+            ?? (value(fontKey, user: kCFPreferencesAnyUser) as? String).flatMap(ClockFont.init(rawValue:))
+            ?? .soft
+    }
+
+    private static var storedWeight: Double? {
+        (value(weightKey, user: kCFPreferencesCurrentUser) as? NSNumber ?? value(weightKey, user: kCFPreferencesAnyUser) as? NSNumber)?.doubleValue
+    }
+
+    /// Large on the lock screen unless the Mac's set otherwise, and on the screen saver too when the screen
+    /// saver shows the clock
+    private static var storedLargeClock: LargeClock {
+        if let uses = value(largeClockKey, user: kCFPreferencesAnyUser), (uses as? Bool) != true {
+            return .never
+        }
+        return ScreenSaverDefaults(forModuleWithName: screenSaver)?.bool(forKey: showsClockKey) == true ? .onScreenSaverAndLockScreen : .onLockScreen
+    }
+
+    /// Sets the face. The slider stays where it is, so the face's weight follows from it.
+    func setFont(_ font: ClockFont) {
+        guard font != self.font else { return }
+        self.font = font
+        Self.setUserValue(font.rawValue as CFString, forKey: Self.fontKey)
+        writeWeight()
+    }
+
+    func setNormalizedWeight(_ weight: Double) {
+        normalizedWeight = weight
+        writeWeight()
+    }
+
+    /// The face's own weight, which System Settings goes back to on a double-click on the faces
+    func resetWeight() {
+        setNormalizedWeight(font.normalized(font.defaultWeight))
+    }
+
+    /// Writes the weight on the face's scale once the slider has rested, when it's changed
+    private func writeWeight() {
+        weightWrite?.cancel()
+        let weight = font.weight(normalized: normalizedWeight)
+        guard weight != Self.storedWeight else { return }
+        let write = DispatchWorkItem {
+            Self.setUserValue(weight as CFNumber, forKey: Self.weightKey)
+        }
+        weightWrite = write
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.weightDelay, execute: write)
+    }
+
+    private static func setUserValue(_ value: CFPropertyList, forKey key: String) {
+        CFPreferencesSetValue(key as CFString, value, loginwindow, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+        CFPreferencesSynchronize(loginwindow, kCFPreferencesCurrentUser, kCFPreferencesAnyHost)
+    }
+
+    /// Sets Show large clock. The pop-up shows the choice at once; when the clock is turned on or off, which
+    /// is the whole Mac's, macOS asks for an administrator's password, and when it isn't given, the pop-up
+    /// goes back, as System Settings' does. With FileVault on, the Mac's start-up volume gets the change for
+    /// its login window before macOS starts, as System Settings has it updated.
+    func setLargeClock(_ option: LargeClock) {
+        let current = Self.storedLargeClock
+        largeClock = option
+        guard option != current else { return }
+        let showsClock = option == .onScreenSaverAndLockScreen
+        guard (option != .never) != (current != .never) else {
+            Self.setScreenSaverClock(showsClock)
+            return
+        }
+        // The start-up volume's update takes a while, so it carries on by itself once the setting's written
+        let script = """
+            /usr/bin/defaults write /Library/Preferences/com.apple.loginwindow \(Self.largeClockKey) -bool \(option != .never ? "YES" : "NO") || exit 1
+            echo done
+            if /usr/bin/fdesetup isactive >/dev/null 2>&1; then /usr/sbin/diskutil apfs updatePreboot / </dev/null >/dev/null 2>&1 & fi
+            """
+        DispatchQueue.global(qos: .userInitiated).async {
+            let isDone = Administrator.run(script, prompt: SystemStrings.modifyingLockScreenSettings)
+            DispatchQueue.main.async {
+                if isDone {
+                    Self.setScreenSaverClock(showsClock)
+                }
+                // What macOS has now, as System Settings reads it again; the face and weight are left as
+                // they are, as one may still be waiting to be written
+                CFPreferencesSynchronize(Self.loginwindow, kCFPreferencesAnyUser, kCFPreferencesAnyHost)
+                self.largeClock = Self.storedLargeClock
+            }
+        }
+    }
+
+    /// Whether the screen saver shows the clock, which the screen saver's restarted to pick up, as System
+    /// Settings has it
+    private static func setScreenSaverClock(_ shows: Bool) {
+        guard let defaults = ScreenSaverDefaults(forModuleWithName: screenSaver), defaults.bool(forKey: showsClockKey) != shows else { return }
+        defaults.set(shows, forKey: showsClockKey)
+        defaults.synchronize()
+        let restart = NSSelectorFromString("restartForUser:")
+        if let controller = (NSClassFromString("ScreenSaverController") as? NSObject.Type)?.init(), controller.responds(to: restart) {
+            controller.perform(restart, with: nil)
+        }
+    }
+}
+
+/// Runs a shell script as root, once an administrator's name and password have been given in macOS's own
+/// dialog, as System Settings asks for them before it changes the whole Mac's settings. macOS keeps the
+/// right for five minutes, so changes close together ask once.
+enum Administrator {
+    private static var authorization: AuthorizationRef?
+    private static let queue = DispatchQueue(label: "Administrator")
+
+    /// Whether the script printed "done", which it can only once it's run as root; not when the dialog's
+    /// cancelled. It waits for the dialog, so it's for a background queue.
+    static func run(_ script: String, prompt: String) -> Bool {
+        queue.sync {
+            if authorization == nil {
+                var created: AuthorizationRef?
+                guard AuthorizationCreate(nil, nil, [], &created) == errAuthorizationSuccess else { return false }
+                authorization = created
+            }
+            guard let authorization, obtainRight(authorization, prompt: prompt) else { return false }
+            // The one way macOS still has for an app to run something as root without a helper of its own
+            typealias Execute = @convention(c) (AuthorizationRef, UnsafePointer<CChar>, AuthorizationFlags, UnsafePointer<UnsafeMutablePointer<CChar>?>,
+                                                UnsafeMutablePointer<UnsafeMutablePointer<FILE>?>?) -> OSStatus
+            guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "AuthorizationExecuteWithPrivileges") else { return false }
+            let execute = unsafeBitCast(symbol, to: Execute.self)
+            let arguments = ["-c", script].map { strdup($0) } + [nil]
+            defer { arguments.forEach { free($0) } }
+            var pipe: UnsafeMutablePointer<FILE>?
+            guard execute(authorization, "/bin/sh", [], arguments, &pipe) == errAuthorizationSuccess, let pipe else { return false }
+            var output = Data()
+            var byte = fgetc(pipe)
+            while byte != EOF {
+                output.append(UInt8(byte))
+                byte = fgetc(pipe)
+            }
+            fclose(pipe)
+            return String(decoding: output, as: UTF8.self).contains("done")
+        }
+    }
+
+    /// Asks for the right to run things as root, with macOS's dialog saying why
+    private static func obtainRight(_ authorization: AuthorizationRef, prompt: String) -> Bool {
+        kAuthorizationRightExecute.withCString { right in
+            kAuthorizationEnvironmentPrompt.withCString { promptKey in
+                prompt.withCString { promptText in
+                    var rightItem = AuthorizationItem(name: right, valueLength: 0, value: nil, flags: 0)
+                    var promptItem = AuthorizationItem(name: promptKey, valueLength: strlen(promptText), value: UnsafeMutableRawPointer(mutating: promptText), flags: 0)
+                    return withUnsafeMutablePointer(to: &rightItem) { rightPointer in
+                        withUnsafeMutablePointer(to: &promptItem) { promptPointer in
+                            var rights = AuthorizationRights(count: 1, items: rightPointer)
+                            var environment = AuthorizationEnvironment(count: 1, items: promptPointer)
+                            return AuthorizationCopyRights(authorization, &rights, &environment, [.interactionAllowed, .extendRights, .preAuthorize], nil) == errAuthorizationSuccess
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // MARK: - 10. System Strings (System Settings' Translations)
 /// Every label in the app, read from the string tables System Settings (or Control Center, the Dock,
 /// or an app's menus) loads the same label from, so it comes out in the system language, worded
@@ -9451,6 +9894,38 @@ enum SystemStrings {
         let time = formatter.string(from: TimeInterval(seconds)) ?? "\(seconds / 60)"
         return String(format: isOffered ? lookup("AFTER_%@", in: wallpaperSettings, english: "After %@")
                                         : lookup("AFTER_%@_CUSTOM", in: wallpaperSettings, english: "After %@ (custom)"), time)
+    }
+
+    // System Settings › Wallpaper's Clock Appearance… and its popover: when the clock is large, its faces,
+    // their weight, and what its password dialog says, with Safelight's name for the pane's
+    static let clockAppearance = lookup("CLOCK_APPEARANCE", in: wallpaperSettings, english: "Clock Appearance…")
+    static let showLargeClock = lookup("SHOW_LARGE_CLOCK", in: wallpaperSettings, english: "Show large clock")
+    static let weight = lookup("WEIGHT", in: wallpaperSettings, english: "Weight")
+
+    static func largeClock(_ option: LockScreenClock.LargeClock) -> String {
+        switch option {
+        case .onScreenSaverAndLockScreen: lookup("ON_SCREEN_SAVER_AND_LOCK_SCREEN", in: wallpaperSettings, english: "On Screen Saver and Lock Screen")
+        case .onLockScreen: lookup("ON_LOCK_SCREEN", in: wallpaperSettings, english: "On Lock Screen")
+        case .never: lookup("SHOW_CLOCK_NEVER", in: wallpaperSettings, english: "Never")
+        }
+    }
+
+    static func clockFont(_ font: ClockFont) -> String {
+        switch font {
+        case .soft: lookup("CLOCK_FONT_SOFT", in: wallpaperSettings, english: "Soft")
+        case .rounded: lookup("CLOCK_FONT_ROUNDED", in: wallpaperSettings, english: "Rounded")
+        case .stencil: lookup("CLOCK_FONT_STENCIL", in: wallpaperSettings, english: "Stencil")
+        case .newYork: lookup("CLOCK_FONT_NEW_YORK", in: wallpaperSettings, english: "New York")
+        case .slab: lookup("CLOCK_FONT_SLAB", in: wallpaperSettings, english: "Slab")
+        case .rail: lookup("CLOCK_FONT_RAIL", in: wallpaperSettings, english: "Rail")
+        }
+    }
+
+    static var modifyingLockScreenSettings: String {
+        let english = "Wallpaper is trying to modify your lock screen settings."
+        let sentence = lookup("WALLPAPER_MODIFYING_LOCK_SCREEN_SETTINGS", in: wallpaperSettings, english: english)
+        let pane = sentence == english ? "Wallpaper" : wallpaper
+        return sentence.contains(pane) ? sentence.replacingOccurrences(of: pane, with: appName) : "\(appName) is trying to modify your lock screen settings."
     }
 
     /// A classic screen saver's name, as its bundle gives it in the user's language
