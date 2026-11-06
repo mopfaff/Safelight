@@ -3794,6 +3794,9 @@ class ColorController: ObservableObject {
     private var brightnessFollowers: [CGDirectDisplayID: BrightnessFollower] = [:]
     /// Where the brightness keys have put each display whose slider is still easing over to it
     private var brightnessKeyTargets: [String: Float] = [:]
+    /// Where its own buttons have put each monitor whose slider is still easing over to it. It's there
+    /// already, so it isn't set again on the way.
+    private var monitorTargets: [CGDirectDisplayID: Float] = [:]
     /// The displays whose slider starts where the display is once it's known whether it's a monitor
     /// whose own brightness can be set (over DDC), as only then is its brightness known
     private var displaysAwaitingBrightness: Set<String> = []
@@ -3851,6 +3854,12 @@ class ColorController: ObservableObject {
         displaysAwaitingBrightness = Set(displays.filter { !displaysWithSystemBrightness.contains($0.id) }.map(\.key))
         GammaManager.shared.monitorFound = { [weak self] displayID, brightness in
             self?.monitorFound(displayID, brightness: brightness)
+        }
+        GammaManager.shared.monitorChanged = { [weak self] displayID, brightness in
+            self?.monitorChanged(displayID, brightness: brightness)
+        }
+        GammaManager.shared.followsMonitor = { [weak self] displayID in
+            self?.followsMonitor(displayID) ?? false
         }
         // Each display's slider starts where the display is, and the displays dimmed in software aren't
         // yet. Set first, as setting either sets the displays, and with only `brightness` they'd all take it.
@@ -3916,6 +3925,7 @@ class ColorController: ObservableObject {
         let smoothSyncTimer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] _ in
             self?.syncWithSystemBrightness()
             self?.easeTowardBrightnessKeyTargets()
+            self?.easeTowardMonitorTargets()
         }
         RunLoop.main.add(smoothSyncTimer, forMode: .common)
         self.syncTimer = smoothSyncTimer
@@ -3940,7 +3950,44 @@ class ColorController: ObservableObject {
         updateBrightness()
         showPreview()
     }
-    
+
+    /// Whether a monitor's slider follows it as its own buttons change it, as a display the Mac sets
+    /// moves its slider: while the Schedule's off, its own slider, or while the displays have one
+    /// brightness, the Brightness slider, if the Mac sets none itself and the monitor is the main display
+    private func followsMonitor(_ displayID: CGDirectDisplayID) -> Bool {
+        !isAutoMode && (adjustsDisplaysIndependently || (leadDisplay == nil && displayID == CGMainDisplayID()))
+    }
+
+    /// Eases a monitor's slider over to where its own buttons have put it
+    private func monitorChanged(_ displayID: CGDirectDisplayID, brightness: Float) {
+        guard followsMonitor(displayID), !isUserDraggingSlider, previewedKeyframeID == nil else { return }
+        monitorTargets[displayID] = brightness
+    }
+
+    /// Moves each monitor's slider a frame further over to where its own buttons have put it, easing
+    /// over as for the brightness keys, but without setting the monitor, which is there already
+    private func easeTowardMonitorTargets() {
+        for (displayID, target) in monitorTargets {
+            guard followsMonitor(displayID), !isUserDraggingSlider, previewedKeyframeID == nil else {
+                monitorTargets[displayID] = nil
+                continue
+            }
+            let brightness: Float
+            syncingDisplay = displayID
+            if !adjustsDisplaysIndependently {
+                brightness = BrightnessFollower.ease(from: self.brightness, to: target)
+                self.brightness = brightness
+            } else if let display = displays.first(where: { $0.id == displayID }) {
+                brightness = BrightnessFollower.ease(from: self[brightnessOf: display.key], to: target)
+                self[brightnessOf: display.key] = brightness
+            } else {
+                brightness = target
+            }
+            syncingDisplay = nil
+            if brightness == target { monitorTargets[displayID] = nil }
+        }
+    }
+
     func syncWithSystemBrightness() {
         guard !isAutoMode, !isUserDraggingSlider, previewedKeyframeID == nil else {
             brightnessFollowers = [:]
@@ -3982,7 +4029,8 @@ class ColorController: ObservableObject {
               displaysWithSystemBrightness != [display.id] else { return false }
 
         let steps: Float = isFine ? 64 : 16
-        let current = brightnessKeyTargets[display.key] ?? self[brightnessOf: display.key]
+        let monitorTarget = monitorTargets.removeValue(forKey: display.id)
+        let current = brightnessKeyTargets[display.key] ?? monitorTarget ?? self[brightnessOf: display.key]
         let step = isUp ? (current * steps + 0.01).rounded(.down) + 1 : (current * steps - 0.01).rounded(.up) - 1
         brightnessKeyTargets[display.key] = min(max(step / steps, 0), 1)
         return true
@@ -4018,6 +4066,7 @@ class ColorController: ObservableObject {
         UserDefaults.standard.set(adjustsDisplaysIndependently, forKey: Self.adjustsDisplaysIndependentlyDefaultsKey)
         brightnessFollowers = [:]
         brightnessKeyTargets = [:]
+        monitorTargets = [:]
         scheduledDisplayBrightness = [:]
         displaysAwaitingBrightness = []
         if adjustsDisplaysIndependently {
@@ -4250,6 +4299,7 @@ class ColorController: ObservableObject {
         isAutoMode = false
         brightnessFollowers = [:]
         brightnessKeyTargets = [:]
+        monitorTargets = [:]
         isColorFilterOn = false
         brightness = 1.0
         displayBrightness = [:]
@@ -4532,6 +4582,11 @@ class GammaManager {
     /// DDC: with its brightness as the monitor has it, or nil if it's dimmed in software. Until then
     /// it's left as it is.
     var monitorFound: (CGDirectDisplayID, Float?) -> Void = { _, _ in }
+    /// Called on the main thread when a monitor's own buttons have changed its brightness, to this
+    var monitorChanged: (CGDirectDisplayID, Float) -> Void = { _, _ in }
+    /// Whether a monitor's slider follows it as its own buttons change it, so that it's asked for its
+    /// brightness every second
+    var followsMonitor: (CGDirectDisplayID) -> Bool = { _ in false }
 
     private var setBrightnessFunc: (@convention(c) (CGDirectDisplayID, Float) -> Int32)?
     private var getBrightnessFunc: (@convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32)?
@@ -4552,6 +4607,12 @@ class GammaManager {
         monitors.found = { [weak self] displayID, brightness in
             self?.lastBrightness[displayID] = nil
             self?.monitorFound(displayID, brightness)
+        }
+        monitors.changed = { [weak self] displayID, brightness in
+            self?.monitorChanged(displayID, brightness)
+        }
+        monitors.isFollowed = { [weak self] displayID in
+            self?.followsMonitor(displayID) ?? false
         }
         let handle = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_LAZY)
         if let handle = handle {
@@ -4581,8 +4642,8 @@ class GammaManager {
     }
 
     /// Sets each display to its brightness, a display that mirrors another to that one's, and leaves
-    /// out any display without one. `skippedHardware` is a display the system has set already, which is
-    /// only dimmed in software if it can't be set directly.
+    /// out any display without one. `skippedHardware` is a display the system has set already, or a
+    /// monitor its own buttons have, which is only dimmed in software if it can't be set directly.
     func setBrightness(_ displayBrightness: [CGDirectDisplayID: Float], skippingHardwareOf skippedHardware: CGDirectDisplayID? = nil) {
         let displays = getAllDisplays()
         lastBrightness = lastBrightness.filter { displays.contains($0.key) }
@@ -4623,6 +4684,8 @@ class GammaManager {
                 } else {
                     hardwareBrightnessSucceeded = true
                 }
+            } else if displayID == skippedHardware && monitors.contains(displayID) {
+                hardwareBrightnessSucceeded = true
             } else {
                 switch monitors.set(brightness, of: displayID) {
                 case true?:
@@ -4746,12 +4809,25 @@ final class DimmingWindow: NSWindow {
 /// display is asked for its brightness when it's first seen, and is a monitor here once it answers.
 /// One that doesn't (with DDC/CI turned off in its menu, or behind a dock or adapter that doesn't pass
 /// it on) is asked twice more, in case it was waking up, and is then dimmed in software.
+///
+/// A monitor doesn't say when its own buttons have changed it, so while its slider follows it, it's
+/// asked for its brightness again every second: not while it's being set, nor while it's asleep, and
+/// less often, down to once a minute, while it doesn't answer.
 final class DDCMonitors {
     /// Called on the main thread once it's known whether a display is a monitor here: with its
     /// brightness as the monitor has it, or nil if it isn't
     var found: (CGDirectDisplayID, Float?) -> Void = { _, _ in }
+    /// Called on the main thread when a monitor has a brightness other than the one last set or read,
+    /// as when its own buttons have changed it
+    var changed: (CGDirectDisplayID, Float) -> Void = { _, _ in }
+    /// Whether a monitor's slider follows it, so that it's asked for its brightness every second
+    var isFollowed: (CGDirectDisplayID) -> Bool = { _ in false }
 
-    private var monitors: [CGDirectDisplayID: Monitor] = [:]
+    private var monitors: [CGDirectDisplayID: Monitor] = [:] {
+        didSet { updateReadTimer() }
+    }
+    /// Asks the monitors whose sliders follow them for their brightness, every second while there are any
+    private var readTimer: Timer?
     /// The displays being asked for their brightness, each with the search whose answer it waits for,
     /// so an answer for a display disconnected meanwhile is left out
     private var searches: [CGDirectDisplayID: Int] = [:]
@@ -4771,6 +4847,29 @@ final class DDCMonitors {
         if others.contains(displayID) { return false }
         if searches[displayID] == nil { search(for: displayID, retryDelays: Self.retryDelays[...]) }
         return nil
+    }
+
+    /// Whether a display is a monitor here, whose own brightness is set
+    func contains(_ displayID: CGDirectDisplayID) -> Bool {
+        monitors[displayID] != nil
+    }
+
+    private func updateReadTimer() {
+        if monitors.isEmpty {
+            readTimer?.invalidate()
+            readTimer = nil
+        } else if readTimer == nil {
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.readFollowedMonitors() }
+            timer.tolerance = 0.2
+            RunLoop.main.add(timer, forMode: .common)
+            readTimer = timer
+        }
+    }
+
+    private func readFollowedMonitors() {
+        for (displayID, monitor) in monitors where isFollowed(displayID) && CGDisplayIsAsleep(displayID) == 0 {
+            monitor.read { [weak self] brightness in self?.changed(displayID, brightness) }
+        }
     }
 
     /// Waits, for a second at most, until the monitors have been written the brightness last set
@@ -4794,12 +4893,13 @@ final class DDCMonitors {
         let location = GammaManager.info(of: displayID)?["IODisplayLocation"] as? String
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) {
             let service = location.flatMap(DDC.service(at:))
-            let brightness = service.flatMap(DDC.brightness(of:))
+            let brightness = service.flatMap { DDC.brightness(of: $0) }
             DispatchQueue.main.async { [weak self] in
                 guard let self, searches[displayID] == search else { return }
                 if let service, let brightness {
                     searches[displayID] = nil
-                    monitors[displayID] = Monitor(service: service, maximum: brightness.maximum, current: brightness.current)
+                    monitors[displayID] = Monitor(service: service, maximum: brightness.maximum, current: brightness.current,
+                                                  replySubaddress: brightness.subaddress)
                     found(displayID, Float(brightness.current) / Float(brightness.maximum))
                 } else if service != nil, let retryDelay = retryDelays.first {
                     self.search(for: displayID, after: retryDelay, retryDelays: retryDelays.dropFirst())
@@ -4813,13 +4913,25 @@ final class DDCMonitors {
     }
 
     /// A monitor that answered. Its brightness is written on a queue of its own: the latest value each
-    /// time, once the monitor has had the 50 ms DDC/CI gives it to act on the one before.
+    /// time, once the monitor has had the 50 ms DDC/CI gives it to act on the one before. It's read
+    /// there too, so a read never comes between two writes.
     private final class Monitor {
         private let service: CFTypeRef
         /// Its brightness's highest value, from 0, which is 100 on most monitors
         private let maximum: UInt16
-        /// The value last set, so the same one isn't written again. Main thread only.
+        /// The subaddress its replies are read with, the one it first answered with
+        private let replySubaddress: UInt32
+        /// The value last set or read, so the same one isn't written again. Main thread only.
         private var value: UInt16
+        /// How many values have been set, so a reply asked for before the latest one is left out. Main
+        /// thread only.
+        private var setCount = 0
+        /// When it's next read: not for a second after it's been set, and later each time it doesn't
+        /// answer. Main thread only.
+        private var nextRead = Date.distantPast
+        /// Whether it's being read, and how many reads in a row it hasn't answered. Main thread only.
+        private var isReading = false
+        private var unansweredReads = 0
         /// Where it's written, one write after another
         let queue = DispatchQueue(label: "Safelight.DDCMonitor", qos: .userInitiated)
         private let lock = NSLock()
@@ -4828,16 +4940,19 @@ final class DDCMonitors {
         /// Whether the queue is writing, and takes `pendingValue` when it's done. Guarded by `lock`.
         private var isWriting = false
 
-        init(service: CFTypeRef, maximum: UInt16, current: UInt16) {
+        init(service: CFTypeRef, maximum: UInt16, current: UInt16, replySubaddress: UInt32) {
             self.service = service
             self.maximum = maximum
             self.value = current
+            self.replySubaddress = replySubaddress
         }
 
         func set(_ brightness: Float) {
             let value = UInt16((min(max(brightness, 0), 1) * Float(maximum)).rounded())
             guard value != self.value else { return }
             self.value = value
+            setCount += 1
+            nextRead = max(nextRead, Date() + 1)
             lock.lock()
             pendingValue = value
             let startsWriting = !isWriting
@@ -4860,6 +4975,31 @@ final class DDCMonitors {
                 DDC.send([0x03, DDC.brightnessCode, UInt8(value >> 8), UInt8(value & 0xFF)], to: service)
                 valueToRepeat = newValue
                 usleep(50_000)
+            }
+        }
+
+        /// Asks the monitor for its brightness, unless it's been set in the last second, and calls
+        /// `changed` with it if it's not the one last set or read
+        func read(changed: @escaping (Float) -> Void) {
+            guard !isReading, Date() >= nextRead else { return }
+            isReading = true
+            let setCount = setCount
+            queue.async {
+                let current = DDC.brightness(of: self.service, subaddress: self.replySubaddress)?.current
+                DispatchQueue.main.async {
+                    self.isReading = false
+                    guard let current else {
+                        // As when it's waking up, or its menu is open
+                        self.unansweredReads += 1
+                        self.nextRead = max(self.nextRead, Date() + min(pow(2, Double(self.unansweredReads)), 60))
+                        return
+                    }
+                    self.unansweredReads = 0
+                    let value = min(current, self.maximum)
+                    guard setCount == self.setCount, value != self.value else { return }
+                    self.value = value
+                    changed(Float(value) / Float(self.maximum))
+                }
             }
         }
     }
@@ -4909,17 +5049,18 @@ private enum DDC {
         return nil
     }
 
-    /// Asks a monitor for its brightness, up to four times, as it may not answer at once. The reply is
-    /// read both with no subaddress and with the Mac's address as one: a Dell SE2216H on the M4 Pro Mac
-    /// mini's HDMI port answers only the first way.
-    static func brightness(of service: CFTypeRef) -> (current: UInt16, maximum: UInt16)? {
+    /// Asks a monitor for its brightness, and returns it with the subaddress its reply was read with.
+    /// Without one to read it with, it's asked up to four times, as it may not answer at once, and the
+    /// reply is read both with no subaddress and with the Mac's address as one: a Dell SE2216H on the M4
+    /// Pro Mac mini's HDMI port answers only the first way. With one, it's asked once.
+    static func brightness(of service: CFTypeRef, subaddress knownSubaddress: UInt32? = nil) -> (current: UInt16, maximum: UInt16, subaddress: UInt32)? {
         guard let readI2C else { return nil }
-        for attempt in 0..<4 {
+        for attempt in 0..<(knownSubaddress == nil ? 4 : 1) {
             if attempt > 0 { usleep(20_000) }
             guard send([0x01, brightnessCode], to: service) else { continue }
             usleep(50_000) // DDC/CI gives a monitor 40 ms to have its reply ready
             var reply = [UInt8](repeating: 0, count: 11)
-            let subaddress = attempt.isMultiple(of: 2) ? 0 : UInt32(hostAddress)
+            let subaddress = knownSubaddress ?? (attempt.isMultiple(of: 2) ? 0 : UInt32(hostAddress))
             // Its address, length, "VCP feature reply", no error, the code asked for, its type, the
             // highest value and the current one (two bytes each), and a checksum
             guard readI2C(service, monitorAddress, subaddress, &reply, UInt32(reply.count)) == kIOReturnSuccess,
@@ -4927,7 +5068,7 @@ private enum DDC {
                   reply[..<10].reduce(UInt8(0x50), ^) == reply[10] else { continue }
             let maximum = UInt16(reply[6]) << 8 | UInt16(reply[7])
             let current = UInt16(reply[8]) << 8 | UInt16(reply[9])
-            if maximum > 0 { return (min(current, maximum), maximum) }
+            if maximum > 0 { return (min(current, maximum), maximum, subaddress) }
         }
         return nil
     }
