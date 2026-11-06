@@ -13,12 +13,18 @@
 #                                              over a capture of System Settings' window, so the glass has
 #                                              the same colours behind it, in the appearance the Mac has;
 #                                              then diffs the two
+#   scripts/clock-appearance.sh --fade         films how the lock screen fades in over System Settings'
+#                                              picture of the desktop as Accessibility opens Clock
+#                                              Appearance…, and out as it closes it (System Settings open on
+#                                              Wallpaper), then the same in Safelight's Wallpaper window, and
+#                                              fits each curve with a spring (scripts/clock-appearance/fade.py)
 #
 # It builds a copy of Safelight.swift into build/clock-appearance/Clock.app, with its own settings, whose
 # stubs.swift stands in for CFPreferencesSetValue and AuthorizationCopyRights, so it can't change the
 # clock or ask for a password, and scripts/screenshots/NoSystemChanges.swift for the colour filter,
 # brightness and appearance. Its windows stay in the background. It uses scripts/screen-saver-sheet's
-# Accessibility tools, and tools/axcancel, which closes System Settings' popover.
+# Accessibility tools, tools/axcancel, which closes System Settings' popover, and tools/film, which films
+# part of a window while it opens and closes the popover.
 
 set -eu
 cd "${0:A:h}/.."
@@ -55,7 +61,7 @@ if nm -u "$APP/Contents/MacOS/Clock" | grep -E '^_kill$|_dlopen$|^_CFPreferences
     exit 2
 fi
 codesign --force --sign - "$APP" 2>/dev/null
-for tool in screen-saver-sheet/tools/axdump screen-saver-sheet/tools/axpress clock-appearance/tools/axcancel; do
+for tool in screen-saver-sheet/tools/axdump screen-saver-sheet/tools/axpress clock-appearance/tools/axcancel clock-appearance/tools/film; do
     [[ "$TOOLS/${tool:t}" -nt "scripts/$tool.swift" ]] || xcrun swiftc -O -o "$TOOLS/${tool:t}" "scripts/$tool.swift"
 done
 cleanup() {
@@ -73,6 +79,24 @@ case "${1:-}" in
         "$TOOLS/axpress" $copy "Clock Appearance…" >/dev/null
         wait $copy
     done
+    ;;
+--fade)
+    pid=$(pgrep -x "System Settings") || { echo "Open System Settings › Wallpaper first" >&2; exit 2; }
+    # System Settings' picture of the desktop, as --compare cuts it out
+    "$TOOLS/film" $pid 265,68,160,100 "$PWD/$DIR/fade-system-settings"
+    "$APP/Contents/MacOS/Clock" window light - &
+    copy=$!
+    sleep 3
+    # The Wallpaper window's picture for Light: its two pictures, with room for their rings and the space
+    # between them, in the middle of its 508 points, 16 below its title bar and 3.5 inside the ring
+    titlebar=$(python3 -c "
+import Quartz
+for w in Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionAll, 0):
+    if w.get('kCGWindowOwnerPID') == $copy and w.get('kCGWindowLayer') == 0 and w['kCGWindowBounds']['Height'] > 500:
+        print(int(w['kCGWindowBounds']['Height']) - 720); break")
+    "$TOOLS/film" $copy "78.5,$((titlebar + 19.5)),160,100" "$PWD/$DIR/fade-safelight" || { kill $copy; exit 2; }
+    kill $copy
+    python3 scripts/clock-appearance/fade.py "$DIR/fade-system-settings" "$DIR/fade-safelight"
     ;;
 --compare)
     pid=$(pgrep -x "System Settings") || { echo "Open System Settings › Wallpaper first" >&2; exit 2; }

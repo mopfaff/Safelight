@@ -1,6 +1,7 @@
 // Draws Safelight's Clock Appearance… popover in the background and writes a PNG of it, as it lies on the
 // screen: Clock popover <light|dark> <out.png>, or Clock gallery <light|dark> <out.png> for the Wallpaper
-// window, whose Clock Appearance… scripts/clock-appearance.sh presses through Accessibility.
+// window, whose Clock Appearance… scripts/clock-appearance.sh presses through Accessibility; Clock window
+// <light|dark> - shows the Wallpaper window until it's quit, for scripts/clock-appearance.sh --fade to film.
 //   ORIGIN=x,y,w,h  the window, in AppKit's screen coordinates (popover: where System Settings' window is)
 //   BACKDROP=png    popover: the window's picture (System Settings' window without its popover), which the
 //                   popover's glass takes its colours from, as System Settings' does
@@ -26,7 +27,7 @@ if let weight = environment["WEIGHT"].flatMap(Double.init) { clock.setNormalized
 
 let frame = numbers("ORIGIN") ?? [200, 200, 508, 720]
 let window: NSWindow
-if mode == "gallery" {
+if mode == "gallery" || mode == "window" {
     window = NSWindow(contentRect: NSRect(x: frame[0], y: frame[1], width: 508, height: 720), styleMask: [.titled, .closable], backing: .buffered, defer: false)
     window.title = SystemStrings.wallpaper
     window.contentView = NSHostingView(rootView: WallpaperGallery())
@@ -69,9 +70,11 @@ func capture() {
         print("wrote", out, image.width, image.height, "popover at", popover.map { NSStringFromRect($0.frame) } ?? "none")
     }
 }
-DispatchQueue.main.asyncAfter(deadline: .now() + (Double(environment["DELAY"] ?? "") ?? 3)) {
-    capture()
-    exit(0)
+if mode != "window" {
+    DispatchQueue.main.asyncAfter(deadline: .now() + (Double(environment["DELAY"] ?? "") ?? 3)) {
+        capture()
+        exit(0)
+    }
 }
 app.run()
 _ = activity

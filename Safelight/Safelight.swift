@@ -1417,9 +1417,6 @@ struct WallpaperGallery: View {
                         Rectangle()
                             .fill(.quaternary)
                     }
-                    if isShowingClockAppearance {
-                        LockScreenOverlay()
-                    }
                 }
                 .frame(width: Self.previewSize.width, height: Self.previewSize.height)
                 .clipShape(RoundedRectangle(cornerRadius: Self.previewCornerRadius))
@@ -1441,6 +1438,21 @@ struct WallpaperGallery: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+        // The lock screen while Clock Appearance… is open, over the picture as System Settings has it: in
+        // an overlay of its own, shown with a plain `if`, so with the default opacity transition, and with
+        // this spring whenever the popover comes or goes, so it fades in as the popover opens and out as
+        // it closes. It's over the button, not in its label, where SwiftUI fades it in but takes it away
+        // at once, and it lets clicks through to the picture, as it did there.
+        .overlay(alignment: .top) {
+            if isShowingClockAppearance {
+                LockScreenOverlay()
+                    .frame(width: Self.previewSize.width, height: Self.previewSize.height)
+                    .clipShape(RoundedRectangle(cornerRadius: Self.previewCornerRadius))
+                    .padding(.top, Self.ringPadding)
+                    .allowsHitTesting(false)
+            }
+        }
+        .animation(.spring(response: 0.5, dampingFraction: 1, blendDuration: 0), value: isShowingClockAppearance)
     }
 
     /// System Settings' pop-up under its picture of the desktop, as wide as that, for the display whose
