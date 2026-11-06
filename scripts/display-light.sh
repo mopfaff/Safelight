@@ -8,6 +8,13 @@
 # the light got 10, 50 and 90% of the way, and the curve.
 #
 #   scripts/display-light.sh                  measures, flashing both screens for about 36 seconds
+#   scripts/display-light.sh --calibrate-dell measures the Dell's light at each step and how its
+#                                             backlight moves, for its BacklightResponse (about a minute)
+#   scripts/display-light.sh --assist         steps the Dell through Safelight's GammaManager, which helps
+#                                             its backlight along when dimming, next to the Studio Display
+#   scripts/display-light.sh --null-dell      with the Dell's picture already scaled to look like a step,
+#                                             writes the step and scales the picture back up by its
+#                                             BacklightResponse: the light shouldn't change
 #   scripts/display-light.sh --attachments    only shows what the camera sends with a frame
 #
 # The camera sets its exposure itself, whatever it's asked, so the light is measured where the display
@@ -19,7 +26,10 @@
 # from Claude Code's shell); the first run asks once. Both displays' brightness is put back after.
 #
 # On 2026-11-06 the Studio Display's light got there within two frames of starting to change; the Dell
-# SE2216H's moved about 30 of its 100 steps a second, taking 1.4 to 1.9 s for half its range.
+# SE2216H's moved about 30 of its 100 steps a second, taking 1.4 to 1.9 s for half its range. With
+# Safelight's assist, the Dell's light got 90% of the way from full to its lowest in 162 ms, against the
+# Studio Display's 283. The camera's re-exposing, your moving and the room's own light limit what it can
+# tell to a few percent: under a grey cover the Dell lit the room too little for --null-dell to read.
 
 set -eu
 cd "${0:A:h}/.."
@@ -28,7 +38,9 @@ DIR="build/display-light"
 APP="$DIR/Display Light.app"
 mkdir -p "$APP/Contents/MacOS"
 cp scripts/display-light/Info.plist "$APP/Contents/Info.plist"
-if ! xcrun swiftc -O -o "$APP/Contents/MacOS/display-light" scripts/display-light/main.swift >"$DIR/build.log" 2>&1; then
+# With a copy of Safelight.swift, for --assist to step the Dell through Safelight's own code
+sed '/^@main$/d' Safelight/Safelight.swift >"$DIR/Safelight.swift"
+if ! xcrun swiftc -swift-version 5 -Onone -o "$APP/Contents/MacOS/display-light" "$DIR/Safelight.swift" scripts/display-light/main.swift >"$DIR/build.log" 2>&1; then
     echo "Build failed (full log: $DIR/build.log):" >&2
     grep -E 'error:' "$DIR/build.log" | sort -u | head -20 >&2
     exit 2

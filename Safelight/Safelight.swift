@@ -3795,9 +3795,8 @@ class ColorController: ObservableObject {
     /// Where the brightness keys have put each display whose slider is still easing over to it
     private var brightnessKeyTargets: [String: Float] = [:]
     /// The displays of `brightnessKeyTargets` that are monitors set over DDC, which are given their target
-    /// at once rather than each value their slider eases through: a monitor moves its backlight over at
-    /// its own pace (a Dell SE2216H about 30 of its 100 steps a second, by scripts/display-light.sh), a
-    /// key's step in about the time macOS fades an Apple display for it
+    /// at once, faded as macOS fades an Apple display for the keys, rather than each value their slider
+    /// eases through: one that moves its backlight over at its own pace keeps to that
     private var monitorsSetByKeys: Set<String> = []
     /// Where its own buttons have put each monitor whose slider is still easing over to it. It's there
     /// already, so it isn't set again on the way.
@@ -4039,7 +4038,7 @@ class ColorController: ObservableObject {
         let step = isUp ? (current * steps + 0.01).rounded(.down) + 1 : (current * steps - 0.01).rounded(.up) - 1
         let target = min(max(step / steps, 0), 1)
         brightnessKeyTargets[display.key] = target
-        if !isUserDraggingSlider, previewedKeyframeID == nil, GammaManager.shared.setMonitor(display.id, to: target) {
+        if !isUserDraggingSlider, previewedKeyframeID == nil, GammaManager.shared.setMonitor(display.id, to: target, fading: true) {
             monitorsSetByKeys.insert(display.key)
         } else {
             monitorsSetByKeys.remove(display.key)
@@ -4056,7 +4055,7 @@ class ColorController: ObservableObject {
         guard !isUserDraggingSlider, previewedKeyframeID == nil else {
             // A monitor is set back to where its slider has stopped
             for display in displays where brightnessKeyTargets[display.key] != nil && monitorsSetByKeys.contains(display.key) {
-                _ = GammaManager.shared.setMonitor(display.id, to: self[brightnessOf: display.key])
+                _ = GammaManager.shared.setMonitor(display.id, to: self[brightnessOf: display.key], fading: false)
             }
             brightnessKeyTargets = [:]
             return
@@ -4589,6 +4588,16 @@ class GammaManager {
     private var lastBrightness: [CGDirectDisplayID: Float] = [:]
     /// The displays dimmed in software, and how far
     private var softwareBrightness: [CGDirectDisplayID: Float] = [:]
+    /// The monitors whose picture is dimmed in software while their backlight catches up, with the
+    /// light each should show meanwhile, and the scale its picture has for that now
+    private var assists: [CGDirectDisplayID: LightChange] = [:]
+    private var assistScales: [CGDirectDisplayID: Float] = [:]
+    /// Moves the assisted monitors' pictures on a frame at a time, with App Nap held off meanwhile
+    private var assistTimer: Timer?
+    private var assistActivity: NSObjectProtocol?
+    /// The scale each display's picture was last given in software, by either, so a table that hasn't
+    /// changed isn't written again, and a display no longer dimmed has its colors put back
+    private var pictureScales: [CGDirectDisplayID: Float] = [:]
     /// The dark layer over each display that's sent its picture, as dimming it in software can't reach it
     private var dimmingWindows: [CGDirectDisplayID: DimmingWindow] = [:]
     /// Whether each display is sent its picture, as it was when last asked
@@ -4666,6 +4675,9 @@ class GammaManager {
         let displays = getAllDisplays()
         lastBrightness = lastBrightness.filter { displays.contains($0.key) }
         monitors.forget(allBut: displays)
+        assists = assists.filter { displays.contains($0.key) }
+        assistScales = assistScales.filter { displays.contains($0.key) }
+        pictureScales = pictureScales.filter { displays.contains($0.key) }
         var newSoftwareBrightness = softwareBrightness.filter { displays.contains($0.key) }
         for (displayID, window) in dimmingWindows where !displays.contains(displayID) || !isStreamed(displayID) {
             window.close()
@@ -4708,6 +4720,7 @@ class GammaManager {
                 switch monitors.set(brightness, of: displayID) {
                 case true?:
                     hardwareBrightnessSucceeded = true
+                    assist(displayID, to: brightness, fading: false)
                 case false?:
                     break
                 case nil:
@@ -4721,25 +4734,103 @@ class GammaManager {
             newSoftwareBrightness[displayID] = softwareBrightness < 0.999 ? softwareBrightness : nil
         }
 
-        // A display's own colors can only be put back along with every other display's, so the ones
-        // still dimmed are then dimmed again
-        let needsGlobalRestore = softwareBrightness.keys.contains { displays.contains($0) && newSoftwareBrightness[$0] == nil }
+        softwareBrightness = newSoftwareBrightness
+        applyPictureScales()
+    }
+
+    /// Sets a monitor set over DDC to `brightness`, with `fading` as macOS fades an Apple display for
+    /// the brightness keys, and returns whether it's one. Its slider is then moved without setting it again.
+    func setMonitor(_ displayID: CGDirectDisplayID, to brightness: Float, fading: Bool) -> Bool {
+        guard monitors.contains(displayID) else { return false }
+        _ = monitors.set(brightness, of: displayID)
+        assist(displayID, to: brightness, fading: fading)
+        return true
+    }
+
+    /// Dims a monitor's picture in software while its backlight catches up, so its light gets to
+    /// `brightness` as an Apple display's does: at once, or with `fading` as macOS fades one for the
+    /// brightness keys. Only for a monitor known to take its time (see `BacklightResponse`). Its picture
+    /// can't be brighter than its backlight, so brightening still goes at its backlight's pace.
+    private func assist(_ displayID: CGDirectDisplayID, to brightness: Float, fading: Bool) {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let response = monitors.response(of: displayID), let level = monitors.backlightLevel(of: displayID, at: now) else { return }
+        // From the light it shows now: what it was last asked for, or less while its backlight is lower
+        let shown = min(assists[displayID]?.scale(at: now) ?? 1, response.pictureScale(at: level))
+        assists[displayID] = LightChange(from: shown, to: response.pictureScale(at: brightness), start: now,
+                                         length: fading ? LightChange.fadeLength : 0)
+        if assistTimer == nil {
+            let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.updateAssists() }
+            RunLoop.main.add(timer, forMode: .common)
+            assistTimer = timer
+            assistActivity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical],
+                                                                   reason: "Dimming a monitor while its backlight catches up")
+        }
+        updateAssists()
+    }
+
+    /// Dims each assisted monitor's picture by as much as its light is to show less than its backlight
+    /// gives now, and lets one go once its backlight has caught up
+    private func updateAssists() {
+        let now = ProcessInfo.processInfo.systemUptime
+        for (displayID, light) in assists {
+            guard let response = monitors.response(of: displayID), let level = monitors.backlightLevel(of: displayID, at: now) else {
+                assists[displayID] = nil
+                assistScales[displayID] = nil
+                continue
+            }
+            let scale = min(1, light.scale(at: now) / response.pictureScale(at: level))
+            if scale >= 0.999 && now >= light.end { assists[displayID] = nil }
+            assistScales[displayID] = scale < 0.999 ? scale : nil
+        }
+        applyPictureScales()
+        if assists.isEmpty, let timer = assistTimer {
+            timer.invalidate()
+            assistTimer = nil
+            if let assistActivity { ProcessInfo.processInfo.endActivity(assistActivity) }
+            assistActivity = nil
+        }
+    }
+
+    /// Writes the gamma table of each display whose picture is dimmed in software, as it's dimmed that
+    /// way or its backlight is being caught up with, and puts back the colors of one no longer dimmed. A
+    /// display's own colors can only be put back along with every other display's, so the ones still
+    /// dimmed are then dimmed again.
+    private func applyPictureScales() {
+        let scales = softwareBrightness.merging(assistScales) { min($0, $1) }
+        let needsGlobalRestore = pictureScales.keys.contains { scales[$0] == nil }
         if needsGlobalRestore {
             CGDisplayRestoreColorSyncSettings()
         }
-        for (displayID, softwareBrightness) in newSoftwareBrightness where needsGlobalRestore || self.softwareBrightness[displayID] != softwareBrightness {
-            let table = calculateGammaTable(brightness: softwareBrightness)
+        for (displayID, scale) in scales where needsGlobalRestore || pictureScales[displayID] != scale {
+            let table = calculateGammaTable(brightness: scale)
             CGSetDisplayTransferByTable(displayID, UInt32(table.count), table, table, table)
         }
-        softwareBrightness = newSoftwareBrightness
+        pictureScales = scales
     }
 
-    /// Sets a monitor set over DDC to `brightness`, and returns whether it's one. Its slider is then
-    /// moved without setting it again.
-    func setMonitor(_ displayID: CGDirectDisplayID, to brightness: Float) -> Bool {
-        guard monitors.contains(displayID) else { return false }
-        _ = monitors.set(brightness, of: displayID)
-        return true
+    /// The light an assisted monitor is to show, in scales of its picture at full backlight: from `from`
+    /// to `to`, at once or over `length` seconds
+    private struct LightChange {
+        let from: Float
+        let to: Float
+        let start: TimeInterval
+        let length: TimeInterval
+        /// The length of macOS's fade of an Apple display for the brightness keys
+        static let fadeLength: TimeInterval = 0.26667
+
+        var end: TimeInterval { start + length }
+
+        func scale(at time: TimeInterval) -> Float {
+            guard length > 0, time < end else { return to }
+            let progress = Float(max(time - start, 0) / length)
+            // corebrightnessd's "sloper" ease (-[CBDisplayModuleSKL displaySetBrightnessSmooth:continuous:]),
+            // brightening easing out less than dimming, in light, as it fades nits: a picture's light goes
+            // as its scale to the power 2.2
+            let exponent: Float = to > from ? 2.4 : 3.8
+            let eased = (exp(1 - pow(1 - progress, exponent)) - 1) / (exp(1) - 1)
+            let light = pow(from, 2.2) + (pow(to, 2.2) - pow(from, 2.2)) * eased
+            return pow(light, 1 / 2.2)
+        }
     }
 
     /// Waits for the monitors set over DDC to have their last brightness, as when quitting
@@ -4754,6 +4845,9 @@ class GammaManager {
         streamedDisplays = [:]
         lastBrightness = [:]
         softwareBrightness = [:]
+        assists = [:]
+        assistScales = [:]
+        pictureScales = [:]
     }
 
     /// Whether a display is sent its picture, as Sidecar's iPad and AirPlay displays are. It's sent
@@ -4880,6 +4974,16 @@ final class DDCMonitors {
         monitors[displayID] != nil
     }
 
+    /// How a monitor's backlight follows what's written to it, if it's one known to take its time
+    func response(of displayID: CGDirectDisplayID) -> BacklightResponse? {
+        monitors[displayID]?.response
+    }
+
+    /// Where a monitor's backlight has got to at `time` (the system's uptime), as a share of its range
+    func backlightLevel(of displayID: CGDirectDisplayID, at time: TimeInterval) -> Float? {
+        monitors[displayID]?.backlightLevel(at: time)
+    }
+
     private func updateReadTimer() {
         if monitors.isEmpty {
             readTimer?.invalidate()
@@ -4925,7 +5029,7 @@ final class DDCMonitors {
                 if let service, let brightness {
                     searches[displayID] = nil
                     monitors[displayID] = Monitor(service: service, maximum: brightness.maximum, current: brightness.current,
-                                                  replySubaddress: brightness.subaddress)
+                                                  replySubaddress: brightness.subaddress, response: BacklightResponse.of(displayID))
                     found(displayID, Float(brightness.current) / Float(brightness.maximum))
                 } else if service != nil, let retryDelay = retryDelays.first {
                     self.search(for: displayID, after: retryDelay, retryDelays: retryDelays.dropFirst())
@@ -4965,12 +5069,51 @@ final class DDCMonitors {
         private var pendingValue: UInt16?
         /// Whether the queue is writing, and takes `pendingValue` when it's done. Guarded by `lock`.
         private var isWriting = false
+        /// How its backlight follows what's written, if it's known to take its time
+        let response: BacklightResponse?
+        /// Where its backlight is, as shares of its range: at `level` at `time`, heading for `target`
+        /// from `movesFrom` on (the system's uptime). Guarded by `lock`.
+        private var backlight: (level: Float, time: TimeInterval, target: Float, movesFrom: TimeInterval)
 
-        init(service: CFTypeRef, maximum: UInt16, current: UInt16, replySubaddress: UInt32) {
+        init(service: CFTypeRef, maximum: UInt16, current: UInt16, replySubaddress: UInt32, response: BacklightResponse?) {
             self.service = service
             self.maximum = maximum
             self.value = current
             self.replySubaddress = replySubaddress
+            self.response = response
+            let level = Float(current) / Float(maximum)
+            backlight = (level, 0, level, 0)
+        }
+
+        /// Where its backlight has got to at `time`, by its response: it heads for the value last
+        /// written at its own pace, starting a little after a value's written while it's still
+        func backlightLevel(at time: TimeInterval) -> Float {
+            lock.lock(); defer { lock.unlock() }
+            return backlightLevelLocked(at: time)
+        }
+
+        private func backlightLevelLocked(at time: TimeInterval) -> Float {
+            guard let response, time > backlight.movesFrom else { return backlight.level }
+            let moved = Float(time - max(backlight.movesFrom, backlight.time)) * response.pace
+            return backlight.target > backlight.level ? min(backlight.level + moved, backlight.target)
+                                                      : max(backlight.level - moved, backlight.target)
+        }
+
+        /// Notes that `value` was just written, or read back after its own buttons changed it, which
+        /// is where its backlight then is
+        private func noteBacklight(_ value: UInt16, isRead: Bool = false) {
+            let now = ProcessInfo.processInfo.systemUptime
+            let target = Float(value) / Float(maximum)
+            lock.lock(); defer { lock.unlock() }
+            if isRead {
+                backlight = (target, now, target, now)
+                return
+            }
+            let level = backlightLevelLocked(at: now)
+            // Still, it starts after its delay; already on its way, or about to be, it carries on
+            let isStill = level == backlight.target && now >= backlight.movesFrom
+            let movesFrom = isStill ? now + (response?.delay ?? 0) : max(backlight.movesFrom, now)
+            backlight = (level, now, target, movesFrom)
         }
 
         func set(_ brightness: Float) {
@@ -4999,6 +5142,7 @@ final class DDCMonitors {
                 lock.unlock()
                 guard let value else { return }
                 DDC.send([0x03, DDC.brightnessCode, UInt8(value >> 8), UInt8(value & 0xFF)], to: service)
+                noteBacklight(value)
                 valueToRepeat = newValue
                 usleep(50_000)
             }
@@ -5024,11 +5168,54 @@ final class DDCMonitors {
                     let value = min(current, self.maximum)
                     guard setCount == self.setCount, value != self.value else { return }
                     self.value = value
+                    // Its own buttons have moved it, and its backlight with it
+                    self.noteBacklight(value, isRead: true)
                     changed(Float(value) / Float(self.maximum))
                 }
             }
         }
     }
+}
+
+/// How a monitor's backlight follows a brightness written to it over DDC, for a monitor known to take its
+/// time. Most change at once, as an Apple display does, but some move their backlight over at a pace of
+/// their own, which can take seconds, while the value they read back has changed already. Measured with
+/// the Studio Display's camera by scripts/display-light.sh (`--calibrate-dell`); monitors that aren't
+/// listed are taken to change at once.
+struct BacklightResponse {
+    let vendor: UInt32
+    let model: UInt32
+    /// How long after a value's written its backlight starts to move, when it's still
+    let delay: TimeInterval
+    /// How fast it moves, in shares of its range a second
+    let pace: Float
+    /// The scale of its picture, dimmed in software at full backlight, that looks as bright as each
+    /// share of its range: (share, scale), in order
+    let pictureScales: [(level: Float, scale: Float)]
+
+    /// The scale of its picture at full backlight that looks as bright as its backlight at `level`
+    func pictureScale(at level: Float) -> Float {
+        let level = min(max(level, 0), 1)
+        guard let upper = pictureScales.firstIndex(where: { $0.level >= level }), upper > 0 else { return pictureScales[0].scale }
+        let (l0, s0) = pictureScales[upper - 1], (l1, s1) = pictureScales[upper]
+        return s0 + (s1 - s0) * (level - l0) / (l1 - l0)
+    }
+
+    static func of(_ displayID: CGDirectDisplayID) -> BacklightResponse? {
+        known.first { $0.vendor == CGDisplayVendorNumber(displayID) && $0.model == CGDisplayModelNumber(displayID) }
+    }
+
+    static let known = [
+        // Dell SE2216H (2026-11-06): about 31 of its 100 steps a second either way, a single value or
+        // ten as a slider moves, its light starting to change 0.25 s after a write on the camera, which
+        // shows an instant change 0.13 s late. Its light rises with its steps from about 7% at 0, and
+        // looks like its picture at full backlight scaled by these (90 between 80 and 100, as the camera
+        // flattens the brightest).
+        BacklightResponse(vendor: 4268, model: 61553, delay: 0.12, pace: 0.31, pictureScales: [
+            (0, 0.294), (0.1, 0.424), (0.2, 0.524), (0.3, 0.589), (0.4, 0.647), (0.5, 0.706),
+            (0.6, 0.766), (0.7, 0.810), (0.8, 0.857), (0.9, 0.93), (1, 1),
+        ]),
+    ]
 }
 
 /// DDC/CI through an external display's IOAVService, with IOKit's private functions for it
