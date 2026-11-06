@@ -3794,11 +3794,6 @@ class ColorController: ObservableObject {
     private var brightnessFollowers: [CGDirectDisplayID: BrightnessFollower] = [:]
     /// Where the brightness keys have put each display whose slider is still easing over to it
     private var brightnessKeyTargets: [String: Float] = [:]
-    /// The displays of `brightnessKeyTargets` that are monitors set over DDC, which are given their target
-    /// at once rather than each value their slider eases through: a monitor moves its backlight over at
-    /// its own pace (a Dell SE2216H about 30 of its 100 steps a second, by scripts/display-light.sh), a
-    /// key's step in about the time macOS fades an Apple display for it
-    private var monitorsSetByKeys: Set<String> = []
     /// Where its own buttons have put each monitor whose slider is still easing over to it. It's there
     /// already, so it isn't set again on the way.
     private var monitorTargets: [CGDirectDisplayID: Float] = [:]
@@ -4037,35 +4032,22 @@ class ColorController: ObservableObject {
         let monitorTarget = monitorTargets.removeValue(forKey: display.id)
         let current = brightnessKeyTargets[display.key] ?? monitorTarget ?? self[brightnessOf: display.key]
         let step = isUp ? (current * steps + 0.01).rounded(.down) + 1 : (current * steps - 0.01).rounded(.up) - 1
-        let target = min(max(step / steps, 0), 1)
-        brightnessKeyTargets[display.key] = target
-        if !isUserDraggingSlider, previewedKeyframeID == nil, GammaManager.shared.setMonitor(display.id, to: target) {
-            monitorsSetByKeys.insert(display.key)
-        } else {
-            monitorsSetByKeys.remove(display.key)
-        }
+        brightnessKeyTargets[display.key] = min(max(step / steps, 0), 1)
         return true
     }
 
     /// Moves each slider the brightness keys have stepped a frame further over to where they put it,
-    /// easing over as a slider following a key press on the display macOS sets does, and sets each
-    /// display on the way but a monitor, which was set there at once. Holding a slider stops them where
-    /// they are.
+    /// easing over as a slider following a key press on the display macOS sets does. Holding a slider
+    /// stops them where they are.
     private func easeTowardBrightnessKeyTargets() {
         guard !brightnessKeyTargets.isEmpty else { return }
         guard !isUserDraggingSlider, previewedKeyframeID == nil else {
-            // A monitor is set back to where its slider has stopped
-            for display in displays where brightnessKeyTargets[display.key] != nil && monitorsSetByKeys.contains(display.key) {
-                _ = GammaManager.shared.setMonitor(display.id, to: self[brightnessOf: display.key])
-            }
             brightnessKeyTargets = [:]
             return
         }
         for (display, target) in brightnessKeyTargets {
             let brightness = BrightnessFollower.ease(from: self[brightnessOf: display], to: target)
-            if monitorsSetByKeys.contains(display) { syncingDisplay = displays.first { $0.key == display }?.id }
             self[brightnessOf: display] = brightness
-            syncingDisplay = nil
             if brightness == target { brightnessKeyTargets[display] = nil }
         }
     }
@@ -4732,14 +4714,6 @@ class GammaManager {
             CGSetDisplayTransferByTable(displayID, UInt32(table.count), table, table, table)
         }
         softwareBrightness = newSoftwareBrightness
-    }
-
-    /// Sets a monitor set over DDC to `brightness`, and returns whether it's one. Its slider is then
-    /// moved without setting it again.
-    func setMonitor(_ displayID: CGDirectDisplayID, to brightness: Float) -> Bool {
-        guard monitors.contains(displayID) else { return false }
-        _ = monitors.set(brightness, of: displayID)
-        return true
     }
 
     /// Waits for the monitors set over DDC to have their last brightness, as when quitting
