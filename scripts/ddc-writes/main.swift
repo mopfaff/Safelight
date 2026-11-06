@@ -87,7 +87,7 @@ func report(_ name: String, from start: TimeInterval) {
 
 /// Waits for Safelight to find a monitor whose brightness it sets over DDC, with its slider where the monitor is
 func waitForMonitor(_ tries: Int = 0) {
-    if let found = controller.displays.first(where: { GammaManager.shared.setMonitor($0.id, to: controller[brightnessOf: $0.key], fading: false) }),
+    if let found = controller.displays.first(where: { GammaManager.shared.setMonitor($0.id, to: controller[brightnessOf: $0.key]) }),
        let screen = NSScreen.screens.first(where: { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == found.id }) {
         monitor = found
         fakePointer = NSPoint(x: screen.frame.midX, y: screen.frame.midY)

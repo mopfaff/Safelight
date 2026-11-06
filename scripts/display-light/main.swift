@@ -165,124 +165,7 @@ func at(_ seconds: Double, _ display: CGDirectDisplayID? = nil, _ kind: Kind = .
     }
 }
 
-/// The Dell's cover for calibrating and checking: white, as under grey (tried on 2026-11-06) it lights
-/// the room too little to tell a 10% change from noise. The places near the camera's top, where white
-/// would make them clip, are left out of the measure instead.
-let unclipped = NSColor.white
-
-/// Scales the Dell's picture by `scale` through its gamma table, at once, as Safelight dims a display
-/// in software
-func setDellPicture(_ scale: Double) {
-    let table = (0..<256).map { CGGammaValue(Double($0) / 255 * scale) }
-    CGSetDisplayTransferByTable(dell, 256, table, table, table)
-}
-let isCalibrating = CommandLine.arguments.contains("--calibrate-dell")
-
-/// For the Dell's dimming assist: how its light compares with its picture scaled in software, step by
-/// step, and how its backlight moves after a value is written once and when written as a slider moves
-func calibrateDell() {
-    print("Calibrating the Dell; both screens flash for about a minute")
-    cover(dell, unclipped); cover(studio, .black); setDellPicture(1)
-    at(1.5, dell, .blackout, "blackout") { setDellPicture(0) }
-    at(2.2, dell, .blackout, "picture 1") { setDellPicture(1) }
-    // The picture scaled in software, at full backlight
-    let scales = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.0]
-    for (i, scale) in scales.enumerated() {
-        at(3.0 + Double(i) * 0.5, dell, .blackout, "picture \(scale)") { setDellPicture(scale) }
-    }
-    at(9.0, dell, .blackout, "picture 1") { setDellPicture(1) }
-    // The backlight, from 100 down to 0 a tenth at a time, each given time to settle
-    for (i, level) in stride(from: 90, through: 0, by: -10).enumerated() {
-        at(10.0 + Double(i) * 1.5, dell, .brightness, "level \(level)") { setDell(level) }
-    }
-    // Single writes, as a click on a slider or a key press
-    let jumps: [(Double, Int, Int)] = [(25.0, 0, 100), (29.5, 100, 0), (34.5, 0, 50), (37.5, 50, 100), (40.5, 100, 50), (43.5, 50, 40), (45.0, 40, 50), (46.5, 50, 100)]
-    for (time, from, to) in jumps {
-        at(time, dell, .brightness, "jump \(from) \(to)") { setDell(to) }
-    }
-    // Written as a slider moves: ten values, 50 ms apart
-    for (time, from, to) in [(50.0, 100, 50), (53.0, 50, 100)] {
-        at(time, dell, .brightness, "drag \(from) \(to)") {}
-        for i in 1...10 { at(time + Double(i - 1) * 0.05) { setDell(from + (to - from) * i / 10) } }
-    }
-    // The picture scaled again, to see the measure hasn't drifted
-    for (i, scale) in [1.0, 0.5, 0.2, 1.0].enumerated() {
-        at(56.0 + Double(i) * 0.5, dell, .blackout, "picture \(scale)") { setDellPicture(scale) }
-    }
-    at(58.0) { finish() }
-}
-
-/// Steps the Dell through Safelight's own GammaManager, which helps its backlight along when dimming,
-/// as a slider and the brightness keys do, and the Studio Display through DisplayServices to compare
-let isCheckingAssist = CommandLine.arguments.contains("--assist")
-func checkAssist() {
-    print("Checking the Dell's dimming assist; both screens flash for about 40 s")
-    cover(dell, unclipped); cover(studio, .black)
-    let gamma = GammaManager.shared
-    gamma.monitorFound = { displayID, _ in if displayID == dell { gamma.setBrightness([dell: 1]) } }
-    gamma.setBrightness([dell: 1])
-    at(2.0, dell, .blackout, "Dell picture blacked out") { cover(dell, .black) }
-    at(3.0, dell, .blackout, "Dell picture back") { cover(dell, .white) }
-    at(4.5, dell, .brightness, "Dell slider 1 -> 0") { gamma.setBrightness([dell: 0]) }
-    at(9.0, dell, .brightness, "Dell slider 0 -> 1") { gamma.setBrightness([dell: 1]) }
-    at(13.5, dell, .brightness, "Dell slider 1 -> 0.5") { gamma.setBrightness([dell: 0.5]) }
-    at(16.5, dell, .brightness, "Dell slider 0.5 -> 1") { gamma.setBrightness([dell: 1]) }
-    at(19.5, dell, .brightness, "Dell key 1 -> 0.9375") { _ = gamma.setMonitor(dell, to: 0.9375, fading: true) }
-    at(21.0, dell, .brightness, "Dell key 0.9375 -> 1") { _ = gamma.setMonitor(dell, to: 1, fading: true) }
-    at(22.5, dell, .brightness, "Dell key held 1 -> 0.625") {}
-    for i in 1...6 { at(22.5 + Double(i - 1) * 0.0833) { _ = gamma.setMonitor(dell, to: 1 - 0.0625 * Float(i), fading: true) } }
-    at(25.5) { _ = gamma.setMonitor(dell, to: 1, fading: false) }
-    at(29.0) { cover(dell, .black); cover(studio, .white) }
-    at(31.0, studio, .blackout, "Studio Display picture blacked out") { cover(studio, .black) }
-    at(32.0, studio, .blackout, "Studio Display picture back") { cover(studio, .white) }
-    at(33.5, studio, .brightness, "Studio Display 1 -> 0") { _ = setStudio(studio, 0) }
-    at(36.5, studio, .brightness, "Studio Display 0 -> 1") { _ = setStudio(studio, 1) }
-    at(39.5) { finish() }
-}
-
-/// The null test for the Dell's BacklightResponse: with its picture already scaled to look like a step,
-/// that step is written and the picture scaled back up as its response says its backlight comes down.
-/// If the response is right, the light doesn't change; the camera, which only has to see whether it
-/// does, can tell to a few percent. A 10% dip of the picture after each shows how much a change reads.
-let isNulling = CommandLine.arguments.contains("--null-dell")
-var compensation: Timer?
-func nullDell() {
-    guard let response = BacklightResponse.of(dell) else { print("No BacklightResponse for the Dell"); exit(1) }
-    print("Null-testing the Dell's BacklightResponse; both screens flash for about a minute")
-    cover(dell, unclipped); cover(studio, .black); setDellPicture(1)
-    // The places it lights picked once the camera has settled on the Dell's light
-    at(3.0, dell, .blackout, "blackout") { setDellPicture(0) }
-    at(3.7, dell, .blackout, "picture 1") { setDellPicture(1) }
-    var time = 4.7
-    for level in [0, 0.2, 0.4, 0.6, 0.8, 0.9] as [Float] {
-        let scale = response.pictureScale(at: level)
-        let travel = response.delay + Double((1 - level) / response.pace)
-        at(time) { setDellPicture(Double(scale)) }
-        at(time + 2.0, dell, .brightness, "null \(level) travel \(String(format: "%.2f", travel))") {
-            let written = hostNow()
-            setDell(Int((level * 100).rounded()))
-            compensation?.invalidate()
-            let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { timer in
-                let elapsed = hostNow() - written
-                let backlight = elapsed < response.delay ? 1 : max(level, 1 - Float(elapsed - response.delay) * response.pace)
-                setDellPicture(Double(min(1, scale / response.pictureScale(at: backlight))))
-                if backlight <= level { setDellPicture(1); timer.invalidate() }
-            }
-            RunLoop.main.add(timer, forMode: .common)
-            compensation = timer
-        }
-        at(time + 2.0 + travel + 0.8, dell, .blackout, "probe \(level)") { setDellPicture(0.9) }
-        at(time + 2.0 + travel + 0.95) { setDellPicture(1) }
-        at(time + 2.0 + travel + 1.3) { setDell(100) }
-        time += 2.0 + travel + 1.3 + travel + 0.4
-    }
-    at(time) { finish() }
-}
-
 func run() {
-    if isCalibrating { calibrateDell(); return }
-    if isNulling { nullDell(); return }
-    if isCheckingAssist { checkAssist(); return }
     print("Studio Display brightness at the start: \(studioOriginal); both screens flash for 36 s")
     cover(dell, .white); cover(studio, .black)
     at(2.5, dell, .blackout, "Dell picture blacked out") { cover(dell, .black) }
@@ -306,7 +189,6 @@ func finish() {
     covers.values.forEach { $0.orderOut(nil) }
     setDell(100)
     _ = setStudio(studio, studioOriginal)
-    if isCalibrating || isCheckingAssist || isNulling { CGDisplayRestoreColorSyncSettings() }
     recorder.lock.lock(); let taken = recorder.frames; recorder.lock.unlock()
     print("frames: \(taken.count)")
     func average(_ cells: [Double], _ places: [Int]) -> Double { places.map { cells[$0] }.reduce(0, +) / Double(places.count) }
@@ -322,28 +204,16 @@ func finish() {
         let before = averageCells(frames(from: blackout.time - 0.3, to: blackout.time))
         let firstAfter = frames(from: blackout.time, to: blackout.time + 0.4).dropFirst(3).prefix(2)
         let after = averageCells(Array(firstAfter))
-        // Not the places at the camera's top (video levels end at 235), which can't get any brighter
-        let darkening = (0..<columns * rows).filter { before[$0] < 225 }
-            .sorted { log(after[$0] / max(before[$0], 1)) < log(after[$1] / max(before[$1], 1)) }
-        let lit = Array(darkening.prefix(darkening.count / 6)), unlit = Array(darkening.suffix(darkening.count / 6))
+        let darkening = (0..<columns * rows).sorted { log(after[$0] / max(before[$0], 1)) < log(after[$1] / max(before[$1], 1)) }
+        let lit = Array(darkening.prefix(columns * rows / 6)), unlit = Array(darkening.suffix(columns * rows / 6))
         print(String(format: "\n%@: the places it lights most darkened by %.0f%%, the ones it lights least by %.0f%%",
                      display == dell ? "Dell" : "Studio Display",
                      (1 - average(after, lit) / average(before, lit)) * 100, (1 - average(after, unlit) / average(before, unlit)) * 100))
         /// The display's light, whatever the camera's exposure: the lit places over the unlit ones
         func light(_ cells: [Double]) -> Double { log(average(cells, lit) / average(cells, unlit)) }
 
-        // Calibrating, every step and every frame's measure is printed, for working out the model
-        if isCalibrating || isNulling {
-            let start = steps.first?.time ?? 0
-            for step in steps { print(String(format: "E %.4f %@", step.time - start, step.name)) }
-            for frame in taken { print(String(format: "M %.4f %.5f", frame.time - start, light(frame.cells))) }
-            continue
-        }
-
-        for (index, step) in steps.enumerated() where step.display == display {
-            // Until the next step, as a backlight can take seconds
-            let next = steps.dropFirst(index + 1).first?.time ?? step.time + 3
-            let settle = step.kind == .blackout ? min(1.4, next - step.time - 0.05) : min(4.4, next - step.time - 0.05)
+        for step in steps where step.display == display {
+            let settle = step.kind == .blackout ? 1.4 : 2.9
             let from = frames(from: step.time - 0.3, to: step.time).map { light($0.cells) }
             let to = frames(from: step.time + settle - 0.5, to: step.time + settle).map { light($0.cells) }
             guard !from.isEmpty, !to.isEmpty else { continue }
@@ -353,8 +223,7 @@ func finish() {
                 curve.first { $0.1 >= fraction }.map { String(format: "%4.0f", $0.0 * 1000) } ?? "   -"
             }
             print(String(format: "%@ (change %.3f): 10%% at %@ ms, 50%% at %@ ms, 90%% at %@ ms", step.name, end - start, reach(0.1), reach(0.5), reach(0.9)))
-            let shown = curve.count > 40 ? stride(from: 0, to: curve.count, by: 3).map { curve[$0] } : curve
-            print("  " + shown.map { String(format: "%.0f:%.2f", $0.0 * 1000, $0.1) }.joined(separator: " "))
+            print("  " + curve.prefix(40).map { String(format: "%.0f:%.2f", $0.0 * 1000, $0.1) }.joined(separator: " "))
         }
     }
     exit(0)
