@@ -702,10 +702,15 @@ final class HueSlider: NSSlider {
     }
 }
 
-// MARK: - Time Field
-/// A time of day as hours and minutes in a field with a stepper, like `DatePicker`'s `.stepperField`
-/// style, but with the time centred in the field: AppKit puts it 1.5 pt high, so the selected hour or
-/// minute touches the top of the field.
+// MARK: - Time Field (System Settings' Night Shift Times)
+/// A time of day as hours and minutes, drawn as System Settings › Displays › Night Shift… draws its From
+/// and To times: the time and its stepper in one field. Night Shift's are SwiftUI's
+/// `DatePicker(selection:displayedComponents: .hourAndMinute)`, with `.labelsHidden()` and `.fixedSize()`,
+/// in a grouped Form. Neither the style nor the modifiers make the one field: SwiftUI tells AppKit that a
+/// control is in a form (AppKit's private `NSViewSemanticContext` 8, which SwiftUI sets whenever the
+/// environment's effective form style is `GroupedFormStyle`), and AppKit's date picker cell then draws
+/// the field around the stepper too. The Schedule window isn't a Form, so this is the NSDatePicker
+/// SwiftUI makes for a DatePicker, set up the same, with that context set on it.
 struct TimeField: NSViewRepresentable {
     var label: String
     @Binding var selection: Date
@@ -721,6 +726,7 @@ struct TimeField: NSViewRepresentable {
         picker.becomesFirstResponderInWindow = isFocusedOnAppear
         picker.datePickerStyle = .textFieldAndStepper
         picker.datePickerElements = .hourMinute
+        picker.setFormSemanticContext()
         // Only as wide as the time and its stepper, like DatePicker
         picker.setContentHuggingPriority(.required, for: .horizontal)
         picker.setContentHuggingPriority(.required, for: .vertical)
@@ -752,14 +758,9 @@ struct TimeField: NSViewRepresentable {
     }
 }
 
-/// A date picker set up as any other, field and all, but with a `TimeFieldCell`.
+/// A date picker that can take the keyboard as soon as it's in a window.
 final class TimeFieldPicker: NSDatePicker {
     var becomesFirstResponderInWindow = false
-
-    override class var cellClass: AnyClass? {
-        get { TimeFieldCell.self }
-        set { super.cellClass = newValue }
-    }
 
     // SwiftUI puts the picker in the window while it updates the view, so the picker takes the keyboard
     // straight after, rather than make the field it takes it from end editing in the middle of the update
@@ -776,51 +777,15 @@ final class TimeFieldPicker: NSDatePicker {
     }
 }
 
-/// A date picker cell that draws its text and selection lower down, in the middle of its field.
-/// AppKit only draws them along with the field, so the cell draws in three goes: a cell of its own
-/// draws the field with no text, this cell draws its stepper, and then its text and selection without
-/// the field, lower down. Clicks are still matched to the hours and minutes where AppKit puts them,
-/// which is only 1.5 pt higher.
-final class TimeFieldCell: NSDatePickerCell {
-    private static let textDrop: CGFloat = 1.5
-    /// The width AppKit gives the stepper at the right of the cell, which takes in the gap between it
-    /// and the field
-    private static let stepperWidth = NSStepperCell().cellSize.width
-
-    override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
-        // Split where the stepper starts, with room all round, as AppKit draws a little past the frame
-        let canvas = cellFrame.insetBy(dx: -cellFrame.width, dy: -cellFrame.height)
-        let (stepperArea, fieldArea) = canvas.divided(atDistance: canvas.maxX - (cellFrame.maxX - Self.stepperWidth), from: .maxXEdge)
-
-        let fieldCell = NSDatePickerCell()
-        fieldCell.datePickerStyle = datePickerStyle
-        fieldCell.datePickerElements = datePickerElements
-        fieldCell.controlSize = controlSize
-        fieldCell.font = font
-        fieldCell.isEnabled = isEnabled
-        fieldCell.isBezeled = isBezeled
-        fieldCell.textColor = .clear
-        draw(clippedTo: fieldArea) {
-            fieldCell.draw(withFrame: cellFrame, in: controlView)
-        }
-        // The stepper is this cell's own, so it shows the arrow being pressed
-        draw(clippedTo: stepperArea) {
-            super.draw(withFrame: cellFrame, in: controlView)
-        }
-        // Without the field, which is put back straight after, before anything lays the cell out again
-        let isBezeled = isBezeled
-        self.isBezeled = false
-        draw(clippedTo: fieldArea) {
-            super.draw(withFrame: cellFrame.offsetBy(dx: 0, dy: controlView.isFlipped ? Self.textDrop : -Self.textDrop), in: controlView)
-        }
-        self.isBezeled = isBezeled
-    }
-
-    private func draw(clippedTo area: NSRect, _ drawing: () -> Void) {
-        NSGraphicsContext.saveGraphicsState()
-        area.clip()
-        drawing()
-        NSGraphicsContext.restoreGraphicsState()
+private extension NSView {
+    /// Has AppKit draw the view's controls as it does in a form, as SwiftUI has it draw those in a
+    /// grouped Form: `-[NSView _setSemanticContext:]` with `NSViewSemanticContext` 8, which the view's
+    /// subviews take on too. Should AppKit stop answering to it, they're drawn as anywhere else.
+    func setFormSemanticContext() {
+        let selector = NSSelectorFromString("_setSemanticContext:")
+        guard responds(to: selector) else { return }
+        typealias SetSemanticContext = @convention(c) (NSView, Selector, Int) -> Void
+        unsafeBitCast(method(for: selector), to: SetSemanticContext.self)(self, selector, 8)
     }
 }
 
