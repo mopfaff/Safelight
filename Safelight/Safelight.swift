@@ -3794,9 +3794,11 @@ class ColorController: ObservableObject {
     private var brightnessFollowers: [CGDirectDisplayID: BrightnessFollower] = [:]
     /// Where the brightness keys have put each display whose slider is still easing over to it
     private var brightnessKeyTargets: [String: Float] = [:]
-    /// The displays of `brightnessKeyTargets` that are monitors set over DDC, which fade over to their
-    /// target by themselves, as macOS fades an Apple display, so they aren't set on the way
-    private var fadingMonitors: Set<String> = []
+    /// The displays of `brightnessKeyTargets` that are monitors set over DDC, which are given their target
+    /// at once rather than each value their slider eases through: a monitor moves its backlight over at
+    /// its own pace (a Dell SE2216H about 30 of its 100 steps a second, by scripts/display-light.sh), a
+    /// key's step in about the time macOS fades an Apple display for it
+    private var monitorsSetByKeys: Set<String> = []
     /// Where its own buttons have put each monitor whose slider is still easing over to it. It's there
     /// already, so it isn't set again on the way.
     private var monitorTargets: [CGDirectDisplayID: Float] = [:]
@@ -4037,31 +4039,31 @@ class ColorController: ObservableObject {
         let step = isUp ? (current * steps + 0.01).rounded(.down) + 1 : (current * steps - 0.01).rounded(.up) - 1
         let target = min(max(step / steps, 0), 1)
         brightnessKeyTargets[display.key] = target
-        // A monitor fades over by itself, the way macOS fades the display it sets
-        if !isUserDraggingSlider, previewedKeyframeID == nil, GammaManager.shared.setMonitor(display.id, to: target, fading: true) {
-            fadingMonitors.insert(display.key)
+        if !isUserDraggingSlider, previewedKeyframeID == nil, GammaManager.shared.setMonitor(display.id, to: target) {
+            monitorsSetByKeys.insert(display.key)
         } else {
-            fadingMonitors.remove(display.key)
+            monitorsSetByKeys.remove(display.key)
         }
         return true
     }
 
     /// Moves each slider the brightness keys have stepped a frame further over to where they put it,
     /// easing over as a slider following a key press on the display macOS sets does, and sets each
-    /// display on the way but a monitor fading there by itself. Holding a slider stops them where they are.
+    /// display on the way but a monitor, which was set there at once. Holding a slider stops them where
+    /// they are.
     private func easeTowardBrightnessKeyTargets() {
         guard !brightnessKeyTargets.isEmpty else { return }
         guard !isUserDraggingSlider, previewedKeyframeID == nil else {
-            // A monitor fading over by itself stops where its slider has
-            for display in displays where brightnessKeyTargets[display.key] != nil && fadingMonitors.contains(display.key) {
-                _ = GammaManager.shared.setMonitor(display.id, to: self[brightnessOf: display.key], fading: false)
+            // A monitor is set back to where its slider has stopped
+            for display in displays where brightnessKeyTargets[display.key] != nil && monitorsSetByKeys.contains(display.key) {
+                _ = GammaManager.shared.setMonitor(display.id, to: self[brightnessOf: display.key])
             }
             brightnessKeyTargets = [:]
             return
         }
         for (display, target) in brightnessKeyTargets {
             let brightness = BrightnessFollower.ease(from: self[brightnessOf: display], to: target)
-            if fadingMonitors.contains(display) { syncingDisplay = displays.first { $0.key == display }?.id }
+            if monitorsSetByKeys.contains(display) { syncingDisplay = displays.first { $0.key == display }?.id }
             self[brightnessOf: display] = brightness
             syncingDisplay = nil
             if brightness == target { brightnessKeyTargets[display] = nil }
@@ -4732,11 +4734,12 @@ class GammaManager {
         softwareBrightness = newSoftwareBrightness
     }
 
-    /// Sets a monitor set over DDC to `brightness`, with `fading` the way macOS fades an Apple display
-    /// for the brightness keys, and returns whether it's one. Its slider is then moved without setting
-    /// it again.
-    func setMonitor(_ displayID: CGDirectDisplayID, to brightness: Float, fading: Bool) -> Bool {
-        monitors.set(brightness, of: displayID, fading: fading)
+    /// Sets a monitor set over DDC to `brightness`, and returns whether it's one. Its slider is then
+    /// moved without setting it again.
+    func setMonitor(_ displayID: CGDirectDisplayID, to brightness: Float) -> Bool {
+        guard monitors.contains(displayID) else { return false }
+        _ = monitors.set(brightness, of: displayID)
+        return true
     }
 
     /// Waits for the monitors set over DDC to have their last brightness, as when quitting
@@ -4872,14 +4875,6 @@ final class DDCMonitors {
         return nil
     }
 
-    /// Sets a display's brightness, with `fading` as macOS fades an Apple display for the brightness
-    /// keys, if it's a monitor here, and returns whether it is
-    func set(_ brightness: Float, of displayID: CGDirectDisplayID, fading: Bool) -> Bool {
-        guard let monitor = monitors[displayID] else { return false }
-        monitor.set(brightness, fading: fading)
-        return true
-    }
-
     /// Whether a display is a monitor here, whose own brightness is set
     func contains(_ displayID: CGDirectDisplayID) -> Bool {
         monitors[displayID] != nil
@@ -4943,9 +4938,9 @@ final class DDCMonitors {
         }
     }
 
-    /// A monitor that answered. Its brightness is written on a queue of its own, as often as DDC/CI
-    /// allows: a slider's latest value, or with the brightness keys, where its fade has got to. It's
-    /// read there too, so a read never comes between two writes.
+    /// A monitor that answered. Its brightness is written on a queue of its own: the latest value each
+    /// time, once the monitor has had the 50 ms DDC/CI gives it to act on the one before. It's read
+    /// there too, so a read never comes between two writes.
     private final class Monitor {
         private let service: CFTypeRef
         /// Its brightness's highest value, from 0, which is 100 on most monitors
@@ -4966,106 +4961,46 @@ final class DDCMonitors {
         /// Where it's written, one write after another
         let queue = DispatchQueue(label: "Safelight.DDCMonitor", qos: .userInitiated)
         private let lock = NSLock()
-        /// Where its brightness is going, until the queue has written the end of it. Guarded by `lock`.
-        private var ramp: Ramp?
-        /// Whether the queue is writing, and takes each new `ramp` as it goes. Guarded by `lock`.
+        /// The value to write next, if one's been set since the queue last took one. Guarded by `lock`.
+        private var pendingValue: UInt16?
+        /// Whether the queue is writing, and takes `pendingValue` when it's done. Guarded by `lock`.
         private var isWriting = false
-        /// The value last written or read, so the same one isn't written again. Only touched on `queue`.
-        private var writtenValue: UInt16
-        /// How long it's given after each write before the next: the 50 ms DDC/CI gives a monitor to act
-        /// on a message. A Dell SE2216H answers with a new value at once, but written once a frame (as
-        /// macOS writes an Apple display) its backlight fell further and further behind, a fade taking
-        /// several times as long as on the Studio Display.
-        private static let writeInterval: TimeInterval = 0.05
 
         init(service: CFTypeRef, maximum: UInt16, current: UInt16, replySubaddress: UInt32) {
             self.service = service
             self.maximum = maximum
             self.value = current
-            self.writtenValue = current
             self.replySubaddress = replySubaddress
         }
 
-        /// Sets its brightness at once, as a slider sets an Apple display's, or with `fading`, over the
-        /// time macOS fades one for the brightness keys, from wherever it is
-        func set(_ brightness: Float, fading: Bool = false) {
+        func set(_ brightness: Float) {
             let value = UInt16((min(max(brightness, 0), 1) * Float(maximum)).rounded())
             guard value != self.value else { return }
-            let previousValue = self.value
             self.value = value
             setCount += 1
             nextRead = max(nextRead, Date() + 1)
             lock.lock()
-            let now = ProcessInfo.processInfo.systemUptime
-            // Part way along the last change if that's still being written, as a key pressed again
-            // carries on from where the last one has got to
-            let origin = ramp?.value(at: now) ?? Float(previousValue)
-            ramp = Ramp(origin: origin, target: Float(value), start: now, length: fading ? Ramp.fadeLength : 0)
+            pendingValue = value
             let startsWriting = !isWriting
             isWriting = true
             lock.unlock()
-            if startsWriting { queue.async { self.writeRamp() } }
+            if startsWriting { queue.async { self.writePendingValues() } }
         }
 
-        /// Writes where its brightness has got to, whenever that's a new value, 50 ms apart, and the last
-        /// value once more, in case the monitor missed it. A value stays on the monitor for 50 ms, so a
-        /// fade's is the one it has half way through them, which keeps the monitor on macOS's curve
-        /// rather than behind it.
-        private func writeRamp() {
-            var hasWritten = false
-            var hasRepeated = false
+        /// Writes each new value, and the last one once more, in case the monitor missed it
+        private func writePendingValues() {
+            var valueToRepeat: UInt16?
             while true {
-                let time = ProcessInfo.processInfo.systemUptime + Self.writeInterval / 2
                 lock.lock()
-                if let ramp {
-                    if time >= ramp.end { self.ramp = nil }
-                    lock.unlock()
-                    let value = UInt16(ramp.value(at: time).rounded())
-                    if value != writtenValue {
-                        write(value)
-                        hasWritten = true
-                        hasRepeated = false
-                    }
-                } else if hasWritten && !hasRepeated {
-                    lock.unlock()
-                    write(writtenValue)
-                    hasRepeated = true
-                } else {
-                    isWriting = false
-                    lock.unlock()
-                    return
-                }
-                usleep(useconds_t(Self.writeInterval * 1_000_000))
-            }
-        }
-
-        private func write(_ value: UInt16) {
-            DDC.send([0x03, DDC.brightnessCode, UInt8(value >> 8), UInt8(value & 0xFF)], to: service)
-            writtenValue = value
-        }
-
-        /// A change of its brightness, in its own units, at once or over `length` seconds. Over time it
-        /// eases out as corebrightnessd's "sloper" ramp does, which macOS fades an Apple display with for
-        /// the brightness keys (`-[CBDisplayModuleSKL displaySetBrightnessSmooth:continuous:]`): the
-        /// same curve and length, there in nits, here in the monitor's steps.
-        private struct Ramp {
-            let origin: Float
-            let target: Float
-            let start: TimeInterval
-            let length: TimeInterval
-            /// corebrightnessd's, 16 frames at 60 Hz
-            static let fadeLength: TimeInterval = 0.26667
-
-            var end: TimeInterval { start + length }
-
-            func value(at time: TimeInterval) -> Float {
-                guard length > 0, time < end else { return target }
-                // From the start, for a time read just before this was set
-                let progress = Float(max(time - start, 0) / length)
-                // Brightening eases out less than dimming
-                let exponent: Float = target > origin ? 2.4 : 3.8
-                let eased = (exp(1 - pow(1 - progress, exponent)) - 1) / (exp(1) - 1)
-                return origin + (target - origin) * eased
+                let newValue = pendingValue
+                pendingValue = nil
+                let value = newValue ?? valueToRepeat
+                if value == nil { isWriting = false }
+                lock.unlock()
+                guard let value else { return }
+                DDC.send([0x03, DDC.brightnessCode, UInt8(value >> 8), UInt8(value & 0xFF)], to: service)
+                valueToRepeat = newValue
+                usleep(50_000)
             }
         }
 
@@ -5077,8 +5012,6 @@ final class DDCMonitors {
             let setCount = setCount
             queue.async {
                 let current = DDC.brightness(of: self.service, subaddress: self.replySubaddress)?.current
-                // What it has now, so going back to the value last written, after its buttons, writes it again
-                if let current { self.writtenValue = min(current, self.maximum) }
                 DispatchQueue.main.async {
                     self.isReading = false
                     guard let current else {

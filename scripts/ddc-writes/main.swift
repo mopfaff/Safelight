@@ -1,7 +1,7 @@
 import AppKit
 import IOKit
 
-// The entry point of scripts/ddc-fade.sh's copy of Safelight: it presses the brightness keys and drags
+// The entry point of scripts/ddc-writes.sh's copy of Safelight: it presses the brightness keys and drags
 // a slider for the first external monitor Safelight sets over DDC, and logs every value written to the
 // monitor, when, and where its slider was. Only the monitor's own brightness changes, and it's put back
 // where it was.
@@ -48,7 +48,7 @@ func dlsym(_ handle: UnsafeMutableRawPointer?, _ symbol: UnsafePointer<CChar>) -
 setlinebuf(stdout)
 _ = NSApplication.shared
 let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical], reason: "Timing DDC writes")
-// The copy's own settings (the ddc-fade domain), emptied by the script
+// The copy's own settings (the ddc-writes domain), emptied by the script
 UserDefaults.standard.set(true, forKey: "adjustsDisplaysIndependently")
 UserDefaults.standard.set(false, forKey: "isAutoMode")
 /// Where Safelight's copy sees the pointer: over the monitor, once it's found
@@ -58,13 +58,6 @@ let controller = ColorController.shared
 func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
 func after(_ seconds: TimeInterval, _ block: @escaping () -> Void) {
     DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: block)
-}
-
-/// The value macOS's fade for the brightness keys has at `time`, as Safelight copies it
-func macOSFade(from origin: Float, to target: Float, start: TimeInterval, at time: TimeInterval) -> Float {
-    let progress = Float(min(max((time - start) / 0.26667, 0), 1))
-    let exponent: Float = target > origin ? 2.4 : 3.8
-    return origin + (target - origin) * (exp(1 - pow(1 - progress, exponent)) - 1) / (exp(1) - 1)
 }
 
 var monitor: Display!
@@ -78,17 +71,13 @@ func press(_ isUp: Bool) {
     if !BrightnessKeys.shared.handlePress(isUp, false) { print("  (a key press wasn't taken)") }
 }
 
-/// Prints the writes since `start`, and the slider every 50 ms, with macOS's fade at each write if there's one to compare with
-func report(_ name: String, from start: TimeInterval, fade: (Float, Float)? = nil) {
+/// Prints the writes since `start`, and the slider every 50 ms
+func report(_ name: String, from start: TimeInterval) {
     writesLock.lock(); let taken = writes; writes = []; writesLock.unlock()
     let slider = sliderLog.filter { $0.0 >= start }
     sliderLog = []
     print("\n\(name): \(taken.count) writes")
     print("  ms:value   ", taken.map { String(format: "%4.0f:%-3d", ($0.time - start) * 1000, $0.value) }.joined(separator: " "))
-    if let (origin, target) = fade {
-        // Each value stays on the monitor for the 50 ms till the next write, so it's macOS's half way through
-        print("  macOS's fade", taken.map { String(format: "%4.0f:%-3.0f", ($0.time - start) * 1000, macOSFade(from: origin, to: target, start: start, at: $0.time + 0.025)) }.joined(separator: " "))
-    }
     if taken.count > 2 {
         let gaps = zip(taken.dropFirst(), taken).map { ($0.time - $1.time) * 1000 }.sorted()
         print(String(format: "  between writes: shortest %.1f ms, median %.1f ms", gaps.first!, gaps[gaps.count / 2]))
@@ -98,7 +87,7 @@ func report(_ name: String, from start: TimeInterval, fade: (Float, Float)? = ni
 
 /// Waits for Safelight to find a monitor whose brightness it sets over DDC, with its slider where the monitor is
 func waitForMonitor(_ tries: Int = 0) {
-    if let found = controller.displays.first(where: { GammaManager.shared.setMonitor($0.id, to: controller[brightnessOf: $0.key], fading: false) }),
+    if let found = controller.displays.first(where: { GammaManager.shared.setMonitor($0.id, to: controller[brightnessOf: $0.key]) }),
        let screen = NSScreen.screens.first(where: { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == found.id }) {
         monitor = found
         fakePointer = NSPoint(x: screen.frame.midX, y: screen.frame.midY)
@@ -117,18 +106,18 @@ func test() {
     let maximum: Float = 100 // the Dell's, as most monitors'
     writesLock.lock(); writes = []; writesLock.unlock()
 
-    // 1. One press of brightness down: a sixteenth, faded
+    // 1. One press of brightness down: a sixteenth
     let t1 = now()
     let target1 = ((original * 16 - 0.01).rounded(.up) - 1) / 16
     press(false)
     after(0.6) {
-        report("One press of brightness down, \(original) to \(target1)", from: t1, fade: (original * maximum, target1 * maximum))
+        report("One press of brightness down, \(original) to \(target1)", from: t1)
         // 2. Brightness down held: five more presses 83 ms apart, as macOS's key repeat sends them
         let t2 = now()
         for i in 0..<5 { after(Double(i) * 0.0833) { press(false) } }
         after(1.0) {
             report("Brightness down held for five more presses", from: t2)
-            // 3. A press, then the slider held 60 ms in: the monitor stops where the slider is
+            // 3. A press, then the slider held 60 ms in: the monitor is set back to where the slider stopped
             let t3 = now()
             press(false)
             after(0.06) {
