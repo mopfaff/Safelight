@@ -194,7 +194,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     #endif
 
     @objc func quit(_ sender: Any?) {
-        ColorController.shared.reset()
+        ColorController.shared.resetForQuitting()
         NSApplication.shared.terminate(nil)
     }
     
@@ -3758,13 +3758,17 @@ class ColorController: ObservableObject {
     /// True from when an appearance is chosen here until the screen has changed over to it.
     @Published private(set) var isChangingAppearance: Bool = false
     
-    @Published var isAutoMode: Bool = false {
+    /// Whether the Schedule is on. Saved as it's changed, so it's on again when Safelight next opens,
+    /// after a restart too.
+    @Published var isAutoMode: Bool = UserDefaults.standard.bool(forKey: ColorController.isAutoModeDefaultsKey) {
         didSet {
+            UserDefaults.standard.set(isAutoMode, forKey: Self.isAutoModeDefaultsKey)
             scheduledIsDarkAppearance = nil
             scheduledDisplayBrightness = [:]
             if isAutoMode { applyAutoSettings() }
         }
     }
+    private static let isAutoModeDefaultsKey = "isAutoMode"
 
     /// The appearance the Schedule has for now, once it's been set. It's set again only when this
     /// changes, so an appearance chosen in System Settings or Control Center stays until then, rather
@@ -3884,6 +3888,10 @@ class ColorController: ObservableObject {
         }
         
         timer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+            self?.applyAutoSettings()
+        }
+        // A Schedule left on sets the Mac as soon as Safelight opens, rather than at the next minute
+        DispatchQueue.main.async { [weak self] in
             self?.applyAutoSettings()
         }
 
@@ -4214,6 +4222,14 @@ class ColorController: ObservableObject {
         isColorFilterOn = false
         brightness = 1.0
         displayBrightness = [:]
+    }
+
+    /// Puts the screen back as Reset does, for quitting, but leaves the Schedule saved as it was, so
+    /// it's on again when Safelight next opens if it's on now.
+    func resetForQuitting() {
+        let wasAutoMode = isAutoMode
+        reset()
+        UserDefaults.standard.set(wasAutoMode, forKey: Self.isAutoModeDefaultsKey)
     }
 }
 

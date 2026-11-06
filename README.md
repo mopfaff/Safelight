@@ -32,7 +32,7 @@ It lives in the menu bar.
   </picture>
 </p>
 
-Click the menu bar icon for the controls, the gear next to Schedule to edit the schedule, and the Light or Dark wallpaper to choose its picture in the Wallpaper window. Right-click (or Control-click) the icon for Open at Login, Automatic Updates, Check for Updates… and Quit. Reset and Quit turn the schedule and color filter off and set brightness back to full.
+Click the menu bar icon for the controls, the gear next to Schedule to edit the schedule, and the Light or Dark wallpaper to choose its picture in the Wallpaper window. Right-click (or Control-click) the icon for Open at Login, Automatic Updates, Check for Updates… and Quit. Reset and Quit turn the color filter off and set brightness back to full. Reset turns the schedule off too, while a schedule that was on when Safelight quit, or when the Mac restarted, is on again when Safelight opens.
 
 ## Install
 
