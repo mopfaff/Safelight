@@ -1,8 +1,8 @@
 #!/bin/zsh
 # Presses the brightness keys and drags a slider for the first external monitor Safelight sets over
 # DDC, as with Adjust Independently on and the pointer over it, and logs each brightness written to the
-# monitor and when: a key press fades it as macOS fades an Apple display (macOS's own curve is printed
-# under each write to compare), and a slider sets it once a frame.
+# monitor and when: a key press fades it as macOS fades an Apple display (macOS's own curve, half way
+# through the 50 ms each value is held, is printed under it), and a slider sets it as it moves.
 #
 #   scripts/ddc-fade.sh
 #

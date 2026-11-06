@@ -4943,9 +4943,9 @@ final class DDCMonitors {
         }
     }
 
-    /// A monitor that answered. Its brightness is written on a queue of its own, once a frame, as macOS
-    /// sets an Apple display's: a slider's latest value, or with the brightness keys, where its fade has
-    /// got to. It's read there too, so a read never comes between two writes.
+    /// A monitor that answered. Its brightness is written on a queue of its own, as often as DDC/CI
+    /// allows: a slider's latest value, or with the brightness keys, where its fade has got to. It's
+    /// read there too, so a read never comes between two writes.
     private final class Monitor {
         private let service: CFTypeRef
         /// Its brightness's highest value, from 0, which is 100 on most monitors
@@ -4972,10 +4972,11 @@ final class DDCMonitors {
         private var isWriting = false
         /// The value last written or read, so the same one isn't written again. Only touched on `queue`.
         private var writtenValue: UInt16
-        /// How often it's written while its brightness changes: once a frame, as macOS writes an Apple
-        /// display's (the Studio Display's fade is clocked at 60 Hz). A Dell SE2216H has each value
-        /// within a millisecond. DDC/CI gives a monitor 50 ms, so the last value is written again then.
-        private static let frameInterval: TimeInterval = 1.0 / 60
+        /// How long it's given after each write before the next: the 50 ms DDC/CI gives a monitor to act
+        /// on a message. A Dell SE2216H answers with a new value at once, but written once a frame (as
+        /// macOS writes an Apple display) its backlight fell further and further behind, a fade taking
+        /// several times as long as on the Studio Display.
+        private static let writeInterval: TimeInterval = 0.05
 
         init(service: CFTypeRef, maximum: UInt16, current: UInt16, replySubaddress: UInt32) {
             self.service = service
@@ -5006,53 +5007,36 @@ final class DDCMonitors {
             if startsWriting { queue.async { self.writeRamp() } }
         }
 
-        /// Writes where its brightness has got to once a frame, whenever that's a new value, and the last
-        /// value once more 50 ms after, in case the monitor missed it
+        /// Writes where its brightness has got to, whenever that's a new value, 50 ms apart, and the last
+        /// value once more, in case the monitor missed it. A value stays on the monitor for 50 ms, so a
+        /// fade's is the one it has half way through them, which keeps the monitor on macOS's curve
+        /// rather than behind it.
         private func writeRamp() {
-            var lastWrite: TimeInterval?
+            var hasWritten = false
             var hasRepeated = false
-            var nextFrame = ProcessInfo.processInfo.systemUptime
             while true {
-                let now = ProcessInfo.processInfo.systemUptime
+                let time = ProcessInfo.processInfo.systemUptime + Self.writeInterval / 2
                 lock.lock()
                 if let ramp {
-                    if now >= ramp.end { self.ramp = nil }
+                    if time >= ramp.end { self.ramp = nil }
                     lock.unlock()
-                    let value = UInt16(ramp.value(at: now).rounded())
+                    let value = UInt16(ramp.value(at: time).rounded())
                     if value != writtenValue {
                         write(value)
-                        lastWrite = now
+                        hasWritten = true
                         hasRepeated = false
                     }
-                } else if let lastWrite, !hasRepeated {
+                } else if hasWritten && !hasRepeated {
                     lock.unlock()
-                    if now - lastWrite >= 0.05 {
-                        write(writtenValue)
-                        hasRepeated = true
-                    }
+                    write(writtenValue)
+                    hasRepeated = true
                 } else {
                     isWriting = false
                     lock.unlock()
                     return
                 }
-                // Frames a 60th of a second apart, carrying on from a late one
-                nextFrame += Self.frameInterval
-                let afterWrite = ProcessInfo.processInfo.systemUptime
-                if nextFrame <= afterWrite { nextFrame = afterWrite + Self.frameInterval }
-                Self.sleep(for: nextFrame - afterWrite)
+                usleep(useconds_t(Self.writeInterval * 1_000_000))
             }
-        }
-
-        /// Sleeps to within a fraction of a millisecond, as a strict timer wakes, where `usleep` wakes
-        /// 5 ms or so late, which would put the frames out of step
-        private static func sleep(for interval: TimeInterval) {
-            let semaphore = DispatchSemaphore(value: 0)
-            let timer = DispatchSource.makeTimerSource(flags: .strict, queue: .global(qos: .userInteractive))
-            timer.schedule(deadline: .now() + interval, leeway: .nanoseconds(0))
-            timer.setEventHandler { semaphore.signal() }
-            timer.resume()
-            semaphore.wait()
-            timer.cancel()
         }
 
         private func write(_ value: UInt16) {

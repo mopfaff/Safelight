@@ -86,7 +86,8 @@ func report(_ name: String, from start: TimeInterval, fade: (Float, Float)? = ni
     print("\n\(name): \(taken.count) writes")
     print("  ms:value   ", taken.map { String(format: "%4.0f:%-3d", ($0.time - start) * 1000, $0.value) }.joined(separator: " "))
     if let (origin, target) = fade {
-        print("  macOS's fade", taken.map { String(format: "%4.0f:%-3.0f", ($0.time - start) * 1000, macOSFade(from: origin, to: target, start: start, at: $0.time)) }.joined(separator: " "))
+        // Each value stays on the monitor for the 50 ms till the next write, so it's macOS's half way through
+        print("  macOS's fade", taken.map { String(format: "%4.0f:%-3.0f", ($0.time - start) * 1000, macOSFade(from: origin, to: target, start: start, at: $0.time + 0.025)) }.joined(separator: " "))
     }
     if taken.count > 2 {
         let gaps = zip(taken.dropFirst(), taken).map { ($0.time - $1.time) * 1000 }.sorted()
