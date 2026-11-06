@@ -7,9 +7,10 @@ import CoreGraphics
 // scripts/screenshots.sh checks the built app has no way left to call the system's.
 
 /// Safelight loads MediaAccessibility (the color filter), DisplayServices (brightness), CoreDisplay
-/// (which displays it dims under a dark layer) and SkyLight (the appearance) this way; with none of
-/// them, it can neither read nor change any of those settings, lays no dark layer over a display, and
-/// shows whatever the screenshot app sets it to.
+/// (which displays it dims under a dark layer), IOKit's IOAVService functions (external monitors'
+/// brightness, over DDC) and SkyLight (the appearance) this way; with none of them, it can neither read
+/// nor change any of those settings, lays no dark layer over a display, and shows whatever the
+/// screenshot app sets it to.
 func dlopen(_ path: UnsafePointer<CChar>!, _ mode: Int32) -> UnsafeMutableRawPointer! {
     nil
 }
