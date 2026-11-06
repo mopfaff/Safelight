@@ -1330,7 +1330,9 @@ struct WallpaperGallery: View {
             displayPicker
             options
             // System Settings' Screen Saver… and Clock Appearance…, under its options, at their trailing
-            // edge, the second where macOS lets the lock screen's clock be set
+            // edge, the second where macOS lets the lock screen's clock be set. 10 points under the options'
+            // box and 16 over the divider, as measured in System Settings: the grouped form leaves 20
+            // under its box, so they move up into it
             HStack {
                 Spacer()
                 Button(SystemStrings.screenSaverButton) {
@@ -1347,7 +1349,8 @@ struct WallpaperGallery: View {
                 }
             }
             .padding(.horizontal, Self.margin)
-            .padding(.bottom, Self.margin)
+            .padding(.top, -10)
+            .padding(.bottom, 16)
             Divider()
             // Read here, as the sections are drawn by the scroll view's own hosting view, whose updates
             // come from this one's
