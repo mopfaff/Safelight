@@ -3217,7 +3217,7 @@ struct SunTimeMenu: View {
 }
 
 /// How the day preview draws its time indicator. Debug builds can try each in the Schedule
-/// Layout panel; release builds use `blackOrWhite`.
+/// Layout panel; release builds use `accentOrWhite`.
 enum TimeIndicatorStyle: String, CaseIterable, Identifiable {
     /// A thin line in the accent color, as it was first
     case accent
@@ -3268,7 +3268,7 @@ struct ScheduleDayView: View {
     /// The display of each band, or nil for one band for all displays
     let displays: [Display?]
     var showsDisplayNames = false
-    var timeIndicatorStyle: TimeIndicatorStyle = .blackOrWhite
+    var timeIndicatorStyle: TimeIndicatorStyle = .accentOrWhite
     /// Shows the schedule at a time (minutes after midnight) on screen, or with nil, stops
     var preview: (Double?) -> Void = { _ in }
 
@@ -3486,7 +3486,7 @@ struct ScheduleLayout: Equatable {
     /// Whether each display's band in the day preview has the display's name on it
     var showsDisplayNames = false
     /// How the day preview draws its time indicator
-    var timeIndicatorStyle = TimeIndicatorStyle.blackOrWhite
+    var timeIndicatorStyle = TimeIndicatorStyle.accentOrWhite
 
     static let standard = ScheduleLayout()
 }
