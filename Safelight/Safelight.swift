@@ -3019,7 +3019,22 @@ struct ScheduleEditor: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: layout.boxSpacing) {
-                ScheduleDayView(schedule: controller.schedule, displays: brightnessColumns.map { $0?.key })
+                // Night Shift's choice of schedule, without its Off, which is the switch in the menu bar's popover
+                HStack {
+                    Text(SystemStrings.schedule)
+                    Spacer()
+                    Picker(SystemStrings.schedule, selection: $controller.followsSun) {
+                        Text(SystemStrings.customSchedule).tag(false)
+                        Text(SystemStrings.sunsetToSunrise).tag(true)
+                            .disabled(!controller.hasSunTimes && !controller.followsSun)
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    .help(controller.hasSunTimes ? "" : SystemStrings.sunsetToSunriseNeedsLocation)
+                }
+                .scheduleBox(padding: layout.boxPadding)
+
+                ScheduleDayView(schedule: controller.todaysSchedule, displays: brightnessColumns.map { $0?.key })
                     .scheduleBox(padding: layout.boxPadding)
 
                 // Each column after the first is set off from the one before by its own gap
@@ -3060,8 +3075,18 @@ struct ScheduleEditor: View {
                             .gridCellUnsizedAxes(.horizontal)
 
                         GridRow {
-                            TimeField(label: SystemStrings.time, selection: time(of: keyframe.id), isFocusedOnAppear: keyframe.id == addedKeyframeID)
-                                .environment(\.timeZone, Self.utc)
+                            // Following the sun, the time it comes at today, and when that is in the year
+                            HStack(spacing: 8) {
+                                TimeField(label: SystemStrings.time, selection: time(of: keyframe.id), isFocusedOnAppear: keyframe.id == addedKeyframeID)
+                                    .environment(\.timeZone, Self.utc)
+                                if controller.followsSun {
+                                    SunTimeMenu(sunTime: keyframe.effectiveSunTime) { sunTime in
+                                        withAnimation {
+                                            controller.setSunTime(sunTime, ofKeyframe: keyframe.id)
+                                        }
+                                    }
+                                }
+                            }
 
                             Toggle(SystemStrings.colorFilters, isOn: $keyframe.isColorFilterOn)
                                 .labelsHidden()
@@ -3153,13 +3178,37 @@ struct ScheduleEditor: View {
     // place it had when the row was drawn.
     private func time(of id: ColorKeyframe.ID) -> Binding<Date> {
         Binding(
-            get: { Date(timeIntervalSinceReferenceDate: Double(controller.schedule.first { $0.id == id }?.minute ?? 0) * 60) },
+            get: { Date(timeIntervalSinceReferenceDate: Double(controller.schedule.first { $0.id == id }.map(controller.minute(of:)) ?? 0) * 60) },
             set: { date in
                 withAnimation {
                     controller.setMinute((Int((date.timeIntervalSinceReferenceDate / 60).rounded(.down)) % 1440 + 1440) % 1440, ofKeyframe: id)
                 }
             }
         )
+    }
+}
+
+/// When a keyframe comes while the Schedule follows the sun, as Shortcuts says it for its Sunrise and
+/// Sunset automations, and its choices of that: at sunrise or sunset, or so long before or after, each
+/// in a submenu of its own.
+struct SunTimeMenu: View {
+    let sunTime: SunTime
+    let choose: (SunTime) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(SunTime.Event.allCases, id: \.self) { event in
+                Menu(SystemStrings.sunEvent(event)) {
+                    ForEach(SunTime.offsets, id: \.self) { offset in
+                        let choice = SunTime(event: event, offset: offset)
+                        Toggle(SystemStrings.sunTime(choice), isOn: Binding(get: { sunTime == choice }, set: { _ in choose(choice) }))
+                    }
+                }
+            }
+        } label: {
+            Text(SystemStrings.sunTime(sunTime))
+        }
+        .fixedSize()
     }
 }
 
@@ -3796,7 +3845,7 @@ class ColorController: ObservableObject {
     /// moves to its new place at once, and its row in the Schedule window with it.
     @Published var schedule: [ColorKeyframe] = ColorController.loadSchedule() {
         didSet {
-            let sorted = schedule.sorted { $0.minute < $1.minute }
+            let sorted = schedule.sorted(by: isInTimeOrder)
             if sorted != schedule { schedule = sorted }
             registerUndo(toSchedule: oldValue)
             if let data = try? JSONEncoder().encode(schedule) {
@@ -3808,6 +3857,70 @@ class ColorController: ObservableObject {
     }
 
     private static let scheduleDefaultsKey = "schedule"
+
+    /// Whether the Schedule's keyframes come at times before or after sunrise and sunset, which move
+    /// through the year (Night Shift's Sunset to Sunrise), rather than at their own times (Custom). The
+    /// keyframes keep both, so each schedule is as it was when it's chosen again. Saved as it's changed.
+    @Published var followsSun: Bool = UserDefaults.standard.bool(forKey: ColorController.followsSunDefaultsKey) {
+        didSet {
+            UserDefaults.standard.set(followsSun, forKey: Self.followsSunDefaultsKey)
+            schedule.sort(by: isInTimeOrder)
+            applyAutoSettings()
+        }
+    }
+    private static let followsSunDefaultsKey = "scheduleFollowsSun"
+
+    /// Today's sunrise and sunset as Night Shift has them, or while it has none, the last ones it had
+    /// (nil if it's never had any).
+    @Published private(set) var sunTimes: SunTimes? = SunTimes.today() ?? ColorController.savedSunTimes {
+        didSet {
+            if let data = try? JSONEncoder().encode(sunTimes) {
+                UserDefaults.standard.set(data, forKey: Self.sunTimesDefaultsKey)
+            }
+            if followsSun {
+                schedule.sort(by: isInTimeOrder)
+                applyAutoSettings()
+            }
+        }
+    }
+    /// Whether Night Shift has sunrise and sunset for today, which it hasn't while location for time
+    /// zone is off. Without them, Sunset to Sunrise can't be chosen.
+    @Published private(set) var hasSunTimes = SunTimes.today() != nil
+    private static let sunTimesDefaultsKey = "sunTimes"
+
+    private static var savedSunTimes: SunTimes? {
+        UserDefaults.standard.data(forKey: sunTimesDefaultsKey).flatMap { try? JSONDecoder().decode(SunTimes.self, from: $0) }
+    }
+
+    /// Asks Night Shift for today's sunrise and sunset again, which move a minute or two a day, and jump
+    /// when the Mac travels or the clocks change.
+    private func updateSunTimes() {
+        let today = SunTimes.today()
+        if hasSunTimes != (today != nil) { hasSunTimes = today != nil }
+        if let today, today != sunTimes { sunTimes = today }
+    }
+
+    /// The minute of the day a keyframe comes at today: its own, or while the Schedule follows the sun,
+    /// so long before or after today's sunrise or sunset
+    func minute(of keyframe: ColorKeyframe) -> Int {
+        followsSun ? keyframe.effectiveSunTime.minute(in: sunTimes ?? .nominal) : keyframe.minute
+    }
+
+    /// The schedule as it runs today, its keyframes at the minutes `minute(of:)` gives them
+    var todaysSchedule: [ColorKeyframe] {
+        guard followsSun else { return schedule }
+        return schedule.map { keyframe in
+            var keyframe = keyframe
+            keyframe.minute = minute(of: keyframe)
+            return keyframe
+        }
+    }
+
+    /// Keyframes in the order they come today, two at the same time in the order of their own times
+    /// (and IDs), so the order never changes back and forth between them.
+    private func isInTimeOrder(_ first: ColorKeyframe, _ second: ColorKeyframe) -> Bool {
+        (minute(of: first), first.minute, first.id.uuidString) < (minute(of: second), second.minute, second.id.uuidString)
+    }
 
     /// Takes back and puts back changes to the schedule, for Undo and Redo in the Schedule window.
     let scheduleUndoManager = UndoManager()
@@ -3886,6 +3999,7 @@ class ColorController: ObservableObject {
         }
         
         timer = Timer.scheduledTimer(withTimeInterval: 60.0, repeats: true) { [weak self] _ in
+            self?.updateSunTimes()
             self?.applyAutoSettings()
         }
         // A Schedule left on sets the Mac as soon as Safelight opens, rather than at the next minute
@@ -3912,6 +4026,11 @@ class ColorController: ObservableObject {
 
         // Which also asks the external monitors for their brightness
         updateBrightness()
+
+        // Loaded in the order of their own times, the keyframes come in today's order while they follow the sun
+        if followsSun {
+            schedule.sort(by: isInTimeOrder)
+        }
     }
 
     /// Once it's known whether a display is a monitor whose own brightness can be set (over DDC), it's
@@ -4090,7 +4209,7 @@ class ColorController: ObservableObject {
         let calendar = Calendar.current
         let hour = calendar.component(.hour, from: now)
         let minute = calendar.component(.minute, from: now)
-        guard let settings = ColorKeyframe.settings(in: schedule, at: Double(hour * 60 + minute)) else { return }
+        guard let settings = ColorKeyframe.settings(in: todaysSchedule, at: Double(hour * 60 + minute)) else { return }
 
         self.tint = settings.tint
         self.intensity = settings.filterIntensity
@@ -4110,15 +4229,18 @@ class ColorController: ObservableObject {
         }
     }
 
-    /// Adds a keyframe at the next free half hour, set to what the schedule already has there, and returns its ID.
+    /// Adds a keyframe at the next free half hour, set to what the schedule already has there, and returns
+    /// its ID. While the Schedule follows the sun, it's so long before or after whichever of today's
+    /// sunrise and sunset is nearer.
     @discardableResult
     func addKeyframe() -> ColorKeyframe.ID {
         let now = Calendar.current.dateComponents([.hour, .minute], from: Date())
         let nextHalfHour = ((now.hour! * 60 + now.minute!) / 30 + 1) * 30
-        let taken = Set(schedule.map(\.minute))
+        let todaysSchedule = todaysSchedule
+        let taken = Set(todaysSchedule.map(\.minute))
         let minute = (0..<48).lazy.map { (nextHalfHour + $0 * 30) % 1440 }.first { !taken.contains($0) } ?? nextHalfHour % 1440
 
-        let settings = ColorKeyframe.settings(in: schedule, at: Double(minute))
+        let settings = ColorKeyframe.settings(in: todaysSchedule, at: Double(minute))
             ?? ColorKeyframe.Settings(intensity: isColorFilterOn ? intensity : 0, tint: tint, brightness: brightness, displayBrightness: displayBrightness, isDarkAppearance: isDarkAppearance)
         let keyframe = ColorKeyframe(
             minute: minute,
@@ -4127,7 +4249,8 @@ class ColorController: ObservableObject {
             tint: settings.tint,
             brightness: settings.brightness,
             displayBrightness: settings.displayBrightness,
-            isDarkAppearance: settings.isDarkAppearance
+            isDarkAppearance: settings.isDarkAppearance,
+            sunTime: followsSun ? SunTime(nearestTo: minute, in: sunTimes ?? .nominal) : nil
         )
         schedule.append(keyframe)
         return keyframe.id
@@ -4139,19 +4262,34 @@ class ColorController: ObservableObject {
         schedule.removeAll { $0.id == id }
     }
 
-    /// Sets a keyframe's time. Setting the same keyframe's time again straight after is undone with it.
+    /// Sets a keyframe's time: its own, or while the Schedule follows the sun, the time it comes at today,
+    /// as so long before or after the sunrise or sunset it follows. Setting the same keyframe's time again
+    /// straight after is undone with it.
     func setMinute(_ minute: Int, ofKeyframe id: ColorKeyframe.ID) {
         guard let index = schedule.firstIndex(where: { $0.id == id }) else { return }
         timeEdit = .time(id)
-        schedule[index].minute = minute
+        if followsSun {
+            let sunTime = schedule[index].effectiveSunTime.moved(to: minute, in: sunTimes ?? .nominal)
+            if sunTime != schedule[index].effectiveSunTime { schedule[index].sunTime = sunTime }
+        } else {
+            schedule[index].minute = minute
+        }
         timeEdit = nil
+    }
+
+    /// Sets the time a keyframe comes at while the Schedule follows the sun, as a change to undo by itself.
+    func setSunTime(_ sunTime: SunTime, ofKeyframe id: ColorKeyframe.ID) {
+        guard let index = schedule.firstIndex(where: { $0.id == id }), sunTime != schedule[index].effectiveSunTime else { return }
+        endScheduleEdit()
+        schedule[index].sunTime = sunTime
+        endScheduleEdit()
     }
 
     /// Registers the way back from a change to the schedule, unless it carries on the edit the last
     /// change was part of. Undoing puts `previous` back, which registers the way forward for Redo.
     private func registerUndo(toSchedule previous: [ColorKeyframe]) {
         // Putting the keyframes in time order sets the schedule a second time, which isn't a change of its own
-        guard schedule != previous.sorted(by: { $0.minute < $1.minute }) else { return }
+        guard schedule != previous.sorted(by: isInTimeOrder) else { return }
         let edit = previewedKeyframeID == nil ? timeEdit : .slider
         defer { lastScheduleEdit = edit }
         if let edit, edit == lastScheduleEdit { return }
@@ -4392,6 +4530,16 @@ struct ColorKeyframe: Identifiable, Codable, Equatable {
     /// independently. Kept while they aren't, for when they are again.
     var displayBrightness: [String: Float] = [:]
     var isDarkAppearance: Bool
+    /// When the keyframe comes while the Schedule follows the sun, once it's been set. Until then it's
+    /// `effectiveSunTime`, and `minute` is kept for the Custom schedule either way.
+    var sunTime: SunTime? = nil
+
+    /// When the keyframe comes while the Schedule follows the sun: the time set for it, or until one is,
+    /// the one of sunrise and sunset its own time is nearer to on a day with them at 6:00 and 18:00, as in
+    /// the default schedule, and how long before or after it
+    var effectiveSunTime: SunTime {
+        sunTime ?? SunTime(nearestTo: minute, in: .nominal)
+    }
 
     /// A display's brightness, which is `brightness` until it's been given its own
     subscript(brightnessOf display: String) -> Float {
@@ -4487,6 +4635,97 @@ extension ColorKeyframe {
         brightness = try container.decode(Float.self, forKey: .brightness)
         displayBrightness = try container.decodeIfPresent([String: Float].self, forKey: .displayBrightness) ?? [:]
         isDarkAppearance = try container.decodeIfPresent(Bool.self, forKey: .isDarkAppearance) ?? isColorFilterOn
+        sunTime = try container.decodeIfPresent(SunTime.self, forKey: .sunTime)
+    }
+}
+
+// MARK: - Sunrise and Sunset (Night Shift's Sunset to Sunrise)
+/// A day's sunrise and sunset, in minutes after midnight.
+struct SunTimes: Codable, Equatable {
+    var sunrise: Int
+    var sunset: Int
+
+    /// The day the default schedule was made for
+    static let nominal = SunTimes(sunrise: 6 * 60, sunset: 18 * 60)
+
+    subscript(event: SunTime.Event) -> Int {
+        switch event {
+        case .sunrise: sunrise
+        case .sunset: sunset
+        }
+    }
+
+    /// Today's, as Night Shift has them for Sunset to Sunrise, or nil while it has none. CoreBrightness
+    /// works them out from the Mac's location for time zone, and its `BrightnessSystemClient` gives them
+    /// to any app as the property `BlueLightSunSchedule`, which `corebrightnessdiag sunschedule` prints
+    /// too. It has none while location for time zone is off, when System Settings won't offer Sunset to
+    /// Sunrise either.
+    static func today() -> SunTimes? {
+        guard let client = nightShiftClient,
+              let schedule = client.perform(NSSelectorFromString("copyPropertyForKey:"), with: "BlueLightSunSchedule")?.takeRetainedValue() as? [String: Any],
+              let sunrise = schedule["sunrise"] as? Date,
+              let sunset = schedule["sunset"] as? Date else { return nil }
+        return SunTimes(sunrise: minute(of: sunrise), sunset: minute(of: sunset))
+    }
+
+    private static let nightShiftClient: NSObject? = {
+        dlopen("/System/Library/PrivateFrameworks/CoreBrightness.framework/CoreBrightness", RTLD_NOW)
+        guard let type = NSClassFromString("BrightnessSystemClient") as? NSObject.Type else { return nil }
+        let client = type.init()
+        return client.responds(to: NSSelectorFromString("copyPropertyForKey:")) ? client : nil
+    }()
+
+    /// The minute of the day `date` is nearest to, on the Mac's clock
+    private static func minute(of date: Date) -> Int {
+        let time = Calendar.current.dateComponents([.hour, .minute], from: date.addingTimeInterval(30))
+        return time.hour! * 60 + time.minute!
+    }
+}
+
+/// When a keyframe comes while the Schedule follows the sun: so many minutes before (less than 0) or
+/// after sunrise or sunset.
+struct SunTime: Codable, Hashable {
+    enum Event: String, Codable, CaseIterable {
+        case sunrise, sunset
+    }
+
+    var event: Event
+    var offset: Int
+
+    /// The choices Shortcuts gives for its Sunrise and Sunset automations
+    static let offsets = [-240, -180, -120, -60, -45, -30, -15, 0, 15, 30, 45, 60, 120, 180, 240]
+
+    init(event: Event, offset: Int) {
+        self.event = event
+        self.offset = offset
+    }
+
+    /// `minute` as so long before or after whichever of sunrise and sunset it's nearer to on the day
+    /// `sun` makes, or halfway between them, after the one it follows
+    init(nearestTo minute: Int, in sun: SunTimes) {
+        let fromSunrise = Self.minutes(from: sun.sunrise, to: minute)
+        let fromSunset = Self.minutes(from: sun.sunset, to: minute)
+        if abs(fromSunrise) < abs(fromSunset) || (abs(fromSunrise) == abs(fromSunset) && fromSunrise > 0) {
+            self.init(event: .sunrise, offset: fromSunrise)
+        } else {
+            self.init(event: .sunset, offset: fromSunset)
+        }
+    }
+
+    /// The same time of day as `minute`, as so long before or after this one's sunrise or sunset
+    func moved(to minute: Int, in sun: SunTimes) -> SunTime {
+        SunTime(event: event, offset: Self.minutes(from: sun[event], to: minute))
+    }
+
+    /// The minute of the day this comes at, on the day `sun` makes
+    func minute(in sun: SunTimes) -> Int {
+        ((sun[event] + offset) % 1440 + 1440) % 1440
+    }
+
+    /// How many minutes `end` comes after `start` (less than 0 for before), the short way round the clock
+    private static func minutes(from start: Int, to end: Int) -> Int {
+        let minutes = ((end - start) % 1440 + 1440) % 1440
+        return minutes > 720 ? minutes - 1440 : minutes
     }
 }
 
@@ -10255,6 +10494,55 @@ enum SystemStrings {
     static let brightness = lookup("Brightness", in: displaysSettings, english: "Brightness")
     static let schedule = lookup("Schedule", in: displaysSettings, english: "Schedule")
     static let customize = lookup("Customize…", in: displaysSettings, english: "Customize…")
+    // Night Shift's schedules, and why it can't follow the sun
+    static let customSchedule = lookup("Custom", in: displaysSettings, english: "Custom")
+    static let sunsetToSunrise = lookup("Sunset to Sunrise", in: displaysSettings, english: "Sunset to Sunrise")
+    static let sunsetToSunriseNeedsLocation = lookup("Night Shift from sunset to sunrise requires location for time zone to be enabled.", in: displaysSettings,
+                                                     english: "Night Shift from sunset to sunrise requires location for time zone to be enabled.")
+
+    // Shortcuts' Sunrise and Sunset automations: the two, being at them, and its choices of how long
+    // before or after them, with the Home app's wording for any other time before or after them
+    private static let shortcuts = "/System/Library/PrivateFrameworks/WorkflowKit.framework"
+    private static let home = "/System/iOSSupport/System/Library/PrivateFrameworks/Home.framework"
+
+    static func sunEvent(_ event: SunTime.Event) -> String {
+        switch event {
+        case .sunrise: lookup("Sunrise", in: shortcuts, english: "Sunrise")
+        case .sunset: lookup("Sunset", in: shortcuts, english: "Sunset")
+        }
+    }
+
+    /// So long before or after sunrise or sunset, in Shortcuts' words for its choices (45 minutes after
+    /// sunrise, At sunset), or in the Home app's for any other time (2 hours, 30 minutes after sunset)
+    static func sunTime(_ time: SunTime) -> String {
+        let event = time.event == .sunrise ? "sunrise" : "sunset"
+        let minutes = abs(time.offset)
+        let side = time.offset < 0 ? "before" : "after"
+        if minutes == 0 {
+            return lookup("At \(event)", in: shortcuts, english: "At \(event)")
+        }
+        if SunTime.offsets.contains(time.offset) {
+            let duration = minutes < 60 ? "\(minutes) minutes" : minutes == 60 ? "1 hour" : "\(minutes / 60) hours"
+            let phrase = "\(duration) \(side) \(event)"
+            return lookup(phrase, in: shortcuts, english: phrase)
+        }
+        // In the language of the words around it, which this app, with no translations, wouldn't give it
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .full
+        formatter.allowedUnits = [.hour, .minute]
+        var calendar = Calendar.current
+        calendar.locale = Locale(identifier: Locale.preferredLanguages.first ?? "en")
+        formatter.calendar = calendar
+        let duration = formatter.string(from: TimeInterval(minutes * 60)) ?? "\(minutes)"
+        // (Home's key for after sunset has its typo)
+        let key = switch (time.event, time.offset < 0) {
+        case (.sunrise, true): "HFTimerTriggerTimeStringSunriseWithNegativeOffset"
+        case (.sunrise, false): "HFTimerTriggerTimeStringSunriseWithPositiveOffset"
+        case (.sunset, true): "HFTimerTriggerTimeStringSunsetWithNegativeOffset"
+        case (.sunset, false): "HFTimerTriggerTimeStringSunseteWithPositiveOffset"
+        }
+        return String(format: lookup(key, table: "HFLocalizable", in: home, english: "%@ \(side) \(event)"), duration)
+    }
 
     // System Settings › Appearance
     static let appearance = lookup("Appearance", in: appearanceSettings, english: "Appearance")
