@@ -3034,8 +3034,10 @@ struct ScheduleEditor: View {
                 }
                 .scheduleBox(padding: layout.boxPadding)
 
-                ScheduleDayView(schedule: controller.todaysSchedule, displays: brightnessColumns.map { $0?.key })
-                    .scheduleBox(padding: layout.boxPadding)
+                if layout.showsDayPreview {
+                    ScheduleDayView(schedule: controller.todaysSchedule, displays: brightnessColumns.map { $0?.key })
+                        .scheduleBox(padding: layout.boxPadding)
+                }
 
                 // Each column after the first is set off from the one before by its own gap
                 Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: layout.rowSpacing) {
@@ -3297,6 +3299,8 @@ struct ScheduleLayout: Equatable {
     var gapBeforeBrightness: CGFloat = 40
     var gapBeforeAppearance: CGFloat = 40
     var gapBeforeDelete: CGFloat = 40
+    /// Whether the box with the day the Schedule makes (`ScheduleDayView`) is there over the rows
+    var showsDayPreview = true
 
     static let standard = ScheduleLayout()
 }
@@ -3365,6 +3369,7 @@ final class ScheduleLayoutTuner: ObservableObject {
     private static let fields = windowFields + boxFields + widthFields + gapFields + [rowSpacingField]
 
     private static let defaultsKey = "scheduleLayout"
+    private static let showsDayPreviewKey = "showsDayPreview"
 
     @Published var layout: ScheduleLayout {
         didSet { save() }
@@ -3376,6 +3381,7 @@ final class ScheduleLayoutTuner: ObservableObject {
         for field in Self.fields {
             if let value = saved[field.key] { layout[keyPath: field.keyPath] = value }
         }
+        if let value = saved[Self.showsDayPreviewKey] { layout.showsDayPreview = value != 0 }
         self.layout = layout
     }
 
@@ -3386,6 +3392,7 @@ final class ScheduleLayoutTuner: ObservableObject {
             return
         }
         let values = Self.fields.map { ($0.key, Double(layout[keyPath: $0.keyPath])) }
+            + [(Self.showsDayPreviewKey, layout.showsDayPreview ? 1 : 0)]
         UserDefaults.standard.set(Dictionary(uniqueKeysWithValues: values), forKey: Self.defaultsKey)
     }
 }
@@ -3407,6 +3414,11 @@ struct ScheduleLayoutPanel: View {
                         Text("Custom").tag(String?.none)
                     }
                 }
+            }
+
+            Section {
+                Toggle("Day preview", isOn: $tuner.layout.showsDayPreview)
+                    .help("The strip of the day the Schedule makes, with a line at the current time and a dot under each time")
             }
 
             Section("Space to the window's edges") {
@@ -3485,21 +3497,28 @@ struct ScheduleLayoutPanel: View {
         tuner.layout[keyPath: field.keyPath] = ScheduleLayout.standard[keyPath: field.keyPath]
     }
 
-    /// The template the layout is, if it's one of them.
+    /// The template the layout's spacing is, if it's one of them, whether the day preview is shown or not.
     private var templateName: String? {
-        ScheduleLayout.templates.first { $0.layout == tuner.layout }?.name
+        ScheduleLayout.templates.first { $0.layout == withTemplatePreview(tuner.layout) }?.name
     }
 
-    /// Choosing a template sets every value to its own.
+    /// Choosing a template sets every width and space to its own, and keeps the day preview shown or hidden.
     private var template: Binding<String?> {
         Binding(
             get: { templateName },
             set: { name in
-                if let template = ScheduleLayout.templates.first(where: { $0.name == name }) {
-                    tuner.layout = template.layout
+                if var layout = ScheduleLayout.templates.first(where: { $0.name == name })?.layout {
+                    layout.showsDayPreview = tuner.layout.showsDayPreview
+                    tuner.layout = layout
                 }
             }
         )
+    }
+
+    private func withTemplatePreview(_ layout: ScheduleLayout) -> ScheduleLayout {
+        var layout = layout
+        layout.showsDayPreview = ScheduleLayout.standard.showsDayPreview
+        return layout
     }
 
     /// Every column's gap at once, reading as the widest of them.
