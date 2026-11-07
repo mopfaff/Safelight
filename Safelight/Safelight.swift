@@ -3035,7 +3035,7 @@ struct ScheduleEditor: View {
                 .scheduleBox(padding: layout.boxPadding)
 
                 if layout.showsDayPreview {
-                    ScheduleDayView(schedule: controller.todaysSchedule, displays: brightnessColumns)
+                    ScheduleDayView(schedule: controller.todaysSchedule, displays: brightnessColumns, showsDisplayNames: layout.showsDisplayNames)
                         .scheduleBox(padding: layout.boxPadding)
                 }
 
@@ -3217,11 +3217,12 @@ struct SunTimeMenu: View {
 /// The day the Schedule makes, from midnight to midnight: a strip of roughly how white looks on screen
 /// through it, a line at the current time, and a dot under each keyframe. While the displays are
 /// adjusted independently, the strip has a band for each, from the top down in the order of their columns,
-/// with the display's name at its start.
+/// with the display's name at its start if `showsDisplayNames`.
 struct ScheduleDayView: View {
     let schedule: [ColorKeyframe]
     /// The display of each band, or nil for one band for all displays
     let displays: [Display?]
+    var showsDisplayNames = false
 
     private let stripHeight: CGFloat = 36
 
@@ -3243,7 +3244,7 @@ struct ScheduleDayView: View {
                     }
 
                     // Each band's display, in black or white, whichever stands out from the band where the name is
-                    for (band, display) in displays.enumerated() {
+                    for (band, display) in displays.enumerated() where showsDisplayNames {
                         guard let display else { continue }
                         let label = strip.resolve(Text(display.name).font(.system(size: 10, weight: .medium)))
                         let labelSize = label.measure(in: CGSize(width: size.width, height: bandHeight))
@@ -3325,6 +3326,8 @@ struct ScheduleLayout: Equatable {
     var gapBeforeDelete: CGFloat = 40
     /// Whether the box with the day the Schedule makes (`ScheduleDayView`) is there over the rows
     var showsDayPreview = true
+    /// Whether each display's band in the day preview has the display's name on it
+    var showsDisplayNames = false
 
     static let standard = ScheduleLayout()
 }
@@ -3394,6 +3397,7 @@ final class ScheduleLayoutTuner: ObservableObject {
 
     private static let defaultsKey = "scheduleLayout"
     private static let showsDayPreviewKey = "showsDayPreview"
+    private static let showsDisplayNamesKey = "showsDisplayNames"
 
     @Published var layout: ScheduleLayout {
         didSet { save() }
@@ -3406,6 +3410,7 @@ final class ScheduleLayoutTuner: ObservableObject {
             if let value = saved[field.key] { layout[keyPath: field.keyPath] = value }
         }
         if let value = saved[Self.showsDayPreviewKey] { layout.showsDayPreview = value != 0 }
+        if let value = saved[Self.showsDisplayNamesKey] { layout.showsDisplayNames = value != 0 }
         self.layout = layout
     }
 
@@ -3416,7 +3421,8 @@ final class ScheduleLayoutTuner: ObservableObject {
             return
         }
         let values = Self.fields.map { ($0.key, Double(layout[keyPath: $0.keyPath])) }
-            + [(Self.showsDayPreviewKey, layout.showsDayPreview ? 1 : 0)]
+            + [(Self.showsDayPreviewKey, layout.showsDayPreview ? 1 : 0),
+               (Self.showsDisplayNamesKey, layout.showsDisplayNames ? 1 : 0)]
         UserDefaults.standard.set(Dictionary(uniqueKeysWithValues: values), forKey: Self.defaultsKey)
     }
 }
@@ -3443,6 +3449,9 @@ struct ScheduleLayoutPanel: View {
             Section {
                 Toggle("Day preview", isOn: $tuner.layout.showsDayPreview)
                     .help("The strip of the day the Schedule makes, with a line at the current time and a dot under each time")
+                Toggle("Display names", isOn: $tuner.layout.showsDisplayNames)
+                    .disabled(!tuner.layout.showsDayPreview)
+                    .help("While the displays are adjusted independently, each one's name on its band of the day preview")
             }
 
             Section("Space to the window's edges") {
@@ -3521,18 +3530,19 @@ struct ScheduleLayoutPanel: View {
         tuner.layout[keyPath: field.keyPath] = ScheduleLayout.standard[keyPath: field.keyPath]
     }
 
-    /// The template the layout's spacing is, if it's one of them, whether the day preview is shown or not.
+    /// The template the layout's spacing is, if it's one of them, whatever the day preview shows.
     private var templateName: String? {
         ScheduleLayout.templates.first { $0.layout == withTemplatePreview(tuner.layout) }?.name
     }
 
-    /// Choosing a template sets every width and space to its own, and keeps the day preview shown or hidden.
+    /// Choosing a template sets every width and space to its own, and keeps the day preview as it is.
     private var template: Binding<String?> {
         Binding(
             get: { templateName },
             set: { name in
                 if var layout = ScheduleLayout.templates.first(where: { $0.name == name })?.layout {
                     layout.showsDayPreview = tuner.layout.showsDayPreview
+                    layout.showsDisplayNames = tuner.layout.showsDisplayNames
                     tuner.layout = layout
                 }
             }
@@ -3542,6 +3552,7 @@ struct ScheduleLayoutPanel: View {
     private func withTemplatePreview(_ layout: ScheduleLayout) -> ScheduleLayout {
         var layout = layout
         layout.showsDayPreview = ScheduleLayout.standard.showsDayPreview
+        layout.showsDisplayNames = ScheduleLayout.standard.showsDisplayNames
         return layout
     }
 
