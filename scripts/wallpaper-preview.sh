@@ -10,6 +10,14 @@
 #   scripts/wallpaper-preview.sh <id>[@dark|@fit] ...     picks each for Light, one after the other, after
 #                                                         a colour to start from; @dark with its Dark
 #                                                         picture, @fit fitted on a red fill
+#   scripts/wallpaper-preview.sh --frames[=dark] <id> ... the same, also filming the Wallpaper window's
+#                                                         Light preview (DesktopPreview) frame by frame,
+#                                                         in Light or Dark, in a small window of its own
+#                                                         at the bottom left of the main display (in
+#                                                         front, without the focus), and logging how far
+#                                                         each frame has faded from the picture before to
+#                                                         the new one, against WallpaperAgent's fade (2 s,
+#                                                         easing out); frames every 0.25 s are saved
 #   scripts/wallpaper-preview.sh --against <ref> <id> ... the same first with Safelight.swift as it was at
 #                                                         a commit, to compare before and after
 #
@@ -19,8 +27,8 @@
 # sets it, and reading the desktop reads it, so the Mac's own wallpaper is left as it was. They make
 # their wallpapers in their own folder in build/wallpaper-preview/, stand in for the color filter,
 # brightness and appearance with scripts/screenshots/NoSystemChanges.swift, and have settings of their
-# own (wallpaper-preview-current and -against), emptied after each run. They show no window. A
-# wallpaper that isn't on the Mac is fetched from Apple's, as Safelight fetches it.
+# own (wallpaper-preview-current and -against), emptied after each run. They show no window but the
+# filmed one. A wallpaper that isn't on the Mac is fetched from Apple's, as Safelight fetches it.
 
 set -eu
 cd "${0:A:h}/.."
