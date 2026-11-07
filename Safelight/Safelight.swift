@@ -3036,6 +3036,7 @@ struct ScheduleEditor: View {
 
                 if layout.showsDayPreview {
                     ScheduleDayView(schedule: controller.todaysSchedule, displays: brightnessColumns, showsDisplayNames: layout.showsDisplayNames,
+                                    timeLineStyle: layout.timeLineStyle,
                                     preview: controller.previewTime)
                         .scheduleBox(padding: layout.boxPadding)
                 }
@@ -3215,6 +3216,41 @@ struct SunTimeMenu: View {
     }
 }
 
+/// How the day preview draws its line at the current time. Debug builds can try each in the Schedule
+/// Layout panel; release builds use `blackOrWhite`.
+enum TimeLineStyle: String, CaseIterable, Identifiable {
+    /// A thin line in the accent color, as it was first
+    case accent
+    /// The accent color with a white edge each side
+    case accentWithWhiteEdges
+    /// White, with a shadow
+    case whiteWithShadow
+    /// White, with a shadow and a knob on top
+    case whiteWithKnob
+    /// A rounded white bar reaching past the strip
+    case whiteBar
+    /// An accent-colored bar in a white one, reaching past the strip
+    case accentBarInWhite
+    /// Black or white on each band, whichever stands out from it there
+    case blackOrWhite
+
+    var id: Self { self }
+
+    var name: String {
+        switch self {
+        case .accent: "Accent color"
+        case .accentWithWhiteEdges: "Accent color, white edges"
+        case .whiteWithShadow: "White with shadow"
+        case .whiteWithKnob: "White with knob"
+        case .whiteBar: "White bar past the strip"
+        case .accentBarInWhite: "Accent bar in white, past the strip"
+        case .blackOrWhite: "Black or white"
+        }
+    }
+
+    var reachesPastStrip: Bool { self == .whiteWithKnob || self == .whiteBar || self == .accentBarInWhite }
+}
+
 /// The day the Schedule makes, from midnight to midnight: a strip of roughly how white looks on screen
 /// through it, a line at the current time, and a dot under each keyframe. While the displays are
 /// adjusted independently, the strip has a band for each, from the top down in the order of their columns,
@@ -3228,10 +3264,12 @@ struct ScheduleDayView: View {
     /// The display of each band, or nil for one band for all displays
     let displays: [Display?]
     var showsDisplayNames = false
+    var timeLineStyle: TimeLineStyle = .blackOrWhite
     /// Shows the schedule at a time (minutes after midnight) on screen, or with nil, stops
     var preview: (Double?) -> Void = { _ in }
 
     private let stripHeight: CGFloat = 36
+    private var overhang: CGFloat { timeLineStyle.reachesPastStrip ? 4 : 0 }
     /// The time the line's been dragged to, while it's held
     @State private var draggedMinute: Double?
     @State private var width: CGFloat = 0
@@ -3239,8 +3277,13 @@ struct ScheduleDayView: View {
     var body: some View {
         TimelineView(.everyMinute) { timeline in
             Canvas { context, size in
+                // Room above the strip for a line that reaches past it
+                context.translateBy(x: 0, y: overhang)
                 let outline = Path(roundedRect: CGRect(x: 0, y: 0, width: size.width, height: stripHeight), cornerRadius: 6)
                 func x(ofMinute minute: Double) -> CGFloat { size.width * minute / 1440 }
+                let now = Calendar.current.dateComponents([.hour, .minute], from: timeline.date)
+                let lineMinute = draggedMinute ?? Double(now.hour! * 60 + now.minute!)
+                let lineX = x(ofMinute: lineMinute)
 
                 context.drawLayer { strip in
                     strip.clip(to: outline)
@@ -3269,19 +3312,52 @@ struct ScheduleDayView: View {
                         )
                     }
 
-                    let now = Calendar.current.dateComponents([.hour, .minute], from: timeline.date)
-                    let lineMinute = draggedMinute ?? Double(now.hour! * 60 + now.minute!)
-                    let lineX = x(ofMinute: lineMinute)
-                    // In black or white on each band, whichever stands out from it there, as the names are:
-                    // an accent-colored line is lost against the dark reds, which are about as dark as it
-                    let lineSettings = ColorKeyframe.settings(in: schedule, at: lineMinute)
-                    for (band, display) in displays.enumerated() {
-                        let isLight = lineSettings.map { Self.luminance(of: $0.previewColor(ofDisplay: display?.key)) > 0.18 } ?? true
-                        strip.fill(Path(CGRect(x: lineX - 1, y: CGFloat(band) * bandHeight, width: 2, height: bandHeight)),
-                                   with: .color(isLight ? .black.opacity(0.75) : .white.opacity(0.9)))
+                    switch timeLineStyle {
+                    case .accent:
+                        strip.fill(Path(CGRect(x: lineX - 1, y: 0, width: 2, height: stripHeight)), with: .color(.accentColor))
+                    case .accentWithWhiteEdges:
+                        strip.fill(Path(CGRect(x: lineX - 2.5, y: 0, width: 5, height: stripHeight)), with: .color(.white))
+                        strip.fill(Path(CGRect(x: lineX - 1.5, y: 0, width: 3, height: stripHeight)), with: .color(.accentColor))
+                    case .whiteWithShadow, .whiteWithKnob:
+                        strip.drawLayer { line in
+                            line.addFilter(.shadow(color: .black.opacity(0.5), radius: 1.5))
+                            line.fill(Path(CGRect(x: lineX - 1, y: 0, width: 2, height: stripHeight)), with: .color(.white))
+                        }
+                    case .blackOrWhite:
+                        // In black or white on each band, whichever stands out from it there, as the names are
+                        let lineSettings = ColorKeyframe.settings(in: schedule, at: lineMinute)
+                        for (band, display) in displays.enumerated() {
+                            let isLight = lineSettings.map { Self.luminance(of: $0.previewColor(ofDisplay: display?.key)) > 0.18 } ?? true
+                            strip.fill(Path(CGRect(x: lineX - 1, y: CGFloat(band) * bandHeight, width: 2, height: bandHeight)),
+                                       with: .color(isLight ? .black.opacity(0.75) : .white.opacity(0.9)))
+                        }
+                    case .whiteBar, .accentBarInWhite:
+                        break
                     }
                 }
                 context.stroke(outline, with: .style(.separator))
+
+                // The styles that reach past the strip, drawn outside its clip
+                switch timeLineStyle {
+                case .whiteWithKnob:
+                    context.drawLayer { line in
+                        line.addFilter(.shadow(color: .black.opacity(0.35), radius: 1.5))
+                        line.fill(Path(ellipseIn: CGRect(x: lineX - 4, y: -4, width: 8, height: 8)), with: .color(.white))
+                    }
+                case .whiteBar:
+                    context.drawLayer { line in
+                        line.addFilter(.shadow(color: .black.opacity(0.35), radius: 1.5))
+                        line.fill(Path(roundedRect: CGRect(x: lineX - 1.5, y: -3, width: 3, height: stripHeight + 6), cornerRadius: 1.5), with: .color(.white))
+                    }
+                case .accentBarInWhite:
+                    context.drawLayer { line in
+                        line.addFilter(.shadow(color: .black.opacity(0.35), radius: 1))
+                        line.fill(Path(roundedRect: CGRect(x: lineX - 2.5, y: -3, width: 5, height: stripHeight + 6), cornerRadius: 2.5), with: .color(.white))
+                        line.fill(Path(roundedRect: CGRect(x: lineX - 1, y: -1.5, width: 2, height: stripHeight + 3), cornerRadius: 1), with: .color(.accentColor))
+                    }
+                default:
+                    break
+                }
 
                 for keyframe in schedule {
                     let dot = CGRect(x: x(ofMinute: Double(keyframe.minute)) - 2.5, y: stripHeight + 4, width: 5, height: 5)
@@ -3330,7 +3406,7 @@ struct ScheduleDayView: View {
                     }
             )
         }
-        .frame(height: stripHeight + 27)
+        .frame(height: overhang + stripHeight + 27)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         // Closing the window while the line's held puts the screen back too
         .onDisappear {
@@ -3384,6 +3460,8 @@ struct ScheduleLayout: Equatable {
     var showsDayPreview = true
     /// Whether each display's band in the day preview has the display's name on it
     var showsDisplayNames = false
+    /// How the day preview draws its line at the current time
+    var timeLineStyle = TimeLineStyle.blackOrWhite
 
     static let standard = ScheduleLayout()
 }
@@ -3454,6 +3532,7 @@ final class ScheduleLayoutTuner: ObservableObject {
     private static let defaultsKey = "scheduleLayout"
     private static let showsDayPreviewKey = "showsDayPreview"
     private static let showsDisplayNamesKey = "showsDisplayNames"
+    private static let timeLineStyleKey = "timeLineStyle"
 
     @Published var layout: ScheduleLayout {
         didSet { save() }
@@ -3467,6 +3546,9 @@ final class ScheduleLayoutTuner: ObservableObject {
         }
         if let value = saved[Self.showsDayPreviewKey] { layout.showsDayPreview = value != 0 }
         if let value = saved[Self.showsDisplayNamesKey] { layout.showsDisplayNames = value != 0 }
+        if let value = saved[Self.timeLineStyleKey], TimeLineStyle.allCases.indices.contains(Int(value)) {
+            layout.timeLineStyle = TimeLineStyle.allCases[Int(value)]
+        }
         self.layout = layout
     }
 
@@ -3478,7 +3560,8 @@ final class ScheduleLayoutTuner: ObservableObject {
         }
         let values = Self.fields.map { ($0.key, Double(layout[keyPath: $0.keyPath])) }
             + [(Self.showsDayPreviewKey, layout.showsDayPreview ? 1 : 0),
-               (Self.showsDisplayNamesKey, layout.showsDisplayNames ? 1 : 0)]
+               (Self.showsDisplayNamesKey, layout.showsDisplayNames ? 1 : 0),
+               (Self.timeLineStyleKey, Double(TimeLineStyle.allCases.firstIndex(of: layout.timeLineStyle) ?? 0))]
         UserDefaults.standard.set(Dictionary(uniqueKeysWithValues: values), forKey: Self.defaultsKey)
     }
 }
@@ -3508,6 +3591,13 @@ struct ScheduleLayoutPanel: View {
                 Toggle("Display names", isOn: $tuner.layout.showsDisplayNames)
                     .disabled(!tuner.layout.showsDayPreview)
                     .help("While the displays are adjusted independently, each one's name on its band of the day preview")
+                Picker("Time line", selection: $tuner.layout.timeLineStyle) {
+                    ForEach(TimeLineStyle.allCases) { style in
+                        Text(style.name).tag(style)
+                    }
+                }
+                .disabled(!tuner.layout.showsDayPreview)
+                .help("How the day preview draws its line at the current time")
             }
 
             Section("Space to the window's edges") {
@@ -3599,6 +3689,7 @@ struct ScheduleLayoutPanel: View {
                 if var layout = ScheduleLayout.templates.first(where: { $0.name == name })?.layout {
                     layout.showsDayPreview = tuner.layout.showsDayPreview
                     layout.showsDisplayNames = tuner.layout.showsDisplayNames
+                    layout.timeLineStyle = tuner.layout.timeLineStyle
                     tuner.layout = layout
                 }
             }
@@ -3609,6 +3700,7 @@ struct ScheduleLayoutPanel: View {
         var layout = layout
         layout.showsDayPreview = ScheduleLayout.standard.showsDayPreview
         layout.showsDisplayNames = ScheduleLayout.standard.showsDisplayNames
+        layout.timeLineStyle = ScheduleLayout.standard.timeLineStyle
         return layout
     }
 
