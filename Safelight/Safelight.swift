@@ -3233,6 +3233,9 @@ enum TimeLineStyle: String, CaseIterable, Identifiable {
     case accentBarInWhite
     /// Black or white on each band, whichever stands out from it there
     case blackOrWhite
+    /// The accent color on each band where it's light, white where it's dark, blending from one to
+    /// the other through the bands in between
+    case accentOrWhite
 
     var id: Self { self }
 
@@ -3245,6 +3248,7 @@ enum TimeLineStyle: String, CaseIterable, Identifiable {
         case .whiteBar: "White bar past the strip"
         case .accentBarInWhite: "Accent bar in white, past the strip"
         case .blackOrWhite: "Black or white"
+        case .accentOrWhite: "Accent or white"
         }
     }
 
@@ -3330,6 +3334,16 @@ struct ScheduleDayView: View {
                             let isLight = lineSettings.map { Self.luminance(of: $0.previewColor(ofDisplay: display?.key)) > 0.18 } ?? true
                             strip.fill(Path(CGRect(x: lineX - 1, y: CGFloat(band) * bandHeight, width: 2, height: bandHeight)),
                                        with: .color(isLight ? .black.opacity(0.75) : .white.opacity(0.9)))
+                        }
+                    case .accentOrWhite:
+                        // White up to the reds' luminance, the accent color from a light red's on, and a blend between
+                        let lineSettings = ColorKeyframe.settings(in: schedule, at: lineMinute)
+                        for (band, display) in displays.enumerated() {
+                            let luminance = lineSettings.map { Self.luminance(of: $0.previewColor(ofDisplay: display?.key)) } ?? 1
+                            let progress = min(max((luminance - 0.1) / (0.45 - 0.1), 0), 1)
+                            let accentShare = progress * progress * (3 - 2 * progress)
+                            strip.fill(Path(CGRect(x: lineX - 1, y: CGFloat(band) * bandHeight, width: 2, height: bandHeight)),
+                                       with: .color(Color.white.opacity(0.9).mix(with: .accentColor, by: accentShare)))
                         }
                     case .whiteBar, .accentBarInWhite:
                         break
