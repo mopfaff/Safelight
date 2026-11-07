@@ -3217,7 +3217,7 @@ struct SunTimeMenu: View {
 }
 
 /// How the day preview draws its time indicator. Debug builds can try each in the Schedule
-/// Layout panel; release builds use `accentOrWhite`.
+/// Layout panel; release builds use `accentToWhite`.
 enum TimeIndicatorStyle: String, CaseIterable, Identifiable {
     /// A thin line in the accent color, as it was first
     case accent
@@ -3235,7 +3235,7 @@ enum TimeIndicatorStyle: String, CaseIterable, Identifiable {
     case blackOrWhite
     /// The accent color on each band where it's light, white where it's dark, blending from one to
     /// the other through the bands in between
-    case accentOrWhite
+    case accentToWhite
 
     var id: Self { self }
 
@@ -3248,7 +3248,7 @@ enum TimeIndicatorStyle: String, CaseIterable, Identifiable {
         case .whiteBar: "White bar past the strip"
         case .accentBarInWhite: "Accent bar in white, past the strip"
         case .blackOrWhite: "Black or white"
-        case .accentOrWhite: "Accent or white"
+        case .accentToWhite: "Accent to white"
         }
     }
 
@@ -3268,7 +3268,7 @@ struct ScheduleDayView: View {
     /// The display of each band, or nil for one band for all displays
     let displays: [Display?]
     var showsDisplayNames = false
-    var timeIndicatorStyle: TimeIndicatorStyle = .accentOrWhite
+    var timeIndicatorStyle: TimeIndicatorStyle = .accentToWhite
     /// Shows the schedule at a time (minutes after midnight) on screen, or with nil, stops
     var preview: (Double?) -> Void = { _ in }
 
@@ -3335,7 +3335,7 @@ struct ScheduleDayView: View {
                             strip.fill(Path(CGRect(x: indicatorX - 1, y: CGFloat(band) * bandHeight, width: 2, height: bandHeight)),
                                        with: .color(isLight ? .black.opacity(0.75) : .white.opacity(0.9)))
                         }
-                    case .accentOrWhite:
+                    case .accentToWhite:
                         // White up to the reds' luminance, the accent color from a light red's on, and a blend between
                         let indicatorSettings = ColorKeyframe.settings(in: schedule, at: indicatorMinute)
                         for (band, display) in displays.enumerated() {
@@ -3486,7 +3486,7 @@ struct ScheduleLayout: Equatable {
     /// Whether each display's band in the day preview has the display's name on it
     var showsDisplayNames = false
     /// How the day preview draws its time indicator
-    var timeIndicatorStyle = TimeIndicatorStyle.accentOrWhite
+    var timeIndicatorStyle = TimeIndicatorStyle.accentToWhite
 
     static let standard = ScheduleLayout()
 }
