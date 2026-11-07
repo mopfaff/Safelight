@@ -1131,64 +1131,6 @@ struct DesktopThumbnail: View {
     }
 }
 
-/// What the desktop shows in an appearance, as System Settings › Wallpaper's picture of the desktop
-/// shows it: that's the desktop itself, drawn live by WallpaperAgent, so a change fades as the desktop
-/// does. The agent puts the new picture over the old one at no opacity and animates its opacity to 1 over
-/// 2 seconds, easing out (`CABasicAnimation` "opacity", `kCAMediaTimingFunctionEaseOut`, in its
-/// `updateForContentChange(to:request:)`), then takes the old one away; a change during the fade goes
-/// over both the same way. Like the agent, which changes nothing for content that resolves the same, a
-/// picture that looks like the newest (`ThumbnailLook`), as a change's does once it's drawn again from
-/// the desktop, just takes its place. The first picture is just there, as System Settings' thumbnail of a
-/// wallpaper still downloading is (`ThumbnailImageView` with no transition).
-struct DesktopPreview: View {
-    let thumbnail: WallpaperManager.Thumbnail
-    let size: CGSize
-    /// The pictures shown, the newest on top, each fading in over the ones under it until it's opaque
-    @State private var layers: [Layer]
-
-    /// WallpaperAgent's fade: `CAMediaTimingFunction(name: .easeOut)` is the curve (0, 0, 0.58, 1)
-    static let change = Animation.timingCurve(0, 0, 0.58, 1, duration: 2)
-
-    private struct Layer: Identifiable {
-        let id = UUID()
-        var thumbnail: WallpaperManager.Thumbnail
-    }
-
-    init(thumbnail: WallpaperManager.Thumbnail, size: CGSize) {
-        self.thumbnail = thumbnail
-        self.size = size
-        _layers = State(initialValue: [Layer(thumbnail: thumbnail)])
-    }
-
-    var body: some View {
-        ZStack {
-            ForEach(layers) { layer in
-                DesktopThumbnail(thumbnail: layer.thumbnail, size: size)
-                    .frame(width: size.width, height: size.height)
-                    // Fading in over the others, which stay as they are under it until it's opaque, and
-                    // then go at once
-                    .transition(.asymmetric(insertion: .opacity, removal: .identity))
-            }
-        }
-        .onChange(of: WallpaperManager.ThumbnailIdentity(thumbnail)) {
-            // The same look drawn again takes the newest's place
-            if let newest = layers.last, WallpaperManager.ThumbnailLook(newest.thumbnail) == WallpaperManager.ThumbnailLook(thumbnail) {
-                layers[layers.count - 1].thumbnail = thumbnail
-                return
-            }
-            let layer = Layer(thumbnail: thumbnail)
-            withAnimation(Self.change) {
-                layers.append(layer)
-            } completion: {
-                // The ones under it, now covered
-                if let index = layers.firstIndex(where: { $0.id == layer.id }) {
-                    layers.removeFirst(index)
-                }
-            }
-        }
-    }
-}
-
 // MARK: - Wallpaper Window
 /// The window the Wallpaper picker's pictures open, for choosing the picture for Light or for Dark from
 /// System Settings › Wallpaper's own, in its sections, or from Photos or a file.
@@ -1438,7 +1380,7 @@ struct WallpaperGallery: View {
             VStack(spacing: 4) {
                 ZStack {
                     if let picture {
-                        DesktopPreview(thumbnail: picture, size: Self.previewSize)
+                        DesktopThumbnail(thumbnail: picture, size: Self.previewSize)
                     } else {
                         Rectangle()
                             .fill(.quaternary)
@@ -5504,71 +5446,6 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     enum Thumbnail {
         case picture(CGImage)
         case shuffle([URL?])
-    }
-
-    /// Which picture a thumbnail is: each is drawn once for each change, and again from the desktop once
-    /// the change is there, so each is its own; a shuffle's thumbnail is its pictures
-    enum ThumbnailIdentity: Hashable {
-        case picture(ObjectIdentifier)
-        case shuffle([URL?])
-
-        init(_ thumbnail: Thumbnail) {
-            switch thumbnail {
-            case .picture(let picture): self = .picture(ObjectIdentifier(picture))
-            case .shuffle(let files): self = .shuffle(files)
-            }
-        }
-    }
-
-    /// What a thumbnail looks like, so only a new look shows as a change (`DesktopPreview`), as
-    /// WallpaperAgent changes the desktop only for new content: a change's picture is drawn as soon as
-    /// it's asked for, and drawn again from the desktop once it's there, looking the same. A picture
-    /// looks like another when, scaled down to 16 by 10 pixels, they're less than 2 levels apart on
-    /// average; a shuffle's thumbnail looks like its pictures.
-    enum ThumbnailLook: Equatable {
-        case picture([UInt8])
-        case shuffle([URL?])
-
-        init(_ thumbnail: Thumbnail) {
-            switch thumbnail {
-            case .picture(let picture): self = .picture(Self.pixels(of: picture))
-            case .shuffle(let files): self = .shuffle(files)
-            }
-        }
-
-        static func == (a: Self, b: Self) -> Bool {
-            switch (a, b) {
-            case (.picture(let a), .picture(let b)):
-                guard a.count == b.count, !a.isEmpty else { return a == b }
-                let total = zip(a, b).reduce(0) { $0 + abs(Int($1.0) - Int($1.1)) }
-                return Double(total) / Double(a.count) < 2
-            case (.shuffle(let a), .shuffle(let b)):
-                return a == b
-            default:
-                return false
-            }
-        }
-
-        private static let cache = NSCache<CGImage, NSData>()
-
-        /// A picture's red, green and blue, scaled down to 16 by 10 pixels in sRGB
-        private static func pixels(of picture: CGImage) -> [UInt8] {
-            if let pixels = cache.object(forKey: picture) {
-                return [UInt8](pixels as Data)
-            }
-            let width = 16, height = 10
-            var data = [UInt8](repeating: 0, count: width * height * 4)
-            data.withUnsafeMutableBytes { buffer in
-                guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-                      let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
-                                              space: space, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return }
-                context.interpolationQuality = .medium
-                context.draw(picture, in: CGRect(x: 0, y: 0, width: width, height: height))
-            }
-            let pixels = data.enumerated().filter { $0.offset % 4 != 3 }.map(\.element)
-            cache.setObject(Data(pixels) as NSData, forKey: picture)
-            return pixels
-        }
     }
 
     struct Choices: Codable {
