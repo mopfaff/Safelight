@@ -3035,7 +3035,7 @@ struct ScheduleEditor: View {
                 .scheduleBox(padding: layout.boxPadding)
 
                 if layout.showsDayPreview {
-                    ScheduleDayView(schedule: controller.todaysSchedule, displays: brightnessColumns.map { $0?.key })
+                    ScheduleDayView(schedule: controller.todaysSchedule, displays: brightnessColumns)
                         .scheduleBox(padding: layout.boxPadding)
                 }
 
@@ -3216,11 +3216,12 @@ struct SunTimeMenu: View {
 
 /// The day the Schedule makes, from midnight to midnight: a strip of roughly how white looks on screen
 /// through it, a line at the current time, and a dot under each keyframe. While the displays are
-/// adjusted independently, the strip has a band for each, from the top down in the order of their columns.
+/// adjusted independently, the strip has a band for each, from the top down in the order of their columns,
+/// with the display's name at its start.
 struct ScheduleDayView: View {
     let schedule: [ColorKeyframe]
-    /// The `Display.key` of each band, or nil for one band for all displays
-    let displays: [String?]
+    /// The display of each band, or nil for one band for all displays
+    let displays: [Display?]
 
     private let stripHeight: CGFloat = 36
 
@@ -3237,8 +3238,24 @@ struct ScheduleDayView: View {
                         guard let settings = ColorKeyframe.settings(in: schedule, at: Double(x) / size.width * 1440) else { continue }
                         for (band, display) in displays.enumerated() {
                             let pixel = CGRect(x: CGFloat(x), y: CGFloat(band) * bandHeight, width: 1, height: bandHeight)
-                            strip.fill(Path(pixel), with: .color(settings.previewColor(ofDisplay: display)))
+                            strip.fill(Path(pixel), with: .color(settings.previewColor(ofDisplay: display?.key)))
                         }
+                    }
+
+                    // Each band's display, in black or white, whichever stands out from the band where the name is
+                    for (band, display) in displays.enumerated() {
+                        guard let display else { continue }
+                        let label = strip.resolve(Text(display.name).font(.system(size: 10, weight: .medium)))
+                        let labelSize = label.measure(in: CGSize(width: size.width, height: bandHeight))
+                        let midMinute = Double(6 + labelSize.width / 2) / size.width * 1440
+                        let isLight = ColorKeyframe.settings(in: schedule, at: midMinute)
+                            .map { Self.luminance(of: $0.previewColor(ofDisplay: display.key)) > 0.18 } ?? true
+                        strip.draw(
+                            strip.resolve(Text(display.name).font(.system(size: 10, weight: .medium))
+                                .foregroundColor(isLight ? .black.opacity(0.75) : .white.opacity(0.9))),
+                            at: CGPoint(x: 6, y: (CGFloat(band) + 0.5) * bandHeight),
+                            anchor: .leading
+                        )
                     }
 
                     let now = Calendar.current.dateComponents([.hour, .minute], from: timeline.date)
@@ -3262,6 +3279,13 @@ struct ScheduleDayView: View {
             }
         }
         .frame(height: stripHeight + 27)
+    }
+
+    /// How light `color` looks, from 0 for black to 1 for white. Over 0.18, black text stands out more than white.
+    private static func luminance(of color: Color) -> Double {
+        guard let rgb = NSColor(color).usingColorSpace(.sRGB) else { return 1 }
+        func linear(_ c: CGFloat) -> Double { c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
+        return 0.2126 * linear(rgb.redComponent) + 0.7152 * linear(rgb.greenComponent) + 0.0722 * linear(rgb.blueComponent)
     }
 }
 
