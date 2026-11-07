@@ -3271,7 +3271,10 @@ struct ScheduleDayView: View {
 
                     let now = Calendar.current.dateComponents([.hour, .minute], from: timeline.date)
                     let lineX = x(ofMinute: draggedMinute ?? Double(now.hour! * 60 + now.minute!))
-                    strip.fill(Path(CGRect(x: lineX - 1, y: 0, width: 2, height: stripHeight)), with: .color(.accentColor))
+                    // A white edge each side keeps the accent-colored line clear of the strip's dark reds,
+                    // which are about as dark as the accent, and is lost only on white, where the line isn't
+                    strip.fill(Path(CGRect(x: lineX - 2.5, y: 0, width: 5, height: stripHeight)), with: .color(.white))
+                    strip.fill(Path(CGRect(x: lineX - 1.5, y: 0, width: 3, height: stripHeight)), with: .color(.accentColor))
                 }
                 context.stroke(outline, with: .style(.separator))
 
