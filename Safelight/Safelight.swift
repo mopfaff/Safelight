@@ -3270,11 +3270,16 @@ struct ScheduleDayView: View {
                     }
 
                     let now = Calendar.current.dateComponents([.hour, .minute], from: timeline.date)
-                    let lineX = x(ofMinute: draggedMinute ?? Double(now.hour! * 60 + now.minute!))
-                    // A white edge each side keeps the accent-colored line clear of the strip's dark reds,
-                    // which are about as dark as the accent, and is lost only on white, where the line isn't
-                    strip.fill(Path(CGRect(x: lineX - 2.5, y: 0, width: 5, height: stripHeight)), with: .color(.white))
-                    strip.fill(Path(CGRect(x: lineX - 1.5, y: 0, width: 3, height: stripHeight)), with: .color(.accentColor))
+                    let lineMinute = draggedMinute ?? Double(now.hour! * 60 + now.minute!)
+                    let lineX = x(ofMinute: lineMinute)
+                    // In black or white on each band, whichever stands out from it there, as the names are:
+                    // an accent-colored line is lost against the dark reds, which are about as dark as it
+                    let lineSettings = ColorKeyframe.settings(in: schedule, at: lineMinute)
+                    for (band, display) in displays.enumerated() {
+                        let isLight = lineSettings.map { Self.luminance(of: $0.previewColor(ofDisplay: display?.key)) > 0.18 } ?? true
+                        strip.fill(Path(CGRect(x: lineX - 1, y: CGFloat(band) * bandHeight, width: 2, height: bandHeight)),
+                                   with: .color(isLight ? .black.opacity(0.75) : .white.opacity(0.9)))
+                    }
                 }
                 context.stroke(outline, with: .style(.separator))
 
