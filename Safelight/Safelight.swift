@@ -3035,7 +3035,8 @@ struct ScheduleEditor: View {
                 .scheduleBox(padding: layout.boxPadding)
 
                 if layout.showsDayPreview {
-                    ScheduleDayView(schedule: controller.todaysSchedule, displays: brightnessColumns, showsDisplayNames: layout.showsDisplayNames)
+                    ScheduleDayView(schedule: controller.todaysSchedule, displays: brightnessColumns, showsDisplayNames: layout.showsDisplayNames,
+                                    preview: controller.previewTime)
                         .scheduleBox(padding: layout.boxPadding)
                 }
 
@@ -3218,13 +3219,22 @@ struct SunTimeMenu: View {
 /// through it, a line at the current time, and a dot under each keyframe. While the displays are
 /// adjusted independently, the strip has a band for each, from the top down in the order of their columns,
 /// with the display's name at its start if `showsDisplayNames`.
+///
+/// Pressing on the strip takes the line to that time and shows it on screen (through `preview`) as the
+/// line's dragged, with the time under it, as holding a keyframe's slider does, until it's let go and the
+/// line goes back to now.
 struct ScheduleDayView: View {
     let schedule: [ColorKeyframe]
     /// The display of each band, or nil for one band for all displays
     let displays: [Display?]
     var showsDisplayNames = false
+    /// Shows the schedule at a time (minutes after midnight) on screen, or with nil, stops
+    var preview: (Double?) -> Void = { _ in }
 
     private let stripHeight: CGFloat = 36
+    /// The time the line's been dragged to, while it's held
+    @State private var draggedMinute: Double?
+    @State private var width: CGFloat = 0
 
     var body: some View {
         TimelineView(.everyMinute) { timeline in
@@ -3260,8 +3270,8 @@ struct ScheduleDayView: View {
                     }
 
                     let now = Calendar.current.dateComponents([.hour, .minute], from: timeline.date)
-                    let nowX = x(ofMinute: Double(now.hour! * 60 + now.minute!))
-                    strip.fill(Path(CGRect(x: nowX - 1, y: 0, width: 2, height: stripHeight)), with: .color(.accentColor))
+                    let lineX = x(ofMinute: draggedMinute ?? Double(now.hour! * 60 + now.minute!))
+                    strip.fill(Path(CGRect(x: lineX - 1, y: 0, width: 2, height: stripHeight)), with: .color(.accentColor))
                 }
                 context.stroke(outline, with: .style(.separator))
 
@@ -3270,16 +3280,54 @@ struct ScheduleDayView: View {
                     context.fill(Path(ellipseIn: dot), with: .style(.secondary))
                 }
 
+                // While the line's dragged, the time it's at, kept inside the strip, in place of the hours it covers
+                var timeLabelFrame: CGRect?
+                if let draggedMinute {
+                    let date = Calendar.current.date(bySettingHour: Int(draggedMinute) / 60, minute: Int(draggedMinute) % 60, second: 0, of: timeline.date) ?? timeline.date
+                    let label = context.resolve(Text(date.formatted(date: .omitted, time: .shortened))
+                        .font(.system(size: 10, weight: .semibold).monospacedDigit()).foregroundColor(.accentColor))
+                    let labelSize = label.measure(in: size)
+                    let labelX = min(max(x(ofMinute: draggedMinute) - labelSize.width / 2, 0), size.width - labelSize.width)
+                    let frame = CGRect(x: labelX, y: stripHeight + 13, width: labelSize.width, height: labelSize.height)
+                    context.draw(label, in: frame)
+                    timeLabelFrame = frame.insetBy(dx: -4, dy: 0)
+                }
+
                 // Midnight, 6, noon, 6 and midnight, the ends kept inside the strip
                 for hour in stride(from: 0, through: 24, by: 6) {
                     let date = Calendar.current.date(bySettingHour: hour % 24, minute: 0, second: 0, of: timeline.date) ?? timeline.date
-                    let label = Text(date.formatted(.dateTime.hour())).font(.system(size: 10)).foregroundColor(.secondary)
-                    let anchor: UnitPoint = hour == 0 ? .topLeading : hour == 24 ? .topTrailing : .top
-                    context.draw(label, at: CGPoint(x: x(ofMinute: Double(hour * 60)), y: stripHeight + 13), anchor: anchor)
+                    let label = context.resolve(Text(date.formatted(.dateTime.hour())).font(.system(size: 10)).foregroundColor(.secondary))
+                    let labelSize = label.measure(in: size)
+                    let hourX = x(ofMinute: Double(hour * 60))
+                    let labelX = hour == 0 ? hourX : hour == 24 ? hourX - labelSize.width : hourX - labelSize.width / 2
+                    let frame = CGRect(x: labelX, y: stripHeight + 13, width: labelSize.width, height: labelSize.height)
+                    if let timeLabelFrame, timeLabelFrame.intersects(frame) { continue }
+                    context.draw(label, in: frame)
                 }
             }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { drag in
+                        // A whole minute, as the Schedule's times are, up to the last one before midnight
+                        let rawMinute = (min(max(drag.location.x / max(width, 1), 0), 1) * 1440).rounded()
+                        let minute = min(rawMinute, 1439)
+                        guard minute != draggedMinute else { return }
+                        draggedMinute = minute
+                        preview(minute)
+                    }
+                    .onEnded { _ in
+                        draggedMinute = nil
+                        preview(nil)
+                    }
+            )
         }
         .frame(height: stripHeight + 27)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+        // Closing the window while the line's held puts the screen back too
+        .onDisappear {
+            if draggedMinute != nil { preview(nil) }
+        }
     }
 
     /// How light `color` looks, from 0 for black to 1 for white. Over 0.18, black text stands out more than white.
@@ -3865,9 +3913,15 @@ class ColorController: ObservableObject {
     private var scheduledDisplayBrightness: [String: Float] = [:]
 
     var isUserDraggingSlider: Bool = false
-    /// The keyframe on screen while one of its sliders in the Schedule window is held down. Meanwhile
-    /// the settings above aren't written to the system or read back from it, so they're what comes back.
-    private var previewedKeyframeID: ColorKeyframe.ID?
+    /// What's on screen in place of the settings above: a keyframe while one of its sliders in the
+    /// Schedule window is held down, or a time of day while the day preview's line is dragged to it.
+    /// Meanwhile the settings above aren't written to the system or read back from it, so they're what comes back.
+    private var previewed: Preview?
+    private enum Preview: Equatable {
+        case keyframe(ColorKeyframe.ID)
+        /// Minutes after midnight in today's schedule
+        case time(Double)
+    }
     /// The display whose slider is being moved to where the system has set it, so it isn't set again
     private var syncingDisplay: CGDirectDisplayID?
     private var isSyncingColorFilter: Bool = false
@@ -4092,7 +4146,7 @@ class ColorController: ObservableObject {
     private func monitorFound(_ displayID: CGDirectDisplayID, brightness: Float?) {
         if let display = displays.first(where: { $0.id == displayID }),
            displaysAwaitingBrightness.remove(display.key) != nil,
-           let brightness, !isAutoMode, !isUserDraggingSlider, previewedKeyframeID == nil {
+           let brightness, !isAutoMode, !isUserDraggingSlider, previewed == nil {
             if adjustsDisplaysIndependently {
                 self[brightnessOf: display.key] = brightness
             } else if leadDisplay == nil && displayID == CGMainDisplayID() {
@@ -4113,7 +4167,7 @@ class ColorController: ObservableObject {
 
     /// Eases a monitor's slider over to where its own buttons have put it
     private func monitorChanged(_ displayID: CGDirectDisplayID, brightness: Float) {
-        guard followsMonitor(displayID), !isUserDraggingSlider, previewedKeyframeID == nil else { return }
+        guard followsMonitor(displayID), !isUserDraggingSlider, previewed == nil else { return }
         monitorTargets[displayID] = brightness
     }
 
@@ -4121,7 +4175,7 @@ class ColorController: ObservableObject {
     /// over as for the brightness keys, but without setting the monitor, which is there already
     private func easeTowardMonitorTargets() {
         for (displayID, target) in monitorTargets {
-            guard followsMonitor(displayID), !isUserDraggingSlider, previewedKeyframeID == nil else {
+            guard followsMonitor(displayID), !isUserDraggingSlider, previewed == nil else {
                 monitorTargets[displayID] = nil
                 continue
             }
@@ -4142,7 +4196,7 @@ class ColorController: ObservableObject {
     }
 
     func syncWithSystemBrightness() {
-        guard !isAutoMode, !isUserDraggingSlider, previewedKeyframeID == nil else {
+        guard !isAutoMode, !isUserDraggingSlider, previewed == nil else {
             brightnessFollowers = [:]
             return 
         }
@@ -4194,7 +4248,7 @@ class ColorController: ObservableObject {
     /// stops them where they are.
     private func easeTowardBrightnessKeyTargets() {
         guard !brightnessKeyTargets.isEmpty else { return }
-        guard !isUserDraggingSlider, previewedKeyframeID == nil else {
+        guard !isUserDraggingSlider, previewed == nil else {
             brightnessKeyTargets = [:]
             return
         }
@@ -4344,7 +4398,7 @@ class ColorController: ObservableObject {
     private func registerUndo(toSchedule previous: [ColorKeyframe]) {
         // Putting the keyframes in time order sets the schedule a second time, which isn't a change of its own
         guard schedule != previous.sorted(by: isInTimeOrder) else { return }
-        let edit = previewedKeyframeID == nil ? timeEdit : .slider
+        let edit = previewed == nil ? timeEdit : .slider
         defer { lastScheduleEdit = edit }
         if let edit, edit == lastScheduleEdit { return }
 
@@ -4364,8 +4418,18 @@ class ColorController: ObservableObject {
     /// which puts back the settings that were there before (or the Schedule's for now, if it's on).
     func preview(_ id: ColorKeyframe.ID?) {
         endScheduleEdit() // each hold of a slider is undone by itself
-        previewedKeyframeID = id
-        if id == nil {
+        setPreview(id.map(Preview.keyframe))
+    }
+
+    /// Shows the Schedule as it is `minute` minutes after midnight today on screen, until this is called
+    /// with nil, which puts back what was there before, as `preview(_:)` does.
+    func previewTime(_ minute: Double?) {
+        setPreview(minute.map(Preview.time))
+    }
+
+    private func setPreview(_ preview: Preview?) {
+        previewed = preview
+        if preview == nil {
             updateColorFilter()
             updateBrightness()
         } else {
@@ -4374,9 +4438,19 @@ class ColorController: ObservableObject {
     }
 
     private func showPreview() {
-        guard let keyframe = schedule.first(where: { $0.id == previewedKeyframeID }) else { return }
-        ColorFilterManager.shared.write(ColorFilterManager.State(isOn: keyframe.isColorFilterOn, hue: keyframe.tint / 360, intensity: keyframe.intensity))
-        GammaManager.shared.setBrightness(brightnessByDisplay(keyframe.brightness, keyframe.displayBrightness))
+        switch previewed {
+        case .keyframe(let id):
+            guard let keyframe = schedule.first(where: { $0.id == id }) else { return }
+            ColorFilterManager.shared.write(ColorFilterManager.State(isOn: keyframe.isColorFilterOn, hue: keyframe.tint / 360, intensity: keyframe.intensity))
+            GammaManager.shared.setBrightness(brightnessByDisplay(keyframe.brightness, keyframe.displayBrightness))
+        case .time(let minute):
+            // Only colour and brightness, as the sliders show; the appearance takes too long to change over and back
+            guard let settings = ColorKeyframe.settings(in: todaysSchedule, at: minute) else { return }
+            ColorFilterManager.shared.write(ColorFilterManager.State(isOn: settings.isColorFilterOn, hue: settings.tint / 360, intensity: settings.filterIntensity))
+            GammaManager.shared.setBrightness(brightnessByDisplay(settings.brightness, settings.displayBrightness))
+        case nil:
+            break
+        }
     }
 
     /// Dragging Intensity or Tint turns the filter on, the way raising Intensity from zero used to.
@@ -4389,12 +4463,12 @@ class ColorController: ObservableObject {
     }
     
     func updateColorFilter() {
-        guard !isSyncingColorFilter, previewedKeyframeID == nil else { return }
+        guard !isSyncingColorFilter, previewed == nil else { return }
         ColorFilterManager.shared.write(ColorFilterManager.State(isOn: isColorFilterOn, hue: tint / 360, intensity: intensity))
     }
 
     func syncWithSystemColorFilter() {
-        guard previewedKeyframeID == nil, let state = ColorFilterManager.shared.read() else { return }
+        guard previewed == nil, let state = ColorFilterManager.shared.read() else { return }
 
         isSyncingColorFilter = true
         if isColorFilterOn != state.isOn { isColorFilterOn = state.isOn }
@@ -4404,7 +4478,7 @@ class ColorController: ObservableObject {
     }
     
     func updateBrightness() {
-        guard previewedKeyframeID == nil else { return }
+        guard previewed == nil else { return }
         GammaManager.shared.setBrightness(brightnessByDisplay(brightness, displayBrightness), skippingHardwareOf: syncingDisplay)
     }
 
