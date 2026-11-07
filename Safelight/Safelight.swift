@@ -3388,19 +3388,30 @@ struct ScheduleDayView: View {
                     let labelX = min(max(x(ofMinute: draggedMinute) - labelSize.width / 2, 0), size.width - labelSize.width)
                     let frame = CGRect(x: labelX, y: stripHeight + 13, width: labelSize.width, height: labelSize.height)
                     context.draw(label, in: frame)
-                    timeLabelFrame = frame.insetBy(dx: -4, dy: 0)
+                    timeLabelFrame = frame
                 }
 
-                // Midnight, 6, noon, 6 and midnight, the ends kept inside the strip
-                for hour in stride(from: 0, through: 24, by: 6) {
-                    let date = Calendar.current.date(bySettingHour: hour % 24, minute: 0, second: 0, of: timeline.date) ?? timeline.date
-                    let label = context.resolve(Text(date.formatted(.dateTime.hour())).font(.system(size: 10)).foregroundColor(.secondary))
-                    let labelSize = label.measure(in: size)
-                    let hourX = x(ofMinute: Double(hour * 60))
-                    let labelX = hour == 0 ? hourX : hour == 24 ? hourX - labelSize.width : hourX - labelSize.width / 2
-                    let frame = CGRect(x: labelX, y: stripHeight + 13, width: labelSize.width, height: labelSize.height)
-                    if let timeLabelFrame, timeLabelFrame.intersects(frame) { continue }
-                    context.draw(label, in: frame)
+                // Midnight, 6, noon, 6 and midnight, the ends kept inside the strip, faded out under the dragged
+                // time with soft edges, so they slide out of sight rather than vanishing all at once
+                context.drawLayer { hours in
+                    for hour in stride(from: 0, through: 24, by: 6) {
+                        let date = Calendar.current.date(bySettingHour: hour % 24, minute: 0, second: 0, of: timeline.date) ?? timeline.date
+                        let label = hours.resolve(Text(date.formatted(.dateTime.hour())).font(.system(size: 10)).foregroundColor(.secondary))
+                        let labelSize = label.measure(in: size)
+                        let hourX = x(ofMinute: Double(hour * 60))
+                        let labelX = hour == 0 ? hourX : hour == 24 ? hourX - labelSize.width : hourX - labelSize.width / 2
+                        hours.draw(label, in: CGRect(x: labelX, y: stripHeight + 13, width: labelSize.width, height: labelSize.height))
+                    }
+                    guard let timeLabelFrame else { return }
+                    let gap: CGFloat = 3, fade: CGFloat = 10
+                    let cut = CGRect(x: timeLabelFrame.minX - gap - fade, y: timeLabelFrame.minY - 2,
+                                     width: timeLabelFrame.width + 2 * (gap + fade), height: timeLabelFrame.height + 4)
+                    let edge = fade / cut.width
+                    hours.blendMode = .destinationOut
+                    hours.fill(Path(cut), with: .linearGradient(
+                        Gradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: edge),
+                                         .init(color: .black, location: 1 - edge), .init(color: .clear, location: 1)]),
+                        startPoint: CGPoint(x: cut.minX, y: cut.midY), endPoint: CGPoint(x: cut.maxX, y: cut.midY)))
                 }
             }
             .contentShape(Rectangle())
