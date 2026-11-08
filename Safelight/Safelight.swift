@@ -5128,11 +5128,15 @@ enum Sidecar {
 /// A display's brightness split between its backlight, which the Mac sets itself or over DDC, and its
 /// picture, dimmed in software, so it goes darker than its backlight allows, as MonitorControl's combined
 /// brightness does: the top half of its slider sets the backlight, and the bottom half keeps the backlight
-/// at its lowest and dims the picture, down to a twentieth as for a display dimmed in software alone. The
-/// slider marks the middle with a tick mark, which it snaps to.
+/// at its lowest and dims the picture, down to `lowestPicture`. The slider marks the middle with a tick
+/// mark, which it snaps to.
 enum CombinedBrightness {
     /// Where the backlight is at its lowest and the picture starts to dim
     static let lowestBacklight: Float = 0.5
+    /// How much of its picture a display lets through at the bottom of its slider: 15%, as with
+    /// MonitorControl's combined brightness, since with the backlight at its lowest the twentieth a
+    /// display dimmed in software alone keeps leaves nothing to see
+    static let lowestPicture: Float = 0.15
 
     /// The backlight at `brightness`, from its lowest (0) to its highest (1)
     static func backlight(at brightness: Float) -> Float {
@@ -5141,7 +5145,7 @@ enum CombinedBrightness {
 
     /// How much of the picture's light is let through at `brightness`
     static func picture(at brightness: Float) -> Float {
-        min(max(brightness, 0) / lowestBacklight, 1)
+        lowestPicture + (1 - lowestPicture) * min(max(brightness, 0) / lowestBacklight, 1)
     }
 
     /// The brightness with the backlight at `backlight` and the picture undimmed
