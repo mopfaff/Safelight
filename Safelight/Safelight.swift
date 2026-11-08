@@ -122,7 +122,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         scheduleLayout.target = self
         let controlColors = NSMenuItem(title: "Control Colours…", action: #selector(showControlColors(_:)), keyEquivalent: "")
         controlColors.target = self
-        items += [.separator(), scheduleLayout, controlColors]
+        let combinedBrightness = NSMenuItem(title: "Dim Monitors Below Backlight", action: #selector(toggleCombinedBrightness(_:)), keyEquivalent: "")
+        combinedBrightness.target = self
+        combinedBrightness.state = ColorController.shared.combinesMonitorBrightness ? .on : .off
+        items += [.separator(), scheduleLayout, controlColors, combinedBrightness]
         #endif
         let quit = NSMenuItem(title: SystemStrings.quitApp, action: #selector(quit(_:)), keyEquivalent: "q")
         quit.target = self
@@ -190,6 +193,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async {
             if !self.popover.isShown { self.togglePopover(nil) }
         }
+    }
+
+    /// Whether a monitor set over DDC is dimmed in software below its lowest backlight, or set by its
+    /// backlight alone, as before
+    @objc private func toggleCombinedBrightness(_ sender: NSMenuItem) {
+        ColorController.shared.combinesMonitorBrightness.toggle()
     }
     #endif
 
@@ -444,7 +453,7 @@ struct MenuView: View {
                                     Text(display.name)
                                         .font(.subheadline)
                                         .foregroundColor(.secondary)
-                                    brightnessSlider(value: $controller[brightnessOf: display.key])
+                                    brightnessSlider(value: $controller[brightnessOf: display.key], for: display)
                                 }
                             }
                         }
@@ -556,16 +565,47 @@ struct MenuView: View {
         }
     }
 
-    private func brightnessSlider(value: Binding<Float>) -> some View {
-        Slider(
-            value: value,
-            in: 0.0...1.0,
-            onEditingChanged: { isEditing in
-                controller.isUserDraggingSlider = isEditing
-            }
-        )
+    private func brightnessSlider(value: Binding<Float>, for display: Display? = nil) -> some View {
+        BrightnessSlider(value: value, label: display?.name ?? SystemStrings.brightness,
+                         marksLowestBacklight: controller.marksLowestBacklight(on: display)) { isEditing in
+            controller.isUserDraggingSlider = isEditing
+        }
         .controlTint(.white, hasShadow: true, for: .brightnessSliders)
         .disabled(controller.isAutoMode)
+    }
+}
+
+/// A Brightness slider, which for a monitor that goes darker than its backlight allows has a tick mark
+/// where the backlight is at its lowest and its picture starts to dim (`CombinedBrightness`). It snaps
+/// to it, as a slider does to a lone tick mark, like Tint's at 180°. Before macOS 26, where a slider's
+/// tick marks are evenly spaced from end to end, it has none. The slider is the same height with the
+/// tick mark or without, as it keeps room for one, so it doesn't move once a monitor has answered.
+struct BrightnessSlider: View {
+    @Binding var value: Float
+    var label: String
+    var marksLowestBacklight: Bool
+    var onEditingChanged: (Bool) -> Void = { _ in }
+
+    var body: some View {
+        if #available(macOS 26.0, *) {
+            Slider(value: $value, in: 0...1) {
+                Text(label)
+            } ticks: {
+                if marksLowestBacklight {
+                    SliderTick(CombinedBrightness.lowestBacklight)
+                }
+            } onEditingChanged: { isEditing in
+                onEditingChanged(isEditing)
+            }
+            .labelsHidden()
+        } else {
+            Slider(value: $value, in: 0...1) {
+                Text(label)
+            } onEditingChanged: { isEditing in
+                onEditingChanged(isEditing)
+            }
+            .labelsHidden()
+        }
     }
 }
 
@@ -3120,12 +3160,11 @@ struct ScheduleEditor: View {
                             .padding(.leading, layout.gapBeforeTint)
 
                             ForEach(brightnessColumns, id: \.self) { display in
-                                Slider(value: display.map { $keyframe[brightnessOf: $0.key] } ?? $keyframe.brightness, in: 0.0...1.0) {
-                                    Text(display?.name ?? SystemStrings.brightness)
-                                } onEditingChanged: { isEditing in
+                                BrightnessSlider(value: display.map { $keyframe[brightnessOf: $0.key] } ?? $keyframe.brightness,
+                                                 label: display?.name ?? SystemStrings.brightness,
+                                                 marksLowestBacklight: controller.marksLowestBacklight(on: display)) { isEditing in
                                     controller.preview(isEditing ? keyframe.id : nil)
                                 }
-                                .labelsHidden()
                                 .controlTint(.white, hasShadow: true, for: .scheduleBrightnessSliders)
                                 .frame(width: layout.brightnessWidth)
                                 .padding(.leading, layout.gapBeforeBrightness)
@@ -4011,6 +4050,41 @@ class ColorController: ObservableObject {
     /// they all have one
     var independentDisplays: [Display] { adjustsDisplaysIndependently ? displays : [] }
 
+    /// The monitors whose own brightness is set over DDC, once they've answered
+    @Published private(set) var monitorsWithBacklight: Set<CGDirectDisplayID> = []
+
+    /// Whether a monitor set over DDC goes darker than its backlight allows, its slider's bottom half
+    /// dimming its picture in software (`CombinedBrightness`). Debug builds can turn it off in the status
+    /// item's menu, to compare it with the backlight alone. Saved as it's changed.
+    #if DEBUG
+    @Published var combinesMonitorBrightness = UserDefaults.standard.object(forKey: ColorController.combinesMonitorBrightnessDefaultsKey) as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(combinesMonitorBrightness, forKey: Self.combinesMonitorBrightnessDefaultsKey)
+            // Every display set again, as `GammaManager` leaves out the ones whose brightness hasn't changed
+            GammaManager.shared.reset()
+            updateBrightness()
+            showPreview()
+        }
+    }
+    private static let combinesMonitorBrightnessDefaultsKey = "combinesMonitorBrightness"
+    #else
+    let combinesMonitorBrightness = true
+    #endif
+
+    /// Whether a monitor set over DDC is dimmed in software below its lowest backlight: only while its
+    /// slider is its own, not while one slider sets it along with a display the Mac sets the brightness
+    /// of, whose lowest backlight is that slider's bottom
+    private func combinesBrightness(of displayID: CGDirectDisplayID) -> Bool {
+        combinesMonitorBrightness && (adjustsDisplaysIndependently || leadDisplay == nil)
+    }
+
+    /// Whether the Brightness slider for `display`, or for every display if it's nil, has a tick mark
+    /// where a monitor's backlight is at its lowest
+    func marksLowestBacklight(on display: Display?) -> Bool {
+        let monitors = display.map { monitorsWithBacklight.intersection([$0.id]) } ?? monitorsWithBacklight
+        return monitors.contains(where: combinesBrightness(of:))
+    }
+
     // Mirror of the system appearance: Dark or Light, whether it was chosen or Auto switched to it.
     @Published private(set) var isDarkAppearance: Bool = false
     /// True from when an appearance is chosen here until the screen has changed over to it.
@@ -4187,6 +4261,9 @@ class ColorController: ObservableObject {
         GammaManager.shared.followsMonitor = { [weak self] displayID in
             self?.followsMonitor(displayID) ?? false
         }
+        GammaManager.shared.combinesBrightness = { [weak self] displayID in
+            self?.combinesBrightness(of: displayID) ?? false
+        }
         // Each display's slider starts where the display is, and the displays dimmed in software aren't
         // yet. Set first, as setting either sets the displays, and with only `brightness` they'd all take it.
         if adjustsDisplaysIndependently {
@@ -4269,6 +4346,11 @@ class ColorController: ObservableObject {
     /// Once it's known whether a display is a monitor whose own brightness can be set (over DDC), it's
     /// set: to where it is, if its slider was only waiting for that and the Schedule's off.
     private func monitorFound(_ displayID: CGDirectDisplayID, brightness: Float?) {
+        if brightness == nil {
+            monitorsWithBacklight.remove(displayID)
+        } else if displays.contains(where: { $0.id == displayID }) {
+            monitorsWithBacklight.insert(displayID)
+        }
         if let display = displays.first(where: { $0.id == displayID }),
            displaysAwaitingBrightness.remove(display.key) != nil,
            let brightness, !isAutoMode, !isUserDraggingSlider, previewed == nil {
@@ -4402,7 +4484,12 @@ class ColorController: ObservableObject {
         scheduledDisplayBrightness = [:]
         displaysAwaitingBrightness = []
         if adjustsDisplaysIndependently {
-            displayBrightness = Dictionary(displays.map { ($0.key, brightness) }) { first, _ in first }
+            // A monitor whose backlight the Brightness slider set alone, along with a display the Mac
+            // sets, keeps its backlight now that its slider dims its picture too
+            let backlightOnly = !combinesMonitorBrightness || leadDisplay == nil ? [] : monitorsWithBacklight
+            displayBrightness = Dictionary(displays.map { display in
+                (display.key, backlightOnly.contains(display.id) ? CombinedBrightness.brightness(withBacklight: brightness) : brightness)
+            }) { first, _ in first }
             // After the switch has redrawn, as macOS's request for permission comes up over it
             DispatchQueue.main.async { [weak self] in
                 if self?.adjustsDisplaysIndependently == true { BrightnessKeys.shared.start(askingPermission: true) }
@@ -4422,6 +4509,7 @@ class ColorController: ObservableObject {
     private func displaysDidChange() {
         displays = Display.connected()
         displaysWithSystemBrightness = Set(displays.map(\.id).filter(GammaManager.shared.canSetBrightness))
+        monitorsWithBacklight.formIntersection(displays.map(\.id))
         brightnessFollowers = [:]
         GammaManager.shared.reset()
 
@@ -5036,6 +5124,31 @@ enum Sidecar {
     }
 }
 
+/// A monitor's brightness split between its backlight, set over DDC, and its picture, dimmed in software,
+/// so it goes darker than its backlight allows, as MonitorControl's combined brightness does: the top half
+/// of its slider sets the backlight, and the bottom half keeps the backlight at its lowest and dims the
+/// picture, down to a twentieth as for a display dimmed in software alone. The slider marks the middle with
+/// a tick mark, which it snaps to.
+enum CombinedBrightness {
+    /// Where the backlight is at its lowest and the picture starts to dim
+    static let lowestBacklight: Float = 0.5
+
+    /// The backlight at `brightness`, from its lowest (0) to its highest (1)
+    static func backlight(at brightness: Float) -> Float {
+        max(brightness - lowestBacklight, 0) / (1 - lowestBacklight)
+    }
+
+    /// How much of the picture's light is let through at `brightness`
+    static func picture(at brightness: Float) -> Float {
+        min(max(brightness, 0) / lowestBacklight, 1)
+    }
+
+    /// The brightness with the backlight at `backlight` and the picture undimmed
+    static func brightness(withBacklight backlight: Float) -> Float {
+        lowestBacklight + min(max(backlight, 0), 1) * (1 - lowestBacklight)
+    }
+}
+
 class GammaManager {
     static let shared = GammaManager()
 
@@ -5048,6 +5161,7 @@ class GammaManager {
     /// Whether each display is sent its picture, as it was when last asked
     private var streamedDisplays: [CGDirectDisplayID: Bool] = [:]
     /// The external monitors whose own brightness is set, over DDC, rather than dimming them in software
+    /// alone
     private let monitors = DDCMonitors()
 
     /// Called on the main thread once it's known whether a display's own brightness can be set over
@@ -5059,6 +5173,10 @@ class GammaManager {
     /// Whether a monitor's slider follows it as its own buttons change it, so that it's asked for its
     /// brightness every second
     var followsMonitor: (CGDirectDisplayID) -> Bool = { _ in false }
+    /// Whether a monitor set over DDC is dimmed in software as well, below where its backlight is at its
+    /// lowest (`CombinedBrightness`). The brightness `monitorFound` and `monitorChanged` give is then
+    /// where its slider is with its backlight as the monitor has it.
+    var combinesBrightness: (CGDirectDisplayID) -> Bool = { _ in false }
 
     private var setBrightnessFunc: (@convention(c) (CGDirectDisplayID, Float) -> Int32)?
     private var getBrightnessFunc: (@convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32)?
@@ -5076,12 +5194,14 @@ class GammaManager {
 
     init() {
         // Once a monitor's known, it's set again: over DDC, or in software
-        monitors.found = { [weak self] displayID, brightness in
-            self?.lastBrightness[displayID] = nil
-            self?.monitorFound(displayID, brightness)
+        monitors.found = { [weak self] displayID, backlight in
+            guard let self else { return }
+            lastBrightness[displayID] = nil
+            monitorFound(displayID, backlight.map { self.brightness(withBacklight: $0, of: displayID) })
         }
-        monitors.changed = { [weak self] displayID, brightness in
-            self?.monitorChanged(displayID, brightness)
+        monitors.changed = { [weak self] displayID, backlight in
+            guard let self else { return }
+            monitorChanged(displayID, brightness(withBacklight: backlight, of: displayID))
         }
         monitors.isFollowed = { [weak self] displayID in
             self?.followsMonitor(displayID) ?? false
@@ -5104,6 +5224,11 @@ class GammaManager {
     /// set over DDC or dimmed in software
     func canSetBrightness(of displayID: CGDirectDisplayID) -> Bool {
         canChangeBrightnessFunc?(displayID) ?? false
+    }
+
+    /// Where a monitor's slider is with its backlight at `backlight`
+    private func brightness(withBacklight backlight: Float, of displayID: CGDirectDisplayID) -> Float {
+        combinesBrightness(displayID) ? CombinedBrightness.brightness(withBacklight: backlight) : backlight
     }
 
     func getNativeBrightness(of displayID: CGDirectDisplayID) -> Float? {
@@ -5146,6 +5271,8 @@ class GammaManager {
             }
 
             var hardwareBrightnessSucceeded = false
+            // How much of its picture a monitor with its backlight at its lowest still lets through
+            var monitorPicture: Float = 1
 
             if canSetBrightness(of: displayID) {
                 if displayID != skippedHardware {
@@ -5156,22 +5283,26 @@ class GammaManager {
                 } else {
                     hardwareBrightnessSucceeded = true
                 }
-            } else if displayID == skippedHardware && monitors.contains(displayID) {
-                hardwareBrightnessSucceeded = true
             } else {
-                switch monitors.set(brightness, of: displayID) {
-                case true?:
+                let combines = combinesBrightness(displayID)
+                if combines { monitorPicture = CombinedBrightness.picture(at: brightness) }
+                if displayID == skippedHardware && monitors.contains(displayID) {
                     hardwareBrightnessSucceeded = true
-                case false?:
-                    break
-                case nil:
-                    // Not known yet whether it's a monitor whose own brightness can be set, so it's set once that is
-                    self.lastBrightness[displayID] = nil
-                    continue
+                } else {
+                    switch monitors.set(combines ? CombinedBrightness.backlight(at: brightness) : brightness, of: displayID) {
+                    case true?:
+                        hardwareBrightnessSucceeded = true
+                    case false?:
+                        break
+                    case nil:
+                        // Not known yet whether it's a monitor whose own brightness can be set, so it's set once that is
+                        self.lastBrightness[displayID] = nil
+                        continue
+                    }
                 }
             }
 
-            let softwareBrightness = hardwareBrightnessSucceeded ? 1.0 : max(brightness, 0.05)
+            let softwareBrightness = hardwareBrightnessSucceeded ? max(monitorPicture, 0.05) : max(brightness, 0.05)
             newSoftwareBrightness[displayID] = softwareBrightness < 0.999 ? softwareBrightness : nil
         }
 
