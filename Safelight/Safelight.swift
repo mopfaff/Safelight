@@ -4054,7 +4054,7 @@ class ColorController: ObservableObject {
     @Published private(set) var monitorsWithBacklight: Set<CGDirectDisplayID> = []
 
     /// Whether a display whose backlight is set, by the Mac or over DDC, goes darker than its backlight
-    /// allows, its slider's bottom half dimming its picture in software (`CombinedBrightness`). Debug
+    /// allows, its slider's bottom quarter dimming its picture in software (`CombinedBrightness`). Debug
     /// builds can turn it off in the status item's menu, to compare it with the backlight alone. Saved
     /// as it's changed.
     #if DEBUG
@@ -5127,12 +5127,14 @@ enum Sidecar {
 
 /// A display's brightness split between its backlight, which the Mac sets itself or over DDC, and its
 /// picture, dimmed in software, so it goes darker than its backlight allows, as MonitorControl's combined
-/// brightness does: the top half of its slider sets the backlight, and the bottom half keeps the backlight
-/// at its lowest and dims the picture, down to `lowestPicture`. The slider marks the middle with a tick
-/// mark, which it snaps to.
+/// brightness does: the top three quarters of its slider set the backlight, and the bottom quarter keeps
+/// the backlight at its lowest and dims the picture, down to `lowestPicture`. The slider marks where that
+/// starts with a tick mark, which it snaps to.
 enum CombinedBrightness {
-    /// Where the backlight is at its lowest and the picture starts to dim
-    static let lowestBacklight: Float = 0.5
+    /// Where the backlight is at its lowest and the picture starts to dim: a quarter of the way along, as
+    /// the picture only dims to about a fifth of its light, far less of a change than the backlight's,
+    /// rather than MonitorControl's middle, which dims it to black
+    static let lowestBacklight: Float = 0.25
     /// How much of its picture a display lets through at the bottom of its slider: half its values,
     /// about 22% of its light. With the backlight at its lowest, the twentieth of its values that a
     /// display dimmed in software alone keeps left nothing to see, and MonitorControl's 15% and then
