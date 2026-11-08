@@ -5133,10 +5133,10 @@ enum Sidecar {
 enum CombinedBrightness {
     /// Where the backlight is at its lowest and the picture starts to dim
     static let lowestBacklight: Float = 0.5
-    /// How much of its picture a display lets through at the bottom of its slider: 15%, as with
-    /// MonitorControl's combined brightness, since with the backlight at its lowest the twentieth a
-    /// display dimmed in software alone keeps leaves nothing to see
-    static let lowestPicture: Float = 0.15
+    /// How much of its picture a display lets through at the bottom of its slider: 30% of its values,
+    /// about 7% of its light. With the backlight at its lowest, the twentieth of its values that a
+    /// display dimmed in software alone keeps left nothing to see, and MonitorControl's 15% too little.
+    static let lowestPicture: Float = 0.3
 
     /// The backlight at `brightness`, from its lowest (0) to its highest (1)
     static func backlight(at brightness: Float) -> Float {
