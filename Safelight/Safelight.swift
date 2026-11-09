@@ -602,7 +602,7 @@ struct BrightnessSlider: View {
     var body: some View {
         #if DEBUG
         if isGrayScale {
-            GrayScaleSlider(value: $value, label: label, onEditingChanged: onEditingChanged)
+            GradientSlider(value: $value, label: label, onEditingChanged: onEditingChanged)
         } else {
             standardSlider
         }
@@ -781,11 +781,12 @@ struct TintSlider: NSViewRepresentable {
 }
 
 #if DEBUG
-/// A Brightness slider whose track is AppKit's grey scale, from black to white, as Tint's is its hue
-/// scale: the Gradient choice in the Control Colours panel. It's the same small `ColorScaleSlider`
-/// as the Tint slider beside it, with nothing drawn over it, so it has no lowest-backlight tick
-/// mark, as an NSSlider's tick marks are spaced evenly from end to end.
-struct GrayScaleSlider: NSViewRepresentable {
+/// A Brightness slider whose fill, left of the knob, is a scale from black to white: the Gradient
+/// choice in the Control Colours panel. It's an NSSlider like any other, as SwiftUI's Slider is, with
+/// its own knob, dragging, keys and accessibility; only its cell (`GradientSliderCell`) draws the fill.
+/// SwiftUI's Slider has no way to do that: given a gradient as its tint, it draws in one colour. It has
+/// no lowest-backlight tick mark, as an NSSlider's tick marks are spaced evenly from end to end.
+struct GradientSlider: NSViewRepresentable {
     @Binding var value: Float
     var label: String
     var onEditingChanged: (Bool) -> Void = { _ in }
@@ -794,29 +795,60 @@ struct GrayScaleSlider: NSViewRepresentable {
         TintSlider.Coordinator()
     }
 
-    func makeNSView(context: Context) -> ColorScaleSlider {
-        let slider = ColorScaleSlider(
+    func makeNSView(context: Context) -> Slider {
+        let slider = Slider(
             value: 1, minValue: 0, maxValue: 1,
             target: context.coordinator, action: #selector(TintSlider.Coordinator.valueDidChange(_:))
         )
-        slider.controlSize = .small
-        // With no tick marks, the cell draws the knob centred on the track only when they'd be above;
-        // below, the default, it draws it above the track
-        slider.tickMarkPosition = .above
         slider.isContinuous = true
-        if let cell = slider.cell, cell.responds(to: NSSelectorFromString("setDrawsTrackAsColorScaleType:")) {
-            cell.setValue(NSColor.white, forKey: "color")
-            cell.setValue(ColorScaleSlider.grayScaleType, forKey: "drawsTrackAsColorScaleType")
-        }
+        // The cell draws the gradient over the bar with no fill under it
+        slider.trackFillColor = .clear
         return slider
     }
 
-    func updateNSView(_ slider: ColorScaleSlider, context: Context) {
+    func updateNSView(_ slider: Slider, context: Context) {
         context.coordinator.valueDidChangeHandler = { value = Float($0) }
         slider.onEditingChanged = onEditingChanged
         slider.doubleValue = Double(value)
         slider.isEnabled = context.environment.isEnabled
         slider.setAccessibilityLabel(label)
+    }
+
+    /// An NSSlider with a `GradientSliderCell` that says when it's pressed and let go
+    final class Slider: NSSlider {
+        var onEditingChanged: (Bool) -> Void = { _ in }
+
+        override class var cellClass: AnyClass? {
+            get { GradientSliderCell.self }
+            set { super.cellClass = newValue }
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            onEditingChanged(true)
+            super.mouseDown(with: event) // tracks the mouse until it's let go
+            onEditingChanged(false)
+        }
+    }
+}
+
+/// A slider cell that draws AppKit's own bar, then the part of it left of the knob's centre as a scale
+/// from black to white. The scale spans the whole bar, so the fill ends in the grey of the value it
+/// stands for, and it's half as strong when the slider is dimmed. The knob is drawn after the bar, over it.
+final class GradientSliderCell: NSSliderCell {
+    private static let gradient = NSGradient(starting: .black, ending: .white)
+
+    override func drawBar(inside rect: NSRect, flipped: Bool) {
+        super.drawBar(inside: rect, flipped: flipped)
+        guard let gradient = Self.gradient, let context = NSGraphicsContext.current else { return }
+        let knob = knobRect(flipped: flipped)
+        context.saveGraphicsState()
+        NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).addClip()
+        NSBezierPath(rect: NSRect(x: rect.minX, y: rect.minY, width: knob.midX - rect.minX, height: rect.height)).addClip()
+        if !isEnabled {
+            context.cgContext.setAlpha(0.5)
+        }
+        gradient.draw(in: rect, angle: 0)
+        context.restoreGraphicsState()
     }
 }
 #endif
@@ -829,8 +861,6 @@ final class ColorScaleSlider: NSSlider {
     private static let colorScaleCellClass = NSClassFromString("NSColorScaleSliderCell") as? NSSliderCell.Type
     /// `NSColorScaleSliderCell`'s scale type for a hue track
     static let hueScaleType = 7
-    /// `NSColorScaleSliderCell`'s scale type for a grey scale, black to white
-    static let grayScaleType = 0
 
     var onEditingChanged: (Bool) -> Void = { _ in }
 
@@ -3930,8 +3960,8 @@ enum TintedControl: String, CaseIterable, Identifiable {
 extension View {
     /// Draws `control` in `color`, with a soft shadow if `hasShadow`, which sets a white slider apart
     /// from a light background (`BrightnessSlider` draws it under its fill), unless a Debug build is set
-    /// to draw it in the accent colour, with no shadow, as macOS would, or a Brightness slider as a grey
-    /// scale (`GrayScaleSlider`).
+    /// to draw it in the accent colour, with no shadow, as macOS would, or a Brightness slider with a
+    /// gradient fill (`GradientSlider`).
     func controlTint(_ color: Color, hasShadow: Bool = false, for control: TintedControl) -> some View {
         modifier(ControlTint(color: color, hasShadow: hasShadow, control: control))
     }
@@ -3996,7 +4026,7 @@ extension EnvironmentValues {
     }
 
     #if DEBUG
-    /// Whether a Brightness slider is drawn as a grey scale (`GrayScaleSlider`), the Gradient choice in
+    /// Whether a Brightness slider is drawn with a gradient fill (`GradientSlider`), the Gradient choice in
     /// the Control Colours panel
     @Entry var isGrayScaleSlider = false
     #endif
@@ -4016,7 +4046,7 @@ extension TintedControl {
         }
     }
 
-    /// Whether it can be drawn as a grey scale: the Brightness sliders, as `GrayScaleSlider`
+    /// Whether it can be drawn with a gradient fill: the Brightness sliders, as `GradientSlider`
     var hasGrayScale: Bool {
         self == .brightnessSliders || self == .scheduleBrightnessSliders
     }
@@ -4031,7 +4061,7 @@ extension TintedControl {
     }
 }
 
-/// What a Debug build draws a switch or slider in: its own colour, a grey scale (only the Brightness
+/// What a Debug build draws a switch or slider in: its own colour, a gradient fill (only the Brightness
 /// sliders), or the accent colour.
 enum ControlColor: String {
     case custom
@@ -4140,7 +4170,7 @@ struct ControlColorsPanel: View {
         }
         .pickerStyle(.segmented)
         .help(control.hasGrayScale
-              ? "Custom: \(control.customColor). Gradient: a grey scale from black to white, with no shadow."
+              ? "Custom: \(control.customColor). Gradient: a fill from black to white, with no shadow."
               : "Custom: \(control.customColor)")
     }
 
