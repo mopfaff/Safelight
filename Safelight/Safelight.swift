@@ -595,7 +595,23 @@ struct BrightnessSlider: View {
     /// How far before the knob the shadow fades out, in points
     private static let shadowFade: CGFloat = 10
 
+    #if DEBUG
+    @Environment(\.isGrayScaleSlider) private var isGrayScale
+    #endif
+
     var body: some View {
+        #if DEBUG
+        if isGrayScale {
+            GrayScaleSlider(value: $value, label: label, onEditingChanged: onEditingChanged)
+        } else {
+            standardSlider
+        }
+        #else
+        standardSlider
+        #endif
+    }
+
+    @ViewBuilder private var standardSlider: some View {
         if #available(macOS 26.0, *) {
             slider(value: $value, marksLowestBacklight: marksLowestBacklight, onEditingChanged: onEditingChanged)
                 .background {
@@ -718,7 +734,7 @@ struct OptionsButton: NSViewRepresentable {
 
 // MARK: - Tint Slider (System Settings' Hue Slider)
 /// The control System Settings › Accessibility › Display uses for Color Tint's Tint slider (its
-/// `HueSliderRepresentable`), set up the same way: a `HueSlider` over 0–360° with its track drawn as
+/// `HueSliderRepresentable`), set up the same way: a `ColorScaleSlider` over 0–360° with its track drawn as
 /// a hue scale, and a single tick mark at 180° that the slider snaps to on its own, like any NSSlider
 /// with tick marks.
 struct TintSlider: NSViewRepresentable {
@@ -726,15 +742,12 @@ struct TintSlider: NSViewRepresentable {
     /// Like `Slider`'s: called with true when the slider is pressed, and with false when it's let go.
     var onEditingChanged: (Bool) -> Void = { _ in }
 
-    /// `NSColorScaleSliderCell`'s scale type for a hue track.
-    private static let hueScaleType = 7
-
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
 
-    func makeNSView(context: Context) -> HueSlider {
-        let slider = HueSlider(
+    func makeNSView(context: Context) -> ColorScaleSlider {
+        let slider = ColorScaleSlider(
             value: 360, minValue: 0, maxValue: 360,
             target: context.coordinator, action: #selector(Coordinator.valueDidChange(_:))
         )
@@ -746,12 +759,12 @@ struct TintSlider: NSViewRepresentable {
         slider.altIncrementValue = 1
         if let cell = slider.cell, cell.responds(to: NSSelectorFromString("setDrawsTrackAsColorScaleType:")) {
             cell.setValue(NSColor.red, forKey: "color")
-            cell.setValue(Self.hueScaleType, forKey: "drawsTrackAsColorScaleType")
+            cell.setValue(ColorScaleSlider.hueScaleType, forKey: "drawsTrackAsColorScaleType")
         }
         return slider
     }
 
-    func updateNSView(_ slider: HueSlider, context: Context) {
+    func updateNSView(_ slider: ColorScaleSlider, context: Context) {
         context.coordinator.valueDidChangeHandler = { value = Float($0) }
         slider.onEditingChanged = onEditingChanged
         slider.doubleValue = Double(value)
@@ -767,12 +780,57 @@ struct TintSlider: NSViewRepresentable {
     }
 }
 
+#if DEBUG
+/// A Brightness slider whose track is AppKit's grey scale, from black to white, as Tint's is its hue
+/// scale: the Gradient choice in the Control Colours panel. It's the same small `ColorScaleSlider`
+/// as the Tint slider beside it, with nothing drawn over it, so it has no lowest-backlight tick
+/// mark, as an NSSlider's tick marks are spaced evenly from end to end.
+struct GrayScaleSlider: NSViewRepresentable {
+    @Binding var value: Float
+    var label: String
+    var onEditingChanged: (Bool) -> Void = { _ in }
+
+    func makeCoordinator() -> TintSlider.Coordinator {
+        TintSlider.Coordinator()
+    }
+
+    func makeNSView(context: Context) -> ColorScaleSlider {
+        let slider = ColorScaleSlider(
+            value: 1, minValue: 0, maxValue: 1,
+            target: context.coordinator, action: #selector(TintSlider.Coordinator.valueDidChange(_:))
+        )
+        slider.controlSize = .small
+        // With no tick marks, the cell draws the knob centred on the track only when they'd be above;
+        // below, the default, it draws it above the track
+        slider.tickMarkPosition = .above
+        slider.isContinuous = true
+        if let cell = slider.cell, cell.responds(to: NSSelectorFromString("setDrawsTrackAsColorScaleType:")) {
+            cell.setValue(NSColor.white, forKey: "color")
+            cell.setValue(ColorScaleSlider.grayScaleType, forKey: "drawsTrackAsColorScaleType")
+        }
+        return slider
+    }
+
+    func updateNSView(_ slider: ColorScaleSlider, context: Context) {
+        context.coordinator.valueDidChangeHandler = { value = Float($0) }
+        slider.onEditingChanged = onEditingChanged
+        slider.doubleValue = Double(value)
+        slider.isEnabled = context.environment.isEnabled
+        slider.setAccessibilityLabel(label)
+    }
+}
+#endif
+
 /// AppKit's `NSColorScaleSlider` (not in the public headers), rebuilt from its parts so it can say when
 /// it's pressed and let go: that class is an NSSlider whose cell, `NSColorScaleSliderCell`, draws the
 /// track and takes the settings the slider passes on, with these alignment insets. A plain slider
 /// stands in if AppKit ever stops shipping the cell.
-final class HueSlider: NSSlider {
+final class ColorScaleSlider: NSSlider {
     private static let colorScaleCellClass = NSClassFromString("NSColorScaleSliderCell") as? NSSliderCell.Type
+    /// `NSColorScaleSliderCell`'s scale type for a hue track
+    static let hueScaleType = 7
+    /// `NSColorScaleSliderCell`'s scale type for a grey scale, black to white
+    static let grayScaleType = 0
 
     var onEditingChanged: (Bool) -> Void = { _ in }
 
@@ -3872,7 +3930,8 @@ enum TintedControl: String, CaseIterable, Identifiable {
 extension View {
     /// Draws `control` in `color`, with a soft shadow if `hasShadow`, which sets a white slider apart
     /// from a light background (`BrightnessSlider` draws it under its fill), unless a Debug build is set
-    /// to draw it in the accent colour, with no shadow, as macOS would.
+    /// to draw it in the accent colour, with no shadow, as macOS would, or a Brightness slider as a grey
+    /// scale (`GrayScaleSlider`).
     func controlTint(_ color: Color, hasShadow: Bool = false, for control: TintedControl) -> some View {
         modifier(ControlTint(color: color, hasShadow: hasShadow, control: control))
     }
@@ -3894,10 +3953,10 @@ private struct ControlTint: ViewModifier {
 
     func body(content: Content) -> some View {
         #if DEBUG
-        if controlColors.accentColored.contains(control) {
-            content
-        } else {
-            tinted(content)
+        switch controlColors[control] {
+        case .custom: tinted(content)
+        case .grayScale: content.environment(\.isGrayScaleSlider, true)
+        case .accentColor: content
         }
         #else
         tinted(content)
@@ -3935,6 +3994,12 @@ extension EnvironmentValues {
         get { self[SliderShadowKey.self] }
         set { self[SliderShadowKey.self] = newValue }
     }
+
+    #if DEBUG
+    /// Whether a Brightness slider is drawn as a grey scale (`GrayScaleSlider`), the Gradient choice in
+    /// the Control Colours panel
+    @Entry var isGrayScaleSlider = false
+    #endif
 }
 
 #if DEBUG
@@ -3951,6 +4016,11 @@ extension TintedControl {
         }
     }
 
+    /// Whether it can be drawn as a grey scale: the Brightness sliders, as `GrayScaleSlider`
+    var hasGrayScale: Bool {
+        self == .brightnessSliders || self == .scheduleBrightnessSliders
+    }
+
     /// What Custom draws it in.
     var customColor: String {
         switch self {
@@ -3961,44 +4031,75 @@ extension TintedControl {
     }
 }
 
-/// The switches and sliders Debug builds draw in the accent colour, kept between launches until
-/// they're all Custom again. Release builds draw every one in its own colour. Observable rather than an
+/// What a Debug build draws a switch or slider in: its own colour, a grey scale (only the Brightness
+/// sliders), or the accent colour.
+enum ControlColor: String {
+    case custom
+    case grayScale
+    case accentColor
+
+    var name: String {
+        switch self {
+        case .custom: "Custom"
+        case .grayScale: "Gradient"
+        case .accentColor: "Accent Colour"
+        }
+    }
+}
+
+/// What Debug builds draw each switch and slider in, kept between launches until they're all Custom
+/// again. Release builds draw every one in its own colour. Observable rather than an
 /// `ObservableObject`, as a segmented picker sets its choice during SwiftUI's update, where publishing
 /// a change raised a runtime warning for each view observing it.
 @Observable final class ControlColors {
     static let shared = ControlColors()
     private static let defaultsKey = "controlColors"
 
-    /// Choices the panel can make for every control at once.
-    static let presets: [(name: String, accentColored: Set<TintedControl>)] = [
-        ("Custom", []),
+    /// Choices the panel can make for every control at once. Those left out are Custom.
+    static let presets: [(name: String, colors: [TintedControl: ControlColor])] = [
+        ("Custom", [:]),
         // The filter's hue only on the controls that show the tint
-        ("Mixed", [.brightnessSliders, .adjustIndependentlySwitch, .scheduleBrightnessSliders]),
-        ("Accent Colour", Set(TintedControl.allCases)),
+        ("Mixed", [.brightnessSliders: .accentColor, .adjustIndependentlySwitch: .accentColor, .scheduleBrightnessSliders: .accentColor]),
+        ("Accent Colour", Dictionary(uniqueKeysWithValues: TintedControl.allCases.map { ($0, .accentColor) })),
     ]
 
-    var accentColored: Set<TintedControl> {
+    /// Every control that isn't Custom, and what it's drawn in
+    var colors: [TintedControl: ControlColor] {
         didSet { save() }
     }
 
+    subscript(control: TintedControl) -> ControlColor {
+        get { colors[control] ?? .custom }
+        set { colors[control] = newValue == .custom ? nil : newValue }
+    }
+
     private init() {
-        let saved = UserDefaults.standard.stringArray(forKey: Self.defaultsKey) ?? []
-        accentColored = Set(saved.compactMap(TintedControl.init))
+        let defaults = UserDefaults.standard
+        if let saved = defaults.dictionary(forKey: Self.defaultsKey) as? [String: String] {
+            colors = Dictionary(uniqueKeysWithValues: saved.compactMap { name, color in
+                guard let control = TintedControl(rawValue: name), let color = ControlColor(rawValue: color) else { return nil }
+                return (control, color)
+            })
+        } else {
+            // Saved before Gradient, as the names of those in the accent colour
+            let saved = defaults.stringArray(forKey: Self.defaultsKey) ?? []
+            colors = Dictionary(uniqueKeysWithValues: saved.compactMap(TintedControl.init).map { ($0, .accentColor) })
+        }
     }
 
     // Saved by name, so `defaults read Mo.Safelight controlColors` shows them
     private func save() {
-        guard !accentColored.isEmpty else {
+        guard !colors.isEmpty else {
             UserDefaults.standard.removeObject(forKey: Self.defaultsKey)
             return
         }
-        let names = TintedControl.allCases.filter(accentColored.contains).map(\.rawValue)
+        let names = Dictionary(uniqueKeysWithValues: colors.map { ($0.key.rawValue, $0.value.rawValue) })
         UserDefaults.standard.set(names, forKey: Self.defaultsKey)
     }
 }
 
-/// Custom or Accent Colour for each switch and slider that has a colour of its own, which it takes on
-/// as it's chosen, and presets that choose for every one at once.
+/// Custom or Accent Colour for each switch and slider that has a colour of its own, or Gradient for a
+/// Brightness slider, which it takes on as it's chosen, and presets that choose for every one at once.
 struct ControlColorsPanel: View {
     private let controlColors = ControlColors.shared
 
@@ -4025,35 +4126,34 @@ struct ControlColorsPanel: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 470)
+        .frame(width: 540)
         .fixedSize(horizontal: false, vertical: true)
     }
 
     private func row(_ control: TintedControl) -> some View {
-        Picker(control.name, selection: usesAccentColor(control)) {
-            Text("Custom").tag(false)
-            Text("Accent Colour").tag(true)
+        Picker(control.name, selection: color(of: control)) {
+            Text(ControlColor.custom.name).tag(ControlColor.custom)
+            if control.hasGrayScale {
+                Text(ControlColor.grayScale.name).tag(ControlColor.grayScale)
+            }
+            Text(ControlColor.accentColor.name).tag(ControlColor.accentColor)
         }
         .pickerStyle(.segmented)
-        .help("Custom: \(control.customColor)")
+        .help(control.hasGrayScale
+              ? "Custom: \(control.customColor). Gradient: a grey scale from black to white, with no shadow."
+              : "Custom: \(control.customColor)")
     }
 
-    private func usesAccentColor(_ control: TintedControl) -> Binding<Bool> {
+    private func color(of control: TintedControl) -> Binding<ControlColor> {
         Binding(
-            get: { controlColors.accentColored.contains(control) },
-            set: { usesAccentColor in
-                if usesAccentColor {
-                    controlColors.accentColored.insert(control)
-                } else {
-                    controlColors.accentColored.remove(control)
-                }
-            }
+            get: { controlColors[control] },
+            set: { controlColors[control] = $0 }
         )
     }
 
     /// The preset the choices are, if they're one of them.
     private var presetName: String? {
-        ControlColors.presets.first { $0.accentColored == controlColors.accentColored }?.name
+        ControlColors.presets.first { $0.colors == controlColors.colors }?.name
     }
 
     /// Choosing a preset makes every choice its own.
@@ -4062,7 +4162,7 @@ struct ControlColorsPanel: View {
             get: { presetName },
             set: { name in
                 if let preset = ControlColors.presets.first(where: { $0.name == name }) {
-                    controlColors.accentColored = preset.accentColored
+                    controlColors.colors = preset.colors
                 }
             }
         )
