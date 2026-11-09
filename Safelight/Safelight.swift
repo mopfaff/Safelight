@@ -589,18 +589,36 @@ struct BrightnessSlider: View {
     var onEditingChanged: (Bool) -> Void = { _ in }
     @Environment(\.hasSliderShadow) private var hasShadow
     @Environment(\.isEnabled) private var isEnabled
+    @State private var isDragging = false
+    /// Whether the knob is glass, as it is while it's dragged and for a moment after, as it turns white again
+    @State private var isKnobGlass = false
 
     /// How wide macOS 26 draws a slider's knob, in points
     private static let knobWidth: CGFloat = 20
+    /// How far under the knob the fill goes before its round end starts, in points
+    private static let fillEndUnderKnob: CGFloat = 5
 
     var body: some View {
         if #available(macOS 26.0, *) {
-            slider(value: $value, marksLowestBacklight: marksLowestBacklight, onEditingChanged: onEditingChanged)
-                .background {
-                    if hasShadow && isEnabled {
-                        fillShadow
+            slider(value: $value, marksLowestBacklight: marksLowestBacklight) { isEditing in
+                isDragging = isEditing
+                if isEditing {
+                    isKnobGlass = true
+                } else {
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(0.25))
+                        if !isDragging {
+                            isKnobGlass = false
+                        }
                     }
                 }
+                onEditingChanged(isEditing)
+            }
+            .background {
+                if hasShadow && isEnabled {
+                    fillShadow
+                }
+            }
         } else {
             let slider = Slider(value: $value, in: 0...1) {
                 Text(label)
@@ -630,19 +648,25 @@ struct BrightnessSlider: View {
         .labelsHidden()
     }
 
-    /// The shadow under the fill, cast by a copy of the slider behind it, cut off where the knob starts.
+    /// The shadow under the fill, cast by a copy of the slider behind it, cut off under the knob.
     /// A shadow on the slider itself draws it all in a layer of its own, where its track can't take on
     /// the colours behind it as macOS draws it: in the popover's glass it was a flat light grey in Light,
-    /// which stood out as white over a dark or colourful desktop, and near black in Dark. The copy stops
-    /// short of the knob, which turns to glass as it's dragged, and has no tick mark, so the slider's own
-    /// is drawn once. A dimmed slider has none, as the copy would show through its fill.
+    /// which stood out as white over a dark or colourful desktop, and near black in Dark. At rest the
+    /// copy goes 5 pt under the knob, to where the fill's round end starts, so the shadow wraps round the
+    /// knob's rounded side; cut off where the knob starts, its square corners showed on either side of
+    /// it. Past that, the copy's track would show round the fill's end. While the knob is glass, the copy
+    /// stops where the knob starts, or it shows through the knob at the bottom of the slider. The copy
+    /// has no knob or tick mark, so the slider's own are drawn once. A dimmed slider has none, as the
+    /// copy would show through its fill.
     @available(macOS 26.0, *)
     private var fillShadow: some View {
         GeometryReader { geometry in
             slider(value: .constant(value), marksLowestBacklight: false)
+                .sliderThumbVisibility(.hidden)
                 .mask(alignment: .leading) {
                     Rectangle()
-                        .frame(width: max(CGFloat(value) * (geometry.size.width - Self.knobWidth), 0))
+                        .frame(width: CGFloat(value) * (geometry.size.width - Self.knobWidth)
+                               + (isKnobGlass ? 0 : Self.fillEndUnderKnob))
                 }
                 .shadow(color: .black.opacity(0.15), radius: 4, y: 1)
         }
