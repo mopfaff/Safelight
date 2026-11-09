@@ -580,32 +580,75 @@ struct MenuView: View {
 /// to it, as a slider does to a lone tick mark, like Tint's at 180°. Before macOS 26, where a slider's
 /// tick marks are evenly spaced from end to end, it has none. The slider is the same height with the
 /// tick mark or without, as it keeps room for one, so it doesn't move once a monitor has answered over DDC.
+/// Drawn in white (`controlTint(_:hasShadow:for:)`), it has a soft shadow under its fill, which sets
+/// it apart from a light background.
 struct BrightnessSlider: View {
     @Binding var value: Float
     var label: String
     var marksLowestBacklight: Bool
     var onEditingChanged: (Bool) -> Void = { _ in }
+    @Environment(\.hasSliderShadow) private var hasShadow
+    @Environment(\.isEnabled) private var isEnabled
+
+    /// How wide macOS 26 draws a slider's knob, in points
+    private static let knobWidth: CGFloat = 20
 
     var body: some View {
         if #available(macOS 26.0, *) {
-            Slider(value: $value, in: 0...1) {
-                Text(label)
-            } ticks: {
-                if marksLowestBacklight {
-                    SliderTick(CombinedBrightness.lowestBacklight)
+            slider(value: $value, marksLowestBacklight: marksLowestBacklight, onEditingChanged: onEditingChanged)
+                .background {
+                    if hasShadow && isEnabled {
+                        fillShadow
+                    }
                 }
-            } onEditingChanged: { isEditing in
-                onEditingChanged(isEditing)
-            }
-            .labelsHidden()
         } else {
-            Slider(value: $value, in: 0...1) {
+            let slider = Slider(value: $value, in: 0...1) {
                 Text(label)
             } onEditingChanged: { isEditing in
                 onEditingChanged(isEditing)
             }
             .labelsHidden()
+            if hasShadow {
+                slider.shadow(color: .black.opacity(0.15), radius: 4, y: 1)
+            } else {
+                slider
+            }
         }
+    }
+
+    @available(macOS 26.0, *)
+    private func slider(value: Binding<Float>, marksLowestBacklight: Bool, onEditingChanged: @escaping (Bool) -> Void = { _ in }) -> some View {
+        Slider(value: value, in: 0...1) {
+            Text(label)
+        } ticks: {
+            if marksLowestBacklight {
+                SliderTick(CombinedBrightness.lowestBacklight)
+            }
+        } onEditingChanged: { isEditing in
+            onEditingChanged(isEditing)
+        }
+        .labelsHidden()
+    }
+
+    /// The shadow under the fill, cast by a copy of the slider behind it, cut off where the knob starts.
+    /// A shadow on the slider itself draws it all in a layer of its own, where its track can't take on
+    /// the colours behind it as macOS draws it: in the popover's glass it was a flat light grey in Light,
+    /// which stood out as white over a dark or colourful desktop, and near black in Dark. The copy stops
+    /// short of the knob, which turns to glass as it's dragged, and has no tick mark, so the slider's own
+    /// is drawn once. A dimmed slider has none, as the copy would show through its fill.
+    @available(macOS 26.0, *)
+    private var fillShadow: some View {
+        GeometryReader { geometry in
+            slider(value: .constant(value), marksLowestBacklight: false)
+                .mask(alignment: .leading) {
+                    Rectangle()
+                        .frame(width: max(CGFloat(value) * (geometry.size.width - Self.knobWidth), 0))
+                }
+                .shadow(color: .black.opacity(0.15), radius: 4, y: 1)
+        }
+        .allowsHitTesting(false)
+        .focusable(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -3821,8 +3864,8 @@ enum TintedControl: String, CaseIterable, Identifiable {
 
 extension View {
     /// Draws `control` in `color`, with a soft shadow if `hasShadow`, which sets a white slider apart
-    /// from a light background, unless a Debug build is set to draw it in the accent colour, with no
-    /// shadow, as macOS would.
+    /// from a light background (`BrightnessSlider` draws it under its fill), unless a Debug build is set
+    /// to draw it in the accent colour, with no shadow, as macOS would.
     func controlTint(_ color: Color, hasShadow: Bool = false, for control: TintedControl) -> some View {
         modifier(ControlTint(color: color, hasShadow: hasShadow, control: control))
     }
@@ -3854,16 +3897,23 @@ private struct ControlTint: ViewModifier {
         #endif
     }
 
-    @ViewBuilder
     private func tinted(_ content: Content) -> some View {
-        if hasShadow {
-            content
-                .tint(color)
-                .shadow(color: .black.opacity(0.15), radius: 4, y: 1)
-        } else {
-            content
-                .tint(color)
-        }
+        content
+            .tint(color)
+            .environment(\.hasSliderShadow, hasShadow)
+    }
+}
+
+private struct SliderShadowKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// Whether a white slider has a soft shadow, which sets it apart from a light background
+    /// (`controlTint(_:hasShadow:for:)`)
+    var hasSliderShadow: Bool {
+        get { self[SliderShadowKey.self] }
+        set { self[SliderShadowKey.self] = newValue }
     }
 }
 
