@@ -3889,7 +3889,7 @@ private struct ControlTint: ViewModifier {
     let hasShadow: Bool
     let control: TintedControl
     #if DEBUG
-    @ObservedObject private var controlColors = ControlColors.shared
+    private let controlColors = ControlColors.shared
     #endif
 
     func body(content: Content) -> some View {
@@ -3962,8 +3962,10 @@ extension TintedControl {
 }
 
 /// The switches and sliders Debug builds draw in the accent colour, kept between launches until
-/// they're all Custom again. Release builds draw every one in its own colour.
-final class ControlColors: ObservableObject {
+/// they're all Custom again. Release builds draw every one in its own colour. Observable rather than an
+/// `ObservableObject`, as a segmented picker sets its choice during SwiftUI's update, where publishing
+/// a change raised a runtime warning for each view observing it.
+@Observable final class ControlColors {
     static let shared = ControlColors()
     private static let defaultsKey = "controlColors"
 
@@ -3975,7 +3977,7 @@ final class ControlColors: ObservableObject {
         ("Accent Colour", Set(TintedControl.allCases)),
     ]
 
-    @Published var accentColored: Set<TintedControl> {
+    var accentColored: Set<TintedControl> {
         didSet { save() }
     }
 
@@ -3998,7 +4000,7 @@ final class ControlColors: ObservableObject {
 /// Custom or Accent Colour for each switch and slider that has a colour of its own, which it takes on
 /// as it's chosen, and presets that choose for every one at once.
 struct ControlColorsPanel: View {
-    @ObservedObject var controlColors = ControlColors.shared
+    private let controlColors = ControlColors.shared
 
     var body: some View {
         Form {
@@ -5584,7 +5586,7 @@ final class DDCMonitors {
         let search = lastSearch
         searches[displayID] = search
         let location = GammaManager.info(of: displayID)?["IODisplayLocation"] as? String
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) { [self] in
             let service = location.flatMap(DDC.service(at:))
             let brightness = service.flatMap { DDC.brightness(of: $0) }
             DispatchQueue.main.async { [weak self] in
@@ -6585,7 +6587,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
 
     /// Shows the pictures a display's desktop has for Light and for Dark, or none, drawn the shape of the
     /// display where they're drawn here. They're loaded in the background, and the ones shown before stay
-    /// until they are, as do the previews of changes that are on the desktop now.
+    /// until they are, as do the previews of changes that are on the desktop now. They're loaded at the
+    /// default QoS, that of the threads ImageIO decodes a HEIC's pictures on, as waiting on those from a
+    /// higher one is a priority inversion, which Xcode's thread checker flagged as a hang risk.
     private func show(_ desktop: Desktop?, on screen: NSScreen?) {
         let screenSize = screen.map(Self.pixelSize(of:)) ?? Self.screenSize
         guard desktop != shown || screenSize != shownSize else { return }
@@ -6596,7 +6600,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             previews = previews.filter { isAskedFor($0.value.change) }
             return
         }
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        DispatchQueue.global(qos: .default).async { [weak self] in
             let thumbnails = Self.thumbnails(of: desktop, screenSize: screenSize)
             DispatchQueue.main.async {
                 guard let self, self.shown == desktop, self.shownSize == screenSize else { return }
@@ -8503,7 +8507,7 @@ final class WallpaperShuffler: ObservableObject {
             }
             return
         }
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
             // Any picture but the one it has now
             let pictures = WallpaperLibrary.shared.pictures(of: shuffle.id)
             let next = pictures.filter { $0.id != shuffle.current }.randomElement() ?? pictures.randomElement()
