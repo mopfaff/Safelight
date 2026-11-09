@@ -570,7 +570,7 @@ struct MenuView: View {
                          marksLowestBacklight: controller.marksLowestBacklight(on: display)) { isEditing in
             controller.isUserDraggingSlider = isEditing
         }
-        .controlTint(.white, hasShadow: true, for: .brightnessSliders)
+        .controlTint(.brightnessSliderFill, hasShadow: true, for: .brightnessSliders)
         .disabled(controller.isAutoMode)
     }
 }
@@ -580,8 +580,8 @@ struct MenuView: View {
 /// to it, as a slider does to a lone tick mark, like Tint's at 180°. Before macOS 26, where a slider's
 /// tick marks are evenly spaced from end to end, it has none. The slider is the same height with the
 /// tick mark or without, as it keeps room for one, so it doesn't move once a monitor has answered over DDC.
-/// Drawn in white (`controlTint(_:hasShadow:for:)`), it has a soft shadow under its fill, which sets
-/// it apart from a light background.
+/// Drawn in white (`Color.brightnessSliderFill`, `controlTint(_:hasShadow:for:)`), it has a soft
+/// shadow under its fill, which sets it apart from a light background.
 struct BrightnessSlider: View {
     @Binding var value: Float
     var label: String
@@ -3208,7 +3208,7 @@ struct ScheduleEditor: View {
                                                  marksLowestBacklight: controller.marksLowestBacklight(on: display)) { isEditing in
                                     controller.preview(isEditing ? keyframe.id : nil)
                                 }
-                                .controlTint(.white, hasShadow: true, for: .scheduleBrightnessSliders)
+                                .controlTint(.brightnessSliderFill, hasShadow: true, for: .scheduleBrightnessSliders)
                                 .frame(width: layout.brightnessWidth)
                                 .padding(.leading, layout.gapBeforeBrightness)
                             }
@@ -3902,6 +3902,19 @@ private struct ControlTint: ViewModifier {
             .tint(color)
             .environment(\.hasSliderShadow, hasShadow)
     }
+}
+
+extension Color {
+    /// The Brightness sliders' fill: white in Light, and in Dark the grey that macOS's pressed effect
+    /// (`NSColor.withSystemEffect(.pressed)`) lifts to white. A pressed slider's fill darkens in Light,
+    /// to 0.843 of its colour, and brightens in Dark, by 0.18, as an accent colour's does, so a white
+    /// fill showed no change while dragged in Dark. At 0.82 it rests a little dimmer and reaches white
+    /// while dragged, as it does at rest in Light.
+    static let brightnessSliderFill = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.82, green: 0.82, blue: 0.82, alpha: 1)
+            : .white
+    })
 }
 
 private struct SliderShadowKey: EnvironmentKey {
