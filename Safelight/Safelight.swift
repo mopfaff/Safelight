@@ -6589,7 +6589,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// display where they're drawn here. They're loaded in the background, and the ones shown before stay
     /// until they are, as do the previews of changes that are on the desktop now. They're loaded at the
     /// default QoS, that of the threads ImageIO decodes a HEIC's pictures on, as waiting on those from a
-    /// higher one is a priority inversion, which Xcode's thread checker flagged as a hang risk.
+    /// higher one is a priority inversion, which Xcode's thread checker flagged as a hang risk. It's
+    /// enforced, as the default global queue otherwise runs a block at the QoS of the thread that sent it,
+    /// which from the main thread is user-initiated.
     private func show(_ desktop: Desktop?, on screen: NSScreen?) {
         let screenSize = screen.map(Self.pixelSize(of:)) ?? Self.screenSize
         guard desktop != shown || screenSize != shownSize else { return }
@@ -6600,7 +6602,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             previews = previews.filter { isAskedFor($0.value.change) }
             return
         }
-        DispatchQueue.global(qos: .default).async { [weak self] in
+        DispatchQueue.global().async(qos: .default, flags: .enforceQoS) { [weak self] in
             let thumbnails = Self.thumbnails(of: desktop, screenSize: screenSize)
             DispatchQueue.main.async {
                 guard let self, self.shown == desktop, self.shownSize == screenSize else { return }
@@ -6612,11 +6614,12 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
 
     /// Shows what an appearance will have once a change just asked for is made, as soon as `preview` has
     /// drawn it, while it's still the latest asked for there. With none, the appearance keeps showing
-    /// what the desktop has until the change is on it.
+    /// what the desktop has until the change is on it. It's drawn at the default QoS (`.medium`), as the
+    /// desktop's thumbnails are, as it decodes the picture the same way.
     private func showPreview(_ preview: Preview?, of change: Change) {
         guard let preview else { return }
         let screenSize = shownSize
-        Task.detached(priority: .userInitiated) {
+        Task.detached(priority: .medium) {
             let thumbnail = await preview(screenSize)
             await MainActor.run {
                 guard let thumbnail, self.latestChange(isDark: change.isDark, at: change.place)?.id == change.id else { return }
