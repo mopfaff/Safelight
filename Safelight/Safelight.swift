@@ -11111,8 +11111,8 @@ enum SystemStrings {
     static let sunsetToSunriseNeedsLocation = lookup("Night Shift from sunset to sunrise requires location for time zone to be enabled.", in: displaysSettings,
                                                      english: "Night Shift from sunset to sunrise requires location for time zone to be enabled.")
 
-    // Shortcuts' Sunrise and Sunset automations: the two, being at them, and its choices of how long
-    // before or after them, with the Home app's wording for any other time before or after them
+    // Shortcuts' Sunrise and Sunset automations: the two, and being at them, with the Home app's wording
+    // for so long before or after them
     private static let shortcuts = "/System/Library/PrivateFrameworks/WorkflowKit.framework"
     private static let home = "/System/iOSSupport/System/Library/PrivateFrameworks/Home.framework"
 
@@ -11123,8 +11123,9 @@ enum SystemStrings {
         }
     }
 
-    /// So long before or after sunrise or sunset, in Shortcuts' words for its choices (45 minutes after
-    /// sunrise, At sunset), or in the Home app's for any other time (2 hours, 30 minutes after sunset)
+    /// So long before or after sunrise or sunset: at it in Shortcuts' words (At sunset), or else in the
+    /// Home app's (45 min after sunrise; 2 hrs, 30 min before sunset), with the time abbreviated as
+    /// Clock does for its recent timers (MTATimerRecentView's formatter: the short units style)
     static func sunTime(_ time: SunTime) -> String {
         let event = time.event == .sunrise ? "sunrise" : "sunset"
         let minutes = abs(time.offset)
@@ -11132,14 +11133,9 @@ enum SystemStrings {
         if minutes == 0 {
             return lookup("At \(event)", in: shortcuts, english: "At \(event)")
         }
-        if SunTime.offsets.contains(time.offset) {
-            let duration = minutes < 60 ? "\(minutes) minutes" : minutes == 60 ? "1 hour" : "\(minutes / 60) hours"
-            let phrase = "\(duration) \(side) \(event)"
-            return lookup(phrase, in: shortcuts, english: phrase)
-        }
         // In the language of the words around it, which this app, with no translations, wouldn't give it
         let formatter = DateComponentsFormatter()
-        formatter.unitsStyle = .full
+        formatter.unitsStyle = .short
         formatter.allowedUnits = [.hour, .minute]
         var calendar = Calendar.current
         calendar.locale = Locale(identifier: Locale.preferredLanguages.first ?? "en")
