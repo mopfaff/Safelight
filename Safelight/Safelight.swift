@@ -11124,8 +11124,8 @@ enum SystemStrings {
     }
 
     /// So long before or after sunrise or sunset: at it in Shortcuts' words (At sunset), or else in the
-    /// Home app's (45 min after sunrise; 2 hrs, 30 min before sunset), with the time abbreviated as
-    /// Clock does for its recent timers (MTATimerRecentView's formatter: the short units style)
+    /// Home app's (45m after sunrise, 2h 30m before sunset), with the time in the abbreviated units
+    /// style, a step shorter than Clock's recent timers' (MTATimerRecentView's formatter, in the short one)
     static func sunTime(_ time: SunTime) -> String {
         let event = time.event == .sunrise ? "sunrise" : "sunset"
         let minutes = abs(time.offset)
@@ -11135,7 +11135,7 @@ enum SystemStrings {
         }
         // In the language of the words around it, which this app, with no translations, wouldn't give it
         let formatter = DateComponentsFormatter()
-        formatter.unitsStyle = .short
+        formatter.unitsStyle = .abbreviated
         formatter.allowedUnits = [.hour, .minute]
         var calendar = Calendar.current
         calendar.locale = Locale(identifier: Locale.preferredLanguages.first ?? "en")
