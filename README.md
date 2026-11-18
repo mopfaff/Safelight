@@ -48,7 +48,7 @@ You only need to do this once. If you'd rather read the code first, all of Safel
 
 ### Updates
 
-Safelight keeps itself up to date. Once a day it looks for a new release here, downloads it, and installs it the next time it quits, or when you log out or restart, so the screen never changes while you're using it. An update opens without the warning above, and Safelight only installs one signed with its own key. If you'd rather decide yourself, turn off Automatic Updates in the icon's right-click menu and choose Check for Updates… when you like. The updating is done by [Sparkle](https://sparkle-project.org), the open-source updater many Mac apps use.
+Safelight keeps itself up to date. Once a day it looks for a new release here, downloads it, and installs it once your Mac is locked and its screen has gone dark, or else the next time it quits, or when you log out or restart, so the screen never changes while you're using it. An update opens without the warning above, and Safelight only installs one signed with its own key. If you'd rather decide yourself, turn off Automatic Updates in the icon's right-click menu and choose Check for Updates… when you like. The updating is done by [Sparkle](https://sparkle-project.org), the open-source updater many Mac apps use.
 
 ## Build it yourself
 

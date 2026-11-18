@@ -243,13 +243,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 #if canImport(Sparkle)
 /// Keeps Safelight up to date with Sparkle, from the feed in Info.plist. With Automatic Updates on, as
 /// it is to begin with, it looks at the latest GitHub release once a day, downloads anything newer in
-/// the background, and installs it the next time Safelight quits, so an update never resets the screen
-/// while it's in use. It installs only a disk image signed with the key whose public half is in
-/// Info.plist (SUPublicEDKey); scripts/release.sh signs each one.
+/// the background, and installs it once the Mac is locked with its displays asleep, or else the next
+/// time Safelight quits, so an update never resets the screen while it's in use. It installs only a
+/// disk image signed with the key whose public half is in Info.plist (SUPublicEDKey);
+/// scripts/release.sh signs each one.
 final class Updates: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate, NSMenuItemValidation {
     private var controller: SPUStandardUpdaterController!
     /// Called when Check for Updates… is chosen, before Sparkle's window opens
     var willCheckForUpdates: () -> Void = {}
+    /// Sparkle's way to install the update it has downloaded and open Safelight again, while one waits
+    private var installWaitingUpdate: (() -> Void)?
+    /// Whether the displays have gone to sleep, and not woken since
+    private var displaysAreAsleep = false
 
     override init() {
         super.init()
@@ -259,6 +264,62 @@ final class Updates: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate
     /// Starts checking, once Safelight knows it isn't about to reopen from elsewhere.
     func start() {
         controller.startUpdater()
+
+        // The Mac locks and its displays sleep in either order: locking first leaves the lock screen
+        // up for a while, and closing the lid sleeps them first
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspace.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.displaysAreAsleep = true
+            self?.installWhenUnseen()
+        }
+        workspace.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.displaysAreAsleep = false
+            self?.pendingInstall?.cancel()
+        }
+        workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.pendingInstall?.cancel()
+        }
+        DistributedNotificationCenter.default().addObserver(forName: Self.screenIsLockedNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.installWhenUnseen()
+        }
+    }
+
+    /// Posted by loginwindow when the Mac locks
+    private static let screenIsLockedNotification = Notification.Name("com.apple.screenIsLocked")
+
+    /// Rather than wait for Safelight to quit, which a menu bar app seldom does, Safelight installs an
+    /// update it has downloaded by itself as soon as nobody can see it do so, and Sparkle doesn't remind
+    /// about it meanwhile. It's still installed when Safelight quits, if that comes first.
+    func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem, immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
+        installWaitingUpdate = immediateInstallHandler
+        installWhenUnseen()
+        return true
+    }
+
+    /// The install waiting for the Mac to stay locked with its displays asleep
+    private var pendingInstall: DispatchWorkItem?
+
+    /// Installs the waiting update once the Mac has been locked with its displays asleep for a few
+    /// seconds, as Safelight closes and opens again then. Not if the Mac is going to sleep instead, as
+    /// it does just after the lid closes: the install would carry on as it wakes, at the lock screen.
+    private func installWhenUnseen() {
+        pendingInstall?.cancel()
+        guard installWaitingUpdate != nil, isUnseen else { return }
+        let install = DispatchWorkItem { [weak self] in
+            guard let self, isUnseen else { return }
+            installWaitingUpdate?()
+        }
+        pendingInstall = install
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: install)
+    }
+
+    /// Whether Safelight can close and open again without anyone seeing: the Mac is locked with its
+    /// displays asleep. Closing puts back any display dimmed in software, which only the Schedule dims
+    /// again when Safelight opens, so with the Schedule off that waits for Safelight to quit.
+    private var isUnseen: Bool {
+        displaysAreAsleep
+            && (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool == true
+            && (ColorController.shared.isAutoMode || !GammaManager.shared.isDimming)
     }
 
     /// macOS runs an app that isn't notarized from a hidden, read-only copy of itself (App
@@ -5627,6 +5688,12 @@ class GammaManager {
         streamedDisplays = [:]
         lastBrightness = [:]
         softwareBrightness = [:]
+    }
+
+    /// Whether a display is dimmed in software now, which Safelight doesn't do again by itself when it
+    /// next opens, as the displays' slider then starts where their backlight is
+    var isDimming: Bool {
+        !softwareBrightness.isEmpty || !dimmingWindows.isEmpty
     }
 
     /// Whether a display is sent its picture, as Sidecar's iPad and AirPlay displays are. It's sent
