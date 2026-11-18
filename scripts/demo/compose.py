@@ -32,13 +32,15 @@
 #      filming the stage on its own (a close view of the popover above both displays whole, say).
 #   4. pipeline.to_video() makes the colours of the video, which ffmpeg encodes at fixed settings, so
 #      the same recording gives the same files, byte for byte.
+#   A frame made of the same as the one before (Repeats) isn't made again: the video gets the one before's
+#   picture. The pictures every frame is made from are worked out once and shared by the workers (Shot.kept).
 #
 #   compose.py <scene>          writes into build/demo/<scene>/, for each of the scene's cameras (16x9,
 #                               9x16): <scene>-<camera>.mp4, the master, in Display P3 (HEVC, 10 bits, its
-#                               colour tagged so players show the display's own red), <scene>-<camera>-srgb.mp4
-#                               (H.264, 8 bits, sRGB, for where P3 isn't shown, its deepest reds clipped),
-#                               and stills/<camera>-NNNN.png of the first, middle and last frames, and any
-#                               others the scene lists in "stills", in P3
+#                               colour tagged so players show the display's own red), and
+#                               stills/<camera>-NNNN.png of the first, middle and last frames, and any
+#                               others the scene lists in "stills", in P3. The demo's sRGB videos are
+#                               edit.py's, from the masters
 #   compose.py check <scene>    compares the recorder's first frame, with the window server's shadow and
 #                               rims added, against the window server's own picture of the popover over the
 #                               same desktop (make-demo.sh --check records both into build/demo/<scene>/check/)
@@ -70,8 +72,8 @@
 # filter off: the desktop with the popover closed (desktop-closed.png), no pointer, at the same
 # brightness, through Night Shift's matrix as CoreBrightness makes it (pipeline.night_shift_matrix).
 #
-# Needs what pipeline.py needs, and ffmpeg with libx265 and libx264.
-import argparse, collections, json, math, multiprocessing, subprocess, sys
+# Needs what pipeline.py needs, and ffmpeg with libx265.
+import argparse, collections, functools, hashlib, json, math, multiprocessing, subprocess, sys, tempfile
 from pathlib import Path
 import numpy as np
 import Quartz
@@ -82,7 +84,6 @@ ROOT = Path(__file__).resolve().parents[2]
 SCENES = ROOT / "scripts" / "demo" / "scenes"
 BUILD = ROOT / "build" / "demo"
 WINDOW_SERVER = BUILD / "window-server"
-P3 = bytes(Quartz.CGColorSpaceCopyICCData(Quartz.CGColorSpaceCreateWithName(Quartz.kCGColorSpaceDisplayP3)))
 
 
 def read_png(path):
@@ -236,9 +237,10 @@ class Pointer:
 class Shot:
     """A recorded scene on the desktop, frame by frame on the screen as the display shows it"""
 
-    def __init__(self, scene, folder=None):
+    def __init__(self, scene, folder=None, cache=None):
         self.name = scene
         self.folder = Path(folder) if folder else BUILD / scene
+        self.cache = Path(cache) if cache else None
         self.scene = json.loads((SCENES / f"{scene}.json").read_text())
         self.log = json.loads((self.folder / "log.json").read_text())
         desktop = self.log.get("desktop")
@@ -276,26 +278,32 @@ class Shot:
         # picture of the popover's edge over each picture of the wallpaper under it
         self.window_servers, self.rings = {}, {}
         if not self.layered:
-            pixels, icc = read_png(self.folder / desktop["image"])
-            self.desktop = to_display(pixels, icc, self.display)
+            pixels = functools.cache(lambda: read_png(self.folder / desktop["image"]))
+            self.desktop = self.kept("desktop", lambda: to_display(*pixels(), self.display))
             for popover, size in dict.fromkeys(self.popover_state(frame) for frame in range(self.count)):
-                self.window_servers[(popover, size)] = WindowServerLayer(popover, size, self.display)
+                layer = self.window_servers[(popover, size)] = WindowServerLayer(popover, size, self.display)
                 # Its picture of the popover's edge has to be over this desktop, with the popover in this place
-                self.rings[(popover, size, None)] = self.window_servers[(popover, size)].picture_over(pixels[y:y + h, x:x + w, :3], desktop["canvas"])
+                self.rings[(popover, size, None)] = self.kept(f"ring-{popover}-{size[0]:g}x{size[1]:g}",
+                                                              lambda: layer.picture_over(pixels()[0][y:y + h, x:x + w, :3], desktop["canvas"]))
         else:
             for appearance in ("light", "dark"):
-                wallpaper, icc = read_png(self.folder / f"wallpaper-{appearance}.png")
-                menu_bar, menu_icc = read_png(self.folder / f"menubar-{appearance}.png")
+                def wallpaper():
+                    pixels, icc = read_png(self.folder / f"wallpaper-{appearance}.png")
+                    return to_display(pixels[..., :3], icc, self.display)
                 # The menu bar's colours, matched to the display's, kept with their alpha, as the window
                 # server puts it over the wallpaper
-                self.layers[appearance] = (to_display(wallpaper[..., :3], icc, self.display),
-                                           np.dstack([to_display(menu_bar[..., :3], menu_icc, self.display), menu_bar[..., 3:]]))
+                def menu_bar():
+                    pixels, icc = read_png(self.folder / f"menubar-{appearance}.png")
+                    return np.dstack([to_display(pixels[..., :3], icc, self.display), pixels[..., 3:]])
+                self.layers[appearance] = (self.kept(f"wallpaper-{appearance}", wallpaper), self.kept(f"menubar-{appearance}", menu_bar))
             self.desktop = self.layers["light"][0]
             for popover, wallpaper, size in self.needs():
                 if (popover, size) not in self.window_servers:
                     self.window_servers[(popover, size)] = WindowServerLayer(popover, size, self.display)
-                backdrop = read_png(self.folder / "backdrops" / f"wallpaper-{wallpaper}-menubar-{popover}.png")[0][..., :3]
-                self.rings[(popover, size, wallpaper)] = self.window_servers[(popover, size)].picture_over(backdrop, desktop["canvas"])
+                layer = self.window_servers[(popover, size)]
+                backdrop = lambda: read_png(self.folder / "backdrops" / f"wallpaper-{wallpaper}-menubar-{popover}.png")[0][..., :3]
+                self.rings[(popover, size, wallpaper)] = self.kept(f"ring-{popover}-{size[0]:g}x{size[1]:g}-{wallpaper}",
+                                                                   lambda: layer.picture_over(backdrop(), desktop["canvas"]))
         self.pointer = Pointer(self.display, self.scale, self.log["pointer"]["hotSpot"])
         # For a scene with "nightShift": the same screen with Night Shift on instead of Safelight's filter,
         # the popover closed, at the strength of its slider the scene gives (1 is More Warm), its matrix
@@ -304,11 +312,25 @@ class Shot:
         if self.night_shift:
             if self.layered:
                 raise SystemExit("Night Shift's screen is drawn from desktop-closed.png, which doesn't change: keep the appearance")
-            pixels, icc = read_png(self.folder / "desktop-closed.png")
-            self.closed = to_display(pixels[..., :3], icc, self.display)
+            def closed():
+                pixels, icc = read_png(self.folder / "desktop-closed.png")
+                return to_display(pixels[..., :3], icc, self.display)
+            self.closed = self.kept("closed", closed)
             self.night_shift_cct = pipeline.night_shift_cct(self.night_shift.get("strength", 1))
             self.night_shift_matrix = pipeline.night_shift_matrix(self.night_shift_cct)
         self.stage = Stage(self)
+
+    def kept(self, name, make):
+        """A picture every frame is made from, `make()`'s, made once for all of compose()'s processes: kept
+        in a file in the shot's cache folder, which each maps into its memory, read only, so the Mac holds
+        one copy, not one for each worker (each worker made its own, peaking at 3.4 GB a worker for
+        day-timelapse). Without a cache folder, it's made here."""
+        if self.cache is None:
+            return make()
+        path = self.cache / f"{name}.npy"
+        if not path.exists():
+            np.save(path, make())
+        return np.load(path, mmap_mode="r")
 
     def popover_state(self, frame):
         """The popover's appearance on `frame`, and its window's size, in points"""
@@ -454,8 +476,10 @@ class Stage:
             per_point = desktop["millimetres"][0] / width
             for other in others:
                 display = pipeline.Display.live(other["display"])
-                pixels, icc = read_png(shot.folder / other["image"])
-                encoded = to_display(pixels[..., :3], icc, display)
+                def desktop(other=other, display=display):
+                    pixels, icc = read_png(shot.folder / other["image"])
+                    return to_display(pixels[..., :3], icc, display)
+                encoded = shot.kept(f"display-{other['display']}", desktop)
                 x, y, w, h = other["frame"]
                 scale = other["millimetres"][0] / w / per_point
                 sw, sh = w * scale, h * scale
@@ -657,13 +681,13 @@ def film_pane(shot, camera, frame):
 # --- The videos -----------------------------------------------------------------------------------
 
 # Each kind of video: the colour space its values are in, its bits, and how ffmpeg encodes it. The tags
-# say Display P3's primaries (SMPTE EG 432-1) or sRGB's (BT.709), the sRGB tone curve (IEC 61966-2-1)
-# both use, and BT.709's luma and chroma at video's limited range, as the values are made here.
+# say Display P3's primaries (SMPTE EG 432-1), the sRGB tone curve (IEC 61966-2-1) it uses, and BT.709's
+# luma and chroma at video's limited range, as the values are made here. (Each shot also had an sRGB copy,
+# H.264 at 8 bits, until 18 November 2026: nothing used it, as edit.py makes the demo's sRGB videos from
+# the masters.)
 VIDEOS = {
     "": ("display-p3", 10, ["-c:v", "libx265", "-preset", "slow", "-crf", "12", "-tag:v", "hvc1",
                             "-x265-params", "log-level=error:lookahead-slices=0:colorprim=smpte432:transfer=iec61966-2-1:colormatrix=bt709:range=limited:chromaloc=0"]),
-    "-srgb": ("srgb", 8, ["-c:v", "libx264", "-preset", "slow", "-crf", "16", "-profile:v", "high",
-                          "-x264-params", "colorprim=bt709:transfer=iec61966-2-1:colormatrix=bt709:range=tv:chromaloc=0"]),
 }
 
 
@@ -701,9 +725,9 @@ def ffmpeg(path, camera, fps, space, bits, settings):
 _shot = None
 
 
-def _open(scene, folder):
+def _open(scene, folder, cache):
     global _shot
-    _shot = Shot(scene, folder)
+    _shot = Shot(scene, folder, cache)
 
 
 def _render(task):
@@ -719,40 +743,70 @@ def _render(task):
     return videos
 
 
+class Repeats:
+    """Which frames of a video are made of the same as the one before: the same recorded frame (its PNG,
+    byte for byte), the same record in the log but for what nothing here draws from (its number and time,
+    the time of day and clock time, the calls the app made), and the same view in each pane. Such a frame
+    comes out the same as the one before, byte for byte, so it's that one's picture again. 9–40% of a
+    shot's frames were, where nothing moves: before and after a drag, on a hold."""
+
+    UNDRAWN = {"frame", "time", "timeOfDay", "clockTime", "calls"}
+
+    def __init__(self, shot):
+        self.shot = shot
+        self.records = [json.dumps({k: v for k, v in record.items() if k not in self.UNDRAWN}, sort_keys=True) for record in shot.log["frames"]]
+        self.pictures = [hashlib.sha256((shot.folder / "frames" / f"{frame:04d}.png").read_bytes()).digest() for frame in range(shot.count)]
+
+    def same_as_before(self, cameras, frame):
+        if frame == 0 or self.records[frame] != self.records[frame - 1] or self.pictures[frame] != self.pictures[frame - 1]:
+            return False
+        return all(camera.view(frame / self.shot.fps) == camera.view((frame - 1) / self.shot.fps) for camera in cameras)
+
+
 def compose(scene, folder, workers):
-    shot = Shot(scene, folder)
-    videos = [Camera.all(name, spec, shot.stage.bounds) for name, spec in shot.scene["camera"].items()]
-    stills = {0, shot.count // 2, shot.count - 1} | set(shot.scene.get("stills", []))
-    (shot.folder / "stills").mkdir(exist_ok=True)
-    with multiprocessing.get_context("spawn").Pool(workers, _open, (scene, folder)) as pool:
-        for cameras in videos:
-            camera = cameras[0]
-            name = camera.name.replace(":", "x")
-            encoders = {suffix: ffmpeg(shot.folder / f"{scene}-{name}{suffix}.mp4", camera, shot.fps, space, bits, settings)
-                        for suffix, (space, bits, settings) in VIDEOS.items()}
+    # The pictures every frame is made from, made here once and shared by the workers (Shot.kept)
+    with tempfile.TemporaryDirectory(prefix=f"compose-{scene}-") as cache:
+        shot = Shot(scene, folder, cache)
+        videos = [Camera.all(name, spec, shot.stage.bounds) for name, spec in shot.scene["camera"].items()]
+        stills = {0, shot.count // 2, shot.count - 1} | set(shot.scene.get("stills", []))
+        (shot.folder / "stills").mkdir(exist_ok=True)
+        repeats = Repeats(shot)
+        with multiprocessing.get_context("spawn").Pool(workers, _open, (scene, folder, cache)) as pool:
+            for cameras in videos:
+                camera = cameras[0]
+                name = camera.name.replace(":", "x")
+                encoders = {suffix: ffmpeg(shot.folder / f"{scene}-{name}{suffix}.mp4", camera, shot.fps, space, bits, settings)
+                            for suffix, (space, bits, settings) in VIDEOS.items()}
 
-            def write(frame, videos):
-                for suffix, encoder in encoders.items():
-                    encoder.stdin.write(videos[suffix])
-                if "still" in videos:
-                    pipeline.save(str(shot.folder / "stills" / f"{name}-{frame:04d}.png"), videos["still"])
-                print(f"\r{name}: {frame + 1}/{shot.count}", end="", flush=True)
+                def write(frame, videos):
+                    for suffix, encoder in encoders.items():
+                        encoder.stdin.write(videos[suffix])
+                    if frame in stills:
+                        pipeline.save(str(shot.folder / "stills" / f"{name}-{frame:04d}.png"), videos["still"])
+                    print(f"\r{name}: {frame + 1}/{shot.count}", end="", flush=True)
 
-            # Written in order, with only so many frames waiting at once
-            waiting = collections.deque()
-            for frame in range(shot.count):
-                waiting.append((frame, pool.apply_async(_render, ((cameras, frame, frame in stills),))))
-                if len(waiting) > 2 * workers:
+                # Written in order, with only so many frames waiting at once; a frame that's the same as the
+                # one before is that one's picture again (but a still is made, for its P3 values)
+                waiting = collections.deque()
+                made = 0
+                for frame in range(shot.count):
+                    if waiting and frame not in stills and repeats.same_as_before(cameras, frame):
+                        waiting.append((frame, waiting[-1][1]))
+                    else:
+                        waiting.append((frame, pool.apply_async(_render, ((cameras, frame, frame in stills),))))
+                        made += 1
+                    if len(waiting) > 2 * workers:
+                        done, result = waiting.popleft()
+                        write(done, result.get())
+                while waiting:
                     done, result = waiting.popleft()
                     write(done, result.get())
-            while waiting:
-                done, result = waiting.popleft()
-                write(done, result.get())
-            for suffix, encoder in encoders.items():
-                encoder.stdin.close()
-                if encoder.wait() != 0:
-                    raise SystemExit(f"ffmpeg couldn't encode {scene}-{name}{suffix}.mp4")
-            print(f"\r{name}: {', '.join(f'{scene}-{name}{suffix}.mp4' for suffix in VIDEOS)}")
+                for suffix, encoder in encoders.items():
+                    encoder.stdin.close()
+                    if encoder.wait() != 0:
+                        raise SystemExit(f"ffmpeg couldn't encode {scene}-{name}{suffix}.mp4")
+                print(f"\r{name}: {', '.join(f'{scene}-{name}{suffix}.mp4' for suffix in VIDEOS)}, "
+                      f"{shot.count - made} of its {shot.count} frames the same as the one before")
 
 
 # --- Checks ---------------------------------------------------------------------------------------
@@ -841,11 +895,7 @@ def verify(scene, folder):
         for suffix, (space, bits, _) in VIDEOS.items():
             path = shot.folder / f"{scene}-{name}{suffix}.mp4"
             for frame, decoded in decode(path, shot.count, {0, shot.count // 2, shot.count - 1}):
-                made = pipeline.to_video(film(shot, camera, frame), shot.display, "display-p3", 16).astype(np.float64) / 65535
-                if space == "srgb":
-                    # Clipped to sRGB first, as that copy is
-                    srgb = pipeline.to_video(film(shot, camera, frame), shot.display, "srgb", 16).astype(np.float64) / 65535
-                    made = pipeline.cg_convert(srgb, bytes(Quartz.CGColorSpaceCopyICCData(Quartz.CGColorSpaceCreateWithName(Quartz.kCGColorSpaceSRGB))), P3)
+                made = pipeline.to_video(film(shot, camera, frame), shot.display, space, 16).astype(np.float64) / 65535
                 report(f"{path.name} frame {frame}", np.round(decoded * 255), np.round(np.clip(made, 0, 1) * 255))
 
 

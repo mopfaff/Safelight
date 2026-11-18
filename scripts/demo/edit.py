@@ -19,11 +19,10 @@
 # Each platform's colours, as found on 4 November 2026, not assumed:
 #   youtube  YouTube's upload settings (support.google.com/youtube/answer/1722171) want SDR in BT.709 and
 #            convert anything else themselves; a wide gamut only comes as HDR (BT.2020 with PQ or HLG). So the
-#            P3 values are matched to sRGB's primaries here, the deepest reds clipped as compose.py's -srgb
-#            copies are, and tagged BT.709 all through. Their curve is sRGB's: Chromium shows BT.709's tone
-#            curve and sRGB's alike (a grey of 128 drawn as 128 either way, tried with tagged videos), and
-#            tagged with sRGB's curve, YouTube would re-encode them to BT.709's, which Chromium then shows
-#            darker. 60 fps H.264 as YouTube asks: High profile, a closed GOP of half the frame rate, 2 B-frames
+#            P3 values are matched to sRGB's primaries here, the deepest reds clipped, and tagged BT.709 all
+#            through. Their curve is sRGB's: Chromium shows BT.709's tone curve and sRGB's alike (a grey of
+#            128 drawn as 128 either way, tried with tagged videos), and tagged with sRGB's curve, YouTube
+#            would re-encode them to BT.709's, which Chromium then shows darker. 60 fps H.264 as YouTube asks: High profile, a closed GOP of half the frame rate, 2 B-frames
 #            in a row, no edit lists, the index at the front, and a silent sound track to add music to.
 #   x        X's media guide (docs.x.com/x-api/media/quickstart/best-practices) says nothing about colour: it
 #            gets the same as YouTube. H.264 High, 4:2:0, no open GOP, 60 fps, with a silent AAC track.
