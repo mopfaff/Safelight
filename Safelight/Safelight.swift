@@ -3198,13 +3198,14 @@ struct ScheduleEditor: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: layout.boxSpacing) {
-                // Night Shift's choice of schedule, without its Off, which is the switch in the menu bar's popover
+                // Night Shift's choice of schedule, without its Off, which is the switch in the menu bar's
+                // popover, and with names of its own (SystemStrings.timeOfDay says why)
                 HStack {
                     Text(SystemStrings.schedule)
                     Spacer()
                     Picker(SystemStrings.schedule, selection: $controller.followsSun) {
-                        Text(SystemStrings.customSchedule).tag(false)
-                        Text(SystemStrings.sunsetToSunrise).tag(true)
+                        Text(SystemStrings.timeOfDay).tag(false)
+                        Text(SystemStrings.sunriseAndSunset).tag(true)
                             .disabled(!controller.hasSunTimes && !controller.followsSun)
                     }
                     .labelsHidden()
@@ -4360,8 +4361,9 @@ class ColorController: ObservableObject {
     private static let scheduleDefaultsKey = "schedule"
 
     /// Whether the Schedule's keyframes come at times before or after sunrise and sunset, which move
-    /// through the year (Night Shift's Sunset to Sunrise), rather than at their own times (Custom). The
-    /// keyframes keep both, so each schedule is as it was when it's chosen again. Saved as it's changed.
+    /// through the year (Sunrise and Sunset, like Night Shift's Sunset to Sunrise), rather than at clock
+    /// times (Time of Day). The keyframes keep both, so each schedule is as it was when it's chosen
+    /// again. Saved as it's changed.
     @Published var followsSun: Bool = UserDefaults.standard.bool(forKey: ColorController.followsSunDefaultsKey) {
         didSet {
             UserDefaults.standard.set(followsSun, forKey: Self.followsSunDefaultsKey)
@@ -4385,7 +4387,7 @@ class ColorController: ObservableObject {
         }
     }
     /// Whether Night Shift has sunrise and sunset for today, which it hasn't while location for time
-    /// zone is off. Without them, Sunset to Sunrise can't be chosen.
+    /// zone is off. Without them, Sunrise and Sunset can't be chosen.
     @Published private(set) var hasSunTimes = SunTimes.today() != nil
     private static let sunTimesDefaultsKey = "sunTimes"
 
@@ -5072,7 +5074,7 @@ struct ColorKeyframe: Identifiable, Codable, Equatable {
     var displayBrightness: [String: Float] = [:]
     var isDarkAppearance: Bool
     /// When the keyframe comes while the Schedule follows the sun, once it's been set. Until then it's
-    /// `effectiveSunTime`, and `minute` is kept for the Custom schedule either way.
+    /// `effectiveSunTime`, and `minute` is kept for the Time of Day schedule either way.
     var sunTime: SunTime? = nil
 
     /// When the keyframe comes while the Schedule follows the sun: the time set for it, or until one is,
@@ -11102,11 +11104,17 @@ enum SystemStrings {
     static let brightness = lookup("Brightness", in: displaysSettings, english: "Brightness")
     static let schedule = lookup("Schedule", in: displaysSettings, english: "Schedule")
     static let customize = lookup("Customize…", in: displaysSettings, english: "Customize…")
-    // Night Shift's schedules, and why it can't follow the sun
-    static let customSchedule = lookup("Custom", in: displaysSettings, english: "Custom")
-    static let sunsetToSunrise = lookup("Sunset to Sunrise", in: displaysSettings, english: "Sunset to Sunrise")
+    // Why Night Shift, and so the Schedule, can't follow the sun
     static let sunsetToSunriseNeedsLocation = lookup("Night Shift from sunset to sunrise requires location for time zone to be enabled.", in: displaysSettings,
                                                      english: "Night Shift from sunset to sunrise requires location for time zone to be enabled.")
+
+    // The Schedule's two kinds, named for what their times are set by: the clock, as in Shortcuts' Time
+    // of Day automation, or sunrise and sunset, in the Weather app's words. Night Shift's Custom and
+    // Sunset to Sunrise don't fit: both of Safelight's schedules are the user's own, and either one's
+    // times can be anywhere in the day.
+    static let timeOfDay = lookup("Time of Day", in: shortcuts, english: "Time of Day")
+    static let sunriseAndSunset = lookup("Sunrise and Sunset", in: weather, english: "Sunrise and Sunset")
+    private static let weather = "/System/Applications/Weather.app"
 
     // Shortcuts' Sunrise and Sunset automations: the two, and being at them, with the Home app's wording
     // for so long before or after them
