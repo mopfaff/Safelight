@@ -3199,20 +3199,23 @@ struct ScheduleEditor: View {
         ScrollView {
             VStack(alignment: .leading, spacing: layout.boxSpacing) {
                 // Night Shift's choice of schedule, without its Off, which is the switch in the menu bar's
-                // popover, and with names of its own (SystemStrings.timeOfDay says why)
-                HStack {
-                    Text(SystemStrings.schedule)
-                    Spacer()
-                    Picker(SystemStrings.schedule, selection: $controller.followsSun) {
-                        Text(SystemStrings.timeOfDay).tag(false)
-                        Text(SystemStrings.sunriseAndSunset).tag(true)
-                            .disabled(!controller.hasSunTimes && !controller.followsSun)
+                // popover, and with names of its own (SystemStrings.timeOfDay says why). Only in Debug
+                // builds set to have it choose for every keyframe, rather than each for itself.
+                if !controller.keyframesChooseSun {
+                    HStack {
+                        Text(SystemStrings.schedule)
+                        Spacer()
+                        Picker(SystemStrings.schedule, selection: $controller.followsSun) {
+                            Text(SystemStrings.timeOfDay).tag(false)
+                            Text(SystemStrings.sunriseAndSunset).tag(true)
+                                .disabled(!controller.hasSunTimes && !controller.followsSun)
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                        .help(controller.hasSunTimes ? "" : SystemStrings.sunsetToSunriseNeedsLocation)
                     }
-                    .labelsHidden()
-                    .fixedSize()
-                    .help(controller.hasSunTimes ? "" : SystemStrings.sunsetToSunriseNeedsLocation)
+                    .scheduleBox(padding: layout.boxPadding)
                 }
-                .scheduleBox(padding: layout.boxPadding)
 
                 if layout.showsDayPreview {
                     ScheduleDayView(schedule: controller.todaysSchedule, displays: brightnessColumns, showsDisplayNames: layout.showsDisplayNames,
@@ -3259,12 +3262,16 @@ struct ScheduleEditor: View {
                             .gridCellUnsizedAxes(.horizontal)
 
                         GridRow {
-                            // Following the sun, the time it comes at today, and when that is in the year
+                            // The time it comes at today, and whether that's a clock time or when it is
+                            // in the year, so long before or after sunrise or sunset. While the Schedule
+                            // menu chooses, only the time following the sun has the menu.
                             HStack(spacing: 8) {
                                 TimeField(label: SystemStrings.time, selection: time(of: keyframe.id), isFocusedOnAppear: keyframe.id == addedKeyframeID)
                                     .environment(\.timeZone, Self.utc)
-                                if controller.followsSun {
-                                    SunTimeMenu(sunTime: keyframe.effectiveSunTime) { sunTime in
+                                if controller.keyframesChooseSun || controller.followsSun {
+                                    SunTimeMenu(sunTime: controller.keyframeFollowsSun(keyframe) ? keyframe.effectiveSunTime : nil,
+                                                offersTimeOfDay: controller.keyframesChooseSun,
+                                                canFollowSun: controller.hasSunTimes || !controller.keyframesChooseSun) { sunTime in
                                         withAnimation {
                                             controller.setSunTime(sunTime, ofKeyframe: keyframe.id)
                                         }
@@ -3371,12 +3378,18 @@ struct ScheduleEditor: View {
     }
 }
 
-/// When a keyframe comes while the Schedule follows the sun, as Shortcuts says it for its Sunrise and
-/// Sunset automations, and its choices of that: at sunrise or sunset, or so long before or after, each
-/// in a submenu of its own.
+/// When a keyframe comes, and its choices of that, as Shortcuts' Time of Day automation offers them
+/// (and Home's automations): at sunrise or sunset, or so long before or after, each in a submenu of its
+/// own, said the way Shortcuts says them, and after those, at a clock time, Time of Day.
 struct SunTimeMenu: View {
-    let sunTime: SunTime
-    let choose: (SunTime) -> Void
+    /// When the keyframe comes before or after sunrise or sunset, or nil if it's at a clock time
+    let sunTime: SunTime?
+    /// Whether Time of Day is a choice, which it isn't while the Schedule menu chooses for every keyframe
+    let offersTimeOfDay: Bool
+    /// Whether the times before and after sunrise and sunset can be chosen, which they can't while
+    /// Night Shift has no sunrise and sunset, unless the keyframe already comes at one of them
+    let canFollowSun: Bool
+    let choose: (SunTime?) -> Void
 
     var body: some View {
         Menu {
@@ -3387,11 +3400,16 @@ struct SunTimeMenu: View {
                         Toggle(SystemStrings.sunTime(choice), isOn: Binding(get: { sunTime == choice }, set: { _ in choose(choice) }))
                     }
                 }
+                .disabled(!canFollowSun && sunTime == nil)
+            }
+            if offersTimeOfDay {
+                Toggle(SystemStrings.timeOfDay, isOn: Binding(get: { sunTime == nil }, set: { _ in choose(nil) }))
             }
         } label: {
-            Text(SystemStrings.sunTime(sunTime))
+            Text(sunTime.map(SystemStrings.sunTime) ?? SystemStrings.timeOfDay)
         }
         .fixedSize()
+        .help(!canFollowSun && sunTime == nil ? SystemStrings.sunsetToSunriseNeedsLocation : "")
     }
 }
 
@@ -3774,9 +3792,19 @@ final class ScheduleLayoutTuner: ObservableObject {
 /// width or space it's named for, and the window grows and shrinks to fit.
 struct ScheduleLayoutPanel: View {
     @ObservedObject var tuner = ScheduleLayoutTuner.shared
+    @ObservedObject private var controller = ColorController.shared
 
     var body: some View {
         Form {
+            // Not part of the layout, so Restore Defaults and the templates leave it be
+            Section {
+                Picker("Clock or sun", selection: $controller.keyframesChooseSun) {
+                    Text("Each time chooses").tag(true)
+                    Text("Schedule menu chooses").tag(false)
+                }
+                .help("Whether each time has a menu of its own to choose between a clock time (Time of Day) and one before or after sunrise or sunset, as in release builds, or the Schedule menu at the top of the window chooses for every time, as it did before")
+            }
+
             Section {
                 Picker("Template", selection: template) {
                     ForEach(ScheduleLayout.templates, id: \.name) { template in
@@ -4362,8 +4390,9 @@ class ColorController: ObservableObject {
 
     /// Whether the Schedule's keyframes come at times before or after sunrise and sunset, which move
     /// through the year (Sunrise and Sunset, like Night Shift's Sunset to Sunrise), rather than at clock
-    /// times (Time of Day). The keyframes keep both, so each schedule is as it was when it's chosen
-    /// again. Saved as it's changed.
+    /// times (Time of Day), as the Schedule menu had it before each keyframe chose for itself. The
+    /// keyframes keep both, so each schedule is as it was when it's chosen again. A keyframe that hasn't
+    /// chosen yet still goes by it, so a schedule comes at the same times as it did. Saved as it's changed.
     @Published var followsSun: Bool = UserDefaults.standard.bool(forKey: ColorController.followsSunDefaultsKey) {
         didSet {
             UserDefaults.standard.set(followsSun, forKey: Self.followsSunDefaultsKey)
@@ -4373,6 +4402,30 @@ class ColorController: ObservableObject {
     }
     private static let followsSunDefaultsKey = "scheduleFollowsSun"
 
+    #if DEBUG
+    /// Whether each keyframe chooses for itself between a clock time and one before or after sunrise or
+    /// sunset, as it does in release builds, or the Schedule menu chooses for all of them, as it did
+    /// before. The Schedule Layout panel switches it, and it's kept between launches.
+    @Published var keyframesChooseSun: Bool = UserDefaults.standard.object(forKey: ColorController.keyframesChooseSunDefaultsKey) as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(keyframesChooseSun, forKey: Self.keyframesChooseSunDefaultsKey)
+            schedule.sort(by: isInTimeOrder)
+            applyAutoSettings()
+        }
+    }
+    private static let keyframesChooseSunDefaultsKey = "keyframesChooseSun"
+    #else
+    /// Whether each keyframe chooses for itself between a clock time and one before or after sunrise or
+    /// sunset, rather than the Schedule menu choosing for all of them (which Debug builds can switch to)
+    let keyframesChooseSun = true
+    #endif
+
+    /// Whether a keyframe comes at a time before or after sunrise or sunset, rather than a clock time:
+    /// its own choice, or until it's made one, or while the Schedule menu chooses, the Schedule menu's
+    func keyframeFollowsSun(_ keyframe: ColorKeyframe) -> Bool {
+        keyframesChooseSun ? keyframe.followsSun ?? followsSun : followsSun
+    }
+
     /// Today's sunrise and sunset as Night Shift has them, or while it has none, the last ones it had
     /// (nil if it's never had any).
     @Published private(set) var sunTimes: SunTimes? = SunTimes.today() ?? ColorController.savedSunTimes {
@@ -4380,14 +4433,14 @@ class ColorController: ObservableObject {
             if let data = try? JSONEncoder().encode(sunTimes) {
                 UserDefaults.standard.set(data, forKey: Self.sunTimesDefaultsKey)
             }
-            if followsSun {
+            if schedule.contains(where: keyframeFollowsSun) {
                 schedule.sort(by: isInTimeOrder)
                 applyAutoSettings()
             }
         }
     }
     /// Whether Night Shift has sunrise and sunset for today, which it hasn't while location for time
-    /// zone is off. Without them, Sunrise and Sunset can't be chosen.
+    /// zone is off. Without them, times before or after sunrise and sunset can't be chosen.
     @Published private(set) var hasSunTimes = SunTimes.today() != nil
     private static let sunTimesDefaultsKey = "sunTimes"
 
@@ -4403,15 +4456,15 @@ class ColorController: ObservableObject {
         if let today, today != sunTimes { sunTimes = today }
     }
 
-    /// The minute of the day a keyframe comes at today: its own, or while the Schedule follows the sun,
-    /// so long before or after today's sunrise or sunset
+    /// The minute of the day a keyframe comes at today: its own, or if it follows the sun, so long before
+    /// or after today's sunrise or sunset
     func minute(of keyframe: ColorKeyframe) -> Int {
-        followsSun ? keyframe.effectiveSunTime.minute(in: sunTimes ?? .nominal) : keyframe.minute
+        keyframeFollowsSun(keyframe) ? keyframe.effectiveSunTime.minute(in: sunTimes ?? .nominal) : keyframe.minute
     }
 
     /// The schedule as it runs today, its keyframes at the minutes `minute(of:)` gives them
     var todaysSchedule: [ColorKeyframe] {
-        guard followsSun else { return schedule }
+        guard schedule.contains(where: keyframeFollowsSun) else { return schedule }
         return schedule.map { keyframe in
             var keyframe = keyframe
             keyframe.minute = minute(of: keyframe)
@@ -4531,8 +4584,8 @@ class ColorController: ObservableObject {
         // Which also asks the external monitors for their brightness
         updateBrightness()
 
-        // Loaded in the order of their own times, the keyframes come in today's order while they follow the sun
-        if followsSun {
+        // Loaded in the order of their own times, the keyframes come in today's order while any follow the sun
+        if schedule.contains(where: keyframeFollowsSun) {
             schedule.sort(by: isInTimeOrder)
         }
     }
@@ -4753,8 +4806,9 @@ class ColorController: ObservableObject {
     }
 
     /// Adds a keyframe at the next free half hour, set to what the schedule already has there, and returns
-    /// its ID. While the Schedule follows the sun, it's so long before or after whichever of today's
-    /// sunrise and sunset is nearer.
+    /// its ID. If it follows the sun, it's so long before or after whichever of today's sunrise and sunset
+    /// is nearer. It does if the Schedule menu says so, or while each keyframe chooses, if the one it
+    /// comes after does, as it carries on from that one.
     @discardableResult
     func addKeyframe() -> ColorKeyframe.ID {
         let now = Calendar.current.dateComponents([.hour, .minute], from: Date())
@@ -4765,6 +4819,8 @@ class ColorController: ObservableObject {
 
         let settings = ColorKeyframe.settings(in: todaysSchedule, at: Double(minute))
             ?? ColorKeyframe.Settings(intensity: isColorFilterOn ? intensity : 0, tint: tint, brightness: brightness, displayBrightness: displayBrightness, isDarkAppearance: isDarkAppearance)
+        // The keyframe before it in today's order, which may be the last one, before midnight
+        let followsSun = (todaysSchedule.last { $0.minute < minute } ?? todaysSchedule.last).map(keyframeFollowsSun) ?? self.followsSun
         let keyframe = ColorKeyframe(
             minute: minute,
             isColorFilterOn: settings.isColorFilterOn,
@@ -4773,7 +4829,8 @@ class ColorController: ObservableObject {
             brightness: settings.brightness,
             displayBrightness: settings.displayBrightness,
             isDarkAppearance: settings.isDarkAppearance,
-            sunTime: followsSun ? SunTime(nearestTo: minute, in: sunTimes ?? .nominal) : nil
+            sunTime: followsSun ? SunTime(nearestTo: minute, in: sunTimes ?? .nominal) : nil,
+            followsSun: keyframesChooseSun ? followsSun : nil
         )
         schedule.append(keyframe)
         return keyframe.id
@@ -4785,13 +4842,13 @@ class ColorController: ObservableObject {
         schedule.removeAll { $0.id == id }
     }
 
-    /// Sets a keyframe's time: its own, or while the Schedule follows the sun, the time it comes at today,
-    /// as so long before or after the sunrise or sunset it follows. Setting the same keyframe's time again
-    /// straight after is undone with it.
+    /// Sets a keyframe's time: its own, or if it follows the sun, the time it comes at today, as so long
+    /// before or after the sunrise or sunset it follows. Setting the same keyframe's time again straight
+    /// after is undone with it.
     func setMinute(_ minute: Int, ofKeyframe id: ColorKeyframe.ID) {
         guard let index = schedule.firstIndex(where: { $0.id == id }) else { return }
         timeEdit = .time(id)
-        if followsSun {
+        if keyframeFollowsSun(schedule[index]) {
             let sunTime = schedule[index].effectiveSunTime.moved(to: minute, in: sunTimes ?? .nominal)
             if sunTime != schedule[index].effectiveSunTime { schedule[index].sunTime = sunTime }
         } else {
@@ -4800,11 +4857,23 @@ class ColorController: ObservableObject {
         timeEdit = nil
     }
 
-    /// Sets the time a keyframe comes at while the Schedule follows the sun, as a change to undo by itself.
-    func setSunTime(_ sunTime: SunTime, ofKeyframe id: ColorKeyframe.ID) {
-        guard let index = schedule.firstIndex(where: { $0.id == id }), sunTime != schedule[index].effectiveSunTime else { return }
+    /// Makes a keyframe come so long before or after sunrise or sunset, or with nil, at a clock time,
+    /// which is the time it comes at today, so it stays where it is. Only a keyframe that chooses for
+    /// itself can be given a clock time. A change to undo by itself.
+    func setSunTime(_ sunTime: SunTime?, ofKeyframe id: ColorKeyframe.ID) {
+        guard let index = schedule.firstIndex(where: { $0.id == id }) else { return }
+        var keyframe = schedule[index]
+        if let sunTime {
+            guard sunTime != keyframe.effectiveSunTime || !keyframeFollowsSun(keyframe) else { return }
+            keyframe.sunTime = sunTime
+            if keyframesChooseSun { keyframe.followsSun = true }
+        } else {
+            guard keyframesChooseSun, keyframeFollowsSun(keyframe) else { return }
+            keyframe.minute = minute(of: keyframe)
+            keyframe.followsSun = false
+        }
         endScheduleEdit()
-        schedule[index].sunTime = sunTime
+        schedule[index] = keyframe
         endScheduleEdit()
     }
 
@@ -5073,11 +5142,15 @@ struct ColorKeyframe: Identifiable, Codable, Equatable {
     /// independently. Kept while they aren't, for when they are again.
     var displayBrightness: [String: Float] = [:]
     var isDarkAppearance: Bool
-    /// When the keyframe comes while the Schedule follows the sun, once it's been set. Until then it's
-    /// `effectiveSunTime`, and `minute` is kept for the Time of Day schedule either way.
+    /// When the keyframe comes while it follows the sun, once it's been set. Until then it's
+    /// `effectiveSunTime`, and `minute` is kept for a clock time either way.
     var sunTime: SunTime? = nil
+    /// Whether the keyframe comes at `sunTime` rather than at `minute`, once it's chosen one of them for
+    /// itself. Until then it goes by the Schedule menu, as it did before each keyframe chose
+    /// (`ColorController.keyframeFollowsSun(_:)`).
+    var followsSun: Bool? = nil
 
-    /// When the keyframe comes while the Schedule follows the sun: the time set for it, or until one is,
+    /// When the keyframe comes while it follows the sun: the time set for it, or until one is,
     /// the one of sunrise and sunset its own time is nearer to on a day with them at 6:00 and 18:00, as in
     /// the default schedule, and how long before or after it
     var effectiveSunTime: SunTime {
@@ -5167,7 +5240,8 @@ struct ColorKeyframe: Identifiable, Codable, Equatable {
 
 extension ColorKeyframe {
     /// Keyframes saved before they had an appearance come back Dark where the color filter is on, as
-    /// in the default schedule, and ones saved before displays had a brightness each come back without.
+    /// in the default schedule, ones saved before displays had a brightness each come back without, and
+    /// ones saved before each chose between a clock time and the sun go by the Schedule menu.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -5179,6 +5253,7 @@ extension ColorKeyframe {
         displayBrightness = try container.decodeIfPresent([String: Float].self, forKey: .displayBrightness) ?? [:]
         isDarkAppearance = try container.decodeIfPresent(Bool.self, forKey: .isDarkAppearance) ?? isColorFilterOn
         sunTime = try container.decodeIfPresent(SunTime.self, forKey: .sunTime)
+        followsSun = try container.decodeIfPresent(Bool.self, forKey: .followsSun)
     }
 }
 
@@ -11108,10 +11183,11 @@ enum SystemStrings {
     static let sunsetToSunriseNeedsLocation = lookup("Night Shift from sunset to sunrise requires location for time zone to be enabled.", in: displaysSettings,
                                                      english: "Night Shift from sunset to sunrise requires location for time zone to be enabled.")
 
-    // The Schedule's two kinds, named for what their times are set by: the clock, as in Shortcuts' Time
-    // of Day automation, or sunrise and sunset, in the Weather app's words. Night Shift's Custom and
-    // Sunset to Sunrise don't fit: both of Safelight's schedules are the user's own, and either one's
-    // times can be anywhere in the day.
+    // The two kinds of time a keyframe can come at, named for what sets them: the clock, as in
+    // Shortcuts' Time of Day automation, which offers it after Sunrise and Sunset, as each keyframe's
+    // menu does, or sunrise and sunset, in the Weather app's words, for the Schedule menu that Debug
+    // builds can have choose for every keyframe instead. Night Shift's Custom and Sunset to Sunrise don't
+    // fit: both kinds are the user's own times, and either can be anywhere in the day.
     static let timeOfDay = lookup("Time of Day", in: shortcuts, english: "Time of Day")
     static let sunriseAndSunset = lookup("Sunrise and Sunset", in: weather, english: "Sunrise and Sunset")
     private static let weather = "/System/Applications/Weather.app"
