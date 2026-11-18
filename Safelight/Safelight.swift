@@ -117,15 +117,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         #if canImport(Sparkle)
         items += updates.menuItems
         #endif
+        let combinedBrightness = NSMenuItem(title: "Dim Below Lowest Backlight", action: #selector(toggleCombinedBrightness(_:)), keyEquivalent: "")
+        combinedBrightness.target = self
+        combinedBrightness.state = ColorController.shared.dimsBelowBacklight ? .on : .off
+        items += [.separator(), combinedBrightness]
         #if DEBUG
         let scheduleLayout = NSMenuItem(title: "Schedule Layout…", action: #selector(showScheduleLayout(_:)), keyEquivalent: "")
         scheduleLayout.target = self
         let controlColors = NSMenuItem(title: "Control Colours…", action: #selector(showControlColors(_:)), keyEquivalent: "")
         controlColors.target = self
-        let combinedBrightness = NSMenuItem(title: "Dim Below Lowest Backlight", action: #selector(toggleCombinedBrightness(_:)), keyEquivalent: "")
-        combinedBrightness.target = self
-        combinedBrightness.state = ColorController.shared.dimsBelowBacklight ? .on : .off
-        items += [.separator(), scheduleLayout, controlColors, combinedBrightness]
+        items += [.separator(), scheduleLayout, controlColors]
         #endif
         let quit = NSMenuItem(title: SystemStrings.quitApp, action: #selector(quit(_:)), keyEquivalent: "q")
         quit.target = self
@@ -194,13 +195,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if !self.popover.isShown { self.togglePopover(nil) }
         }
     }
+    #endif
 
     /// Whether a display whose backlight is set is dimmed in software below its lowest backlight, or set
-    /// by its backlight alone, as before
+    /// by its backlight alone
     @objc private func toggleCombinedBrightness(_ sender: NSMenuItem) {
         ColorController.shared.dimsBelowBacklight.toggle()
     }
-    #endif
 
     @objc func quit(_ sender: Any?) {
         ColorController.shared.resetForQuitting()
@@ -4256,10 +4257,9 @@ class ColorController: ObservableObject {
     @Published private(set) var monitorsWithBacklight: Set<CGDirectDisplayID> = []
 
     /// Whether a display whose backlight is set, by the Mac or over DDC, goes darker than its backlight
-    /// allows, its slider's bottom quarter dimming its picture in software (`CombinedBrightness`). Debug
-    /// builds can turn it off in the status item's menu, to compare it with the backlight alone. Saved
-    /// as it's changed.
-    #if DEBUG
+    /// allows, its slider's bottom quarter dimming its picture in software (`CombinedBrightness`). Turned
+    /// off in the status item's menu, Dim Below Lowest Backlight, for the backlight alone. Saved as it's
+    /// changed.
     @Published var dimsBelowBacklight = UserDefaults.standard.object(forKey: ColorController.dimsBelowBacklightDefaultsKey) as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(dimsBelowBacklight, forKey: Self.dimsBelowBacklightDefaultsKey)
@@ -4271,9 +4271,6 @@ class ColorController: ObservableObject {
         }
     }
     private static let dimsBelowBacklightDefaultsKey = "dimsBelowBacklight"
-    #else
-    let dimsBelowBacklight = true
-    #endif
 
     /// Whether the Brightness slider for `display`, or for every display if it's nil, has a tick mark
     /// where a display's backlight is at its lowest
