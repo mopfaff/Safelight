@@ -4404,9 +4404,9 @@ class ColorController: ObservableObject {
 
     #if DEBUG
     /// Whether each keyframe chooses for itself between a clock time and one before or after sunrise or
-    /// sunset, as it does in release builds, or the Schedule menu chooses for all of them, as it did
-    /// before. The Schedule Layout panel switches it, and it's kept between launches.
-    @Published var keyframesChooseSun: Bool = UserDefaults.standard.object(forKey: ColorController.keyframesChooseSunDefaultsKey) as? Bool ?? true {
+    /// sunset, or the Schedule menu chooses for all of them, as it does in release builds. The Schedule
+    /// Layout panel switches it, and it's kept between launches.
+    @Published var keyframesChooseSun: Bool = UserDefaults.standard.object(forKey: ColorController.keyframesChooseSunDefaultsKey) as? Bool ?? false {
         didSet {
             UserDefaults.standard.set(keyframesChooseSun, forKey: Self.keyframesChooseSunDefaultsKey)
             schedule.sort(by: isInTimeOrder)
@@ -4416,8 +4416,8 @@ class ColorController: ObservableObject {
     private static let keyframesChooseSunDefaultsKey = "keyframesChooseSun"
     #else
     /// Whether each keyframe chooses for itself between a clock time and one before or after sunrise or
-    /// sunset, rather than the Schedule menu choosing for all of them (which Debug builds can switch to)
-    let keyframesChooseSun = true
+    /// sunset (which Debug builds can switch to), rather than the Schedule menu choosing for all of them
+    let keyframesChooseSun = false
     #endif
 
     /// Whether a keyframe comes at a time before or after sunrise or sunset, rather than a clock time:
