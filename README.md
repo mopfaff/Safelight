@@ -6,6 +6,8 @@
 
 Safelight puts your Mac's color filter, brightness and Light/Dark appearance on one schedule. Choose how the screen should look at a few times of day, and Safelight fades from one to the next: plain white through the afternoon, warmer and dimmer after sunset, deep red late at night, and back again in the morning.
 
+https://github.com/user-attachments/assets/266fc8e3-2c11-443f-8694-d482cc3f3d2e
+
 It lives in the menu bar.
 
 <p align="center">
