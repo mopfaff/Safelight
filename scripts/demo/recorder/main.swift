@@ -10,7 +10,8 @@ import Metal
 // glass and all, into a PNG with the pointer drawn over it. Meanwhile every clock the main thread reads
 // gives the scene's time (Interposers.c), as AppKit's gestures, which move the knob's glass as it's
 // dragged, time the mouse events by it, and work the main thread puts on the main queue runs when the
-// scene's time reaches it. So the same scene gives the same frames byte for byte. When the scene changes
+// scene's time reaches it, and SwiftUI's own time, which it draws a slider's knob by, is the same as every
+// shot begins (`SwiftUITime`). So the same scene gives the same frames byte for byte. When the scene changes
 // the appearance, the app does it as on the Mac, and macOS's part is played as AppearanceTransition.swift
 // has it, which the log says frame by frame for scripts/demo/compose.py to draw. AppKit's switches, which
 // SwiftUI draws in hosting views of AppKit's own, are moved on a frame at a time as well
@@ -208,6 +209,58 @@ enum SwitchAnimations {
             rendered += 1
         }
         return view.subviews.reduce(rendered) { $0 + render(in: $1, interval: interval) }
+    }
+}
+
+/// SwiftUI's own time in the popover's hosting view, which its animations run on, and the lifted glass
+/// of a slider's knob as it follows a drag. `_renderForTest(interval:)` moves it on by the interval, but
+/// from wherever it had got to while the popover opened, by the real clock: 0.12 to 0.16 seconds, and
+/// over a second at a background priority. And how a held knob is drawn depends on that time itself, not
+/// only on how much of it has passed: from the frame it passes 8 seconds at, the knob follows a little
+/// differently, by up to half a point (and shots begun at 8, 16 and 32 seconds each gave another
+/// recording again, so likely at every power of two). With the five seconds the popover was given to
+/// settle, a shot began at 5.12 to 5.16 seconds and SwiftUI's time passed 8 seconds two to three seconds
+/// in, a frame or three earlier or later by how long the popover had taken to open: by the frame
+/// color-filter's Intensity knob left the tick mark it had stuck on in one recording, two frames after it
+/// in the next, and the knob was drawn differently from there on (2026-11-19: a recording begun at 5.1667
+/// seconds was one of the two outcomes byte for byte, one begun at 5.1333 the other, and every start from
+/// 8.000 to 8.5, where no such time is passed during the drag, gave one and the same recording). So the
+/// popover settles until its time is `start` exactly, and every shot begins at the same time.
+enum SwiftUITime {
+    /// SwiftUI's time in the popover as a shot begins, in seconds: within what it used to be, so a shot
+    /// is recorded as it was (the frames of brightness, two-displays, opening, appearance and schedule are
+    /// what they were before, byte for byte). Another time moves the frame a held knob changes its ways
+    /// at: 6 seconds, 52 frames earlier in every scene.
+    static let start = 5.125
+
+    /// The time in a hosting view, in seconds: its `currentTimestamp`, which SwiftUI keeps to itself
+    static func seconds(in host: NSView) -> Double? {
+        var mirror: Mirror? = Mirror(reflecting: host)
+        while let level = mirror {
+            if let time = level.children.first(where: { $0.label == "currentTimestamp" })?.value {
+                return Mirror(reflecting: time).children.first { $0.label == "seconds" }?.value as? Double
+            }
+            mirror = level.superclassMirror
+        }
+        return nil
+    }
+
+    /// Has SwiftUI draw `host` a second later at a time, and at last by what's left, until its time is
+    /// `time` seconds exactly, with `alongside` after each for what else is drawn by the same interval.
+    /// The last interval is less than half the time it leads to, so the sum is that time to the last digit.
+    static func settle<Content: View>(_ host: NSHostingView<Content>, at time: Double, alongside: (Double) -> Void = { _ in }) {
+        host._renderForTest(interval: 0)
+        for _ in 0..<64 {
+            guard let now = seconds(in: host) else { fail("Couldn't read SwiftUI's time in the popover (NSHostingView's currentTimestamp), which a shot has to begin at \(time) seconds of") }
+            if now == time { return }
+            guard now < time else {
+                fail("SwiftUI's time in the popover is \(now) seconds as it's settled, past the \(time) a shot begins at: did the popover take seconds to open, or does SwiftUI draw more than once for _renderForTest?")
+            }
+            let interval = min(1, time - now)
+            host._renderForTest(interval: interval)
+            alongside(interval)
+        }
+        fail("SwiftUI's time in the popover doesn't get to \(time) seconds")
     }
 }
 
@@ -846,9 +899,9 @@ final class Recorder: NSObject, NSApplicationDelegate {
             pending.append((event, UInt64((timestamp * 1e9).rounded())))
         }
 
-        // Settled, with anything opening the popover set going over
-        host._renderForTest(interval: 0)
-        for _ in 0..<5 { host._renderForTest(interval: 1) }
+        // Settled, with anything opening the popover set going over, and at the time every shot begins at
+        let timeOpened = SwiftUITime.seconds(in: host)
+        SwiftUITime.settle(host, at: SwiftUITime.start)
         window.displayIfNeeded()
         if UserDefaults.standard.bool(forKey: "check") {
             return captureOverBackdrop(window: window, frameLayer: frameLayer, renderer: renderer, canvas: canvasSize, windowFrame: windowFrame, backdrop: backdrop,
@@ -889,12 +942,8 @@ final class Recorder: NSObject, NSApplicationDelegate {
             } else {
                 scene_clock_set(Self.clockNanoseconds(0))
                 controller.isAutoMode = true
-                // Settled, with the switch over and the sliders dimmed
-                host._renderForTest(interval: 0)
-                for _ in 0..<5 {
-                    host._renderForTest(interval: 1)
-                    SwitchAnimations.render(in: host, interval: 1)
-                }
+                // Settled, with the switch over and the sliders dimmed, five seconds on
+                SwiftUITime.settle(host, at: SwiftUITime.start + 5) { SwitchAnimations.render(in: host, interval: $0) }
                 window.displayIfNeeded()
                 guard controller.isAutoMode, !controller.isChangingAppearance, controller.isDarkAppearance == (appearance == "dark") else {
                     fail("The Schedule has the Mac in another appearance than the scene's as it begins")
@@ -1174,6 +1223,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
         RecorderApplication.isPressed = nil
         let mainQueueWork = scene_main_queue_work_run()
         let mainQueueLeft = scene_main_queue_release()
+        let (clockReadings, timeEnded) = (scene_clock_readings(), SwiftUITime.seconds(in: host))
 
         written.wait()
         let encoder = JSONEncoder()
@@ -1184,10 +1234,13 @@ final class Recorder: NSObject, NSApplicationDelegate {
             fail("Couldn't write the log: \(error)")
         }
         // The slider's knob would follow the real clock if the main thread weren't reading the scene's
-        guard scene_clock_readings() > 0 else { fail("Nothing read the scene's clock; see Interposers.c") }
+        guard clockReadings > 0 else { fail("Nothing read the scene's clock; see Interposers.c") }
         print("Recorded \(count) frames of \(renderer.width)×\(renderer.height) to \(frames.path)")
         print("The main queue's work: \(mainQueueWork) ran on the scene's clock, \(mainQueueLeft) still due as it ended")
         print("AppKit's switches drawn on the scene's clock: \(switchFrames) times")
+        // But for when the popover had opened, the same from one recording of a scene to the next, or
+        // something reads the clock by the real time
+        print("The scene's clock: read \(clockReadings) times on the main thread during the shot; SwiftUI's time: \(timeOpened ?? -1) seconds once the popover had opened, \(timeEnded ?? -1) as the shot ended")
         removeSettings()
         exit(0)
     }

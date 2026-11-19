@@ -45,16 +45,16 @@
 # appearance, so the Mac is left as it was, and scripts/screenshots/FixedTime.swift. The recorder opens
 # the popover invisibly and draws it off screen, so nothing shows and it never becomes the active app;
 # it needs a Retina display, as the frames are drawn at its scale. Nothing in a frame depends on the
-# time it's recorded at: SwiftUI runs on its clock for tests, and the main thread reads the scene's
-# time from every clock (recorder/Interposers.c), so the same scene on the same Mac gives the same
-# frames, byte for byte. Run at a background priority (taskpolicy -b), the knob's settling after a
-# drag came out a tenth of a point off, and with every core busy, about one recording in six took the
-# knob a tiny bit further from frame 172 of intensity-drag on (0.0004 of the way along), always the same
-# other way, so something there races with another thread; --verify finds that. Composing a recording
-# gives the same videos every time. The displays in the Brightness section are
-# this Mac's, and the scene's brightness is the one they start at. For a scene with "otherDisplays": true,
-# the Mac's other displays are drawn as well, each with its own desktop, and compose.py puts them beside
-# the popover's as they're arranged, each dimmed as it's dimmed.
+# time it's recorded at: SwiftUI runs on its clock for tests, from the same time as every shot begins
+# (recorder/main.swift, SwiftUITime), and the main thread reads the scene's time from every clock
+# (recorder/Interposers.c), so the same scene on the same Mac gives the same frames, byte for byte,
+# with the Mac idle or with every core busy; --verify makes a shot twice to check. (Until 2026-11-19
+# SwiftUI's time began wherever the real clock had left it as the popover opened, and a slider's knob
+# was drawn a little differently from one recording to the next: intensity-drag's from frame 170 on,
+# color-filter's from frame 128.) Composing a recording gives the same videos every time. The displays
+# in the Brightness section are this Mac's, and the scene's brightness is the one they start at. For a
+# scene with "otherDisplays": true, the Mac's other displays are drawn as well, each with its own
+# desktop, and compose.py puts them beside the popover's as they're arranged, each dimmed as it's dimmed.
 # The window server draws a shadow and rims round the popover's window, which the frames don't have.
 # For a scene on the desktop they're taken from the window server once for each appearance and size of
 # popover, and over each desktop it's on (each picture of the wallpaper the recording shows under it),
@@ -249,7 +249,7 @@ shoot() {
     rm -rf "$out.new"
     mkdir -p "$out.new"
     run "$SCENE_FILE" "$out.new" "$BUILD_DIR/$SCENE.log"
-    grep -E '^(Recorded|The main queue|AppKit)' "$BUILD_DIR/$SCENE.log"
+    grep -E '^(Recorded|The main queue|AppKit|The scene.s clock)' "$BUILD_DIR/$SCENE.log"
     if [[ "$ON_DESKTOP" == true ]] && (( !RECORD_ONLY )); then
         python3 scripts/demo/compose.py needs "$SCENE" --folder "$out.new" | while read -r appearance wallpaper independently; do
             windowServer "$SCENE_FILE" -appearance "$appearance" -wallpaperAppearance "$wallpaper" -adjustsDisplaysIndependently "$independently"

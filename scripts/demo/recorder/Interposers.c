@@ -8,7 +8,13 @@
 //   (Core Animation's transactions, AppKit's display cycle), so a knob followed a little differently
 //   whenever the frames came at another pace. Once the recorder has set the scene's time, every clock
 //   read on the main thread gives that, a tenth of a microsecond later for each read since, as time
-//   moves on while code runs. Other threads (writing PNGs, Metal) keep the real time.
+//   moves on while code runs. Other threads (writing PNGs, Metal) keep the real time. The allocator
+//   and libdispatch read the clock too, for their own housekeeping, a number of times that differs from
+//   one recording to the next (the allocator as it frees memory, 8700 to 10300 times in a recording of
+//   color-filter; libdispatch as Core Animation's Metal renderer sets a timer while it flushes, 395 to
+//   420 times): they're given the time as it is, without moving it on, or everything read after them
+//   would be given a time some tenths of a microsecond off, differently each recording. SwiftUI adds
+//   the time that passes on this clock between its layouts to its own, so that reached its animations.
 // - The popover's key appearance, kept from the window server. The window server lets one window at a
 //   time look key, across every app, so telling it the popover does (SLSTransactionSetWindowHasKeyAppearance)
 //   took that look from the user's own window, and clicking another window took it back from the
@@ -29,7 +35,10 @@
 #include <Block.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <dispatch/dispatch.h>
+#include <dlfcn.h>
+#include <mach-o/getsect.h>
 #include <mach/mach_time.h>
+#include <malloc/malloc.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -55,8 +64,11 @@ static uint64_t readsSinceSet = 0;
 static unsigned long readings = 0;
 static mach_timebase_info_data_t timebase;
 
+static void findHousekeeping(void);
+
 void scene_clock_set(uint64_t nanoseconds) {
     if (!timebase.denom) mach_timebase_info(&timebase);
+    if (!isSet) findHousekeeping();
     sceneTime = nanoseconds;
     readsSinceSet = 0;
     isSet = true;
@@ -66,13 +78,38 @@ unsigned long scene_clock_readings(void) {
     return readings;
 }
 
-/// The scene's time for a read on the main thread, in nanoseconds, or false for the real time
-static bool sceneNow(uint64_t *nanoseconds) {
+/// The code of the allocator and of libdispatch, which read the clock a number of times that differs
+/// from one recording to the next: where each one's is in memory
+static struct { uintptr_t start, end; } housekeeping[2];
+
+static void findHousekeeping(void) {
+    const void *inside[2] = { (const void *)malloc_size, (const void *)dispatch_time };
+    for (int i = 0; i < 2; i++) {
+        Dl_info info;
+        unsigned long size = 0;
+        if (!dladdr(inside[i], &info) || !info.dli_fbase) continue;
+        const uint8_t *text = getsegmentdata((const struct mach_header_64 *)info.dli_fbase, "__TEXT", &size);
+        if (text) housekeeping[i].start = (uintptr_t)text, housekeeping[i].end = (uintptr_t)text + size;
+    }
+}
+
+/// The scene's time for a read on the main thread by the code at `reader`, in nanoseconds, or false for
+/// the real time
+static bool sceneNowFor(uint64_t *nanoseconds, const void *reader) {
     if (!isSet || !pthread_main_np()) return false;
+    for (int i = 0; i < 2; i++) {
+        if ((uintptr_t)reader >= housekeeping[i].start && (uintptr_t)reader < housekeeping[i].end) {
+            *nanoseconds = sceneTime + 100 * readsSinceSet;
+            return true;
+        }
+    }
     readings++;
     *nanoseconds = sceneTime + 100 * readsSinceSet++;
     return true;
 }
+
+/// For the code that called the function this is in: the system's code reading a clock
+#define sceneNow(nanoseconds) sceneNowFor(nanoseconds, __builtin_extract_return_addr(__builtin_return_address(0)))
 
 static uint64_t scene_mach_absolute_time(void) {
     uint64_t now;
