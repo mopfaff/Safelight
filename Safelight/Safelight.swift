@@ -3520,7 +3520,7 @@ enum TimeIndicatorStyle: String, CaseIterable, Identifiable {
 ///
 /// Pressing on the strip takes the time indicator to that time and shows it on screen (through `preview`) as the
 /// indicator's dragged, with the time under it, as holding a keyframe's slider does, until it's let go and the
-/// indicator goes back to now.
+/// indicator goes back to now. Another mouse button pressed meanwhile changes nothing.
 struct ScheduleDayView: View {
     let schedule: [ColorKeyframe]
     /// The display of each band, or nil for one band for all displays
@@ -3534,7 +3534,6 @@ struct ScheduleDayView: View {
     private var overhang: CGFloat { timeIndicatorStyle.reachesPastStrip ? 4 : 0 }
     /// The time the indicator's been dragged to, while it's held
     @State private var draggedMinute: Double?
-    @State private var width: CGFloat = 0
 
     var body: some View {
         TimelineView(.everyMinute) { timeline in
@@ -3672,25 +3671,20 @@ struct ScheduleDayView: View {
                         startPoint: CGPoint(x: cut.minX, y: cut.midY), endPoint: CGPoint(x: cut.maxX, y: cut.midY)))
                 }
             }
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { drag in
-                        // A whole minute, as the Schedule's times are, up to the last one before midnight
-                        let rawMinute = (min(max(drag.location.x / max(width, 1), 0), 1) * 1440).rounded()
-                        let minute = min(rawMinute, 1439)
-                        guard minute != draggedMinute else { return }
-                        draggedMinute = minute
-                        preview(minute)
-                    }
-                    .onEnded { _ in
-                        draggedMinute = nil
-                        preview(nil)
-                    }
-            )
+            .overlay(HeldPointer { position in
+                guard let position else {
+                    draggedMinute = nil
+                    preview(nil)
+                    return
+                }
+                // A whole minute, as the Schedule's times are, up to the last one before midnight
+                let minute = min((min(max(position, 0), 1) * 1440).rounded(), 1439)
+                guard minute != draggedMinute else { return }
+                draggedMinute = minute
+                preview(minute)
+            })
         }
         .frame(height: overhang + stripHeight + 27)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         // Closing the window while the indicator's held puts the screen back too
         .onDisappear {
             if draggedMinute != nil { preview(nil) }
@@ -3702,6 +3696,72 @@ struct ScheduleDayView: View {
         guard let rgb = NSColor(color).usingColorSpace(.sRGB) else { return 1 }
         func linear(_ c: CGFloat) -> Double { c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
         return 0.2126 * linear(rgb.redComponent) + 0.7152 * linear(rgb.greenComponent) + 0.0722 * linear(rgb.blueComponent)
+    }
+}
+
+/// Follows the pointer across the view it's laid over while the left mouse button is held on it, as a
+/// `DragGesture` with no minimum distance does, but through presses of the other buttons too. SwiftUI drops
+/// a drag when another button goes down, without calling `onEnded`, which would leave the time indicator
+/// and the screen as they were then. AppKit keeps sending the left button's events to the view it went
+/// down on whatever the others do, so this only has to keep theirs from anything that would act on them.
+private struct HeldPointer: NSViewRepresentable {
+    /// Called with how far across the view the pointer is, 0 at its left edge and 1 at its right (less or
+    /// more beyond them), when the button goes down and as the pointer moves, then with nil when it's let go
+    var onChange: (CGFloat?) -> Void
+
+    func makeNSView(context: Context) -> TrackingView {
+        TrackingView()
+    }
+
+    func updateNSView(_ view: TrackingView, context: Context) {
+        view.onChange = onChange
+    }
+
+    final class TrackingView: NSView {
+        var onChange: (CGFloat?) -> Void = { _ in }
+        private var isHeld = false
+
+        private func follow(_ event: NSEvent) {
+            onChange(convert(event.locationInWindow, from: nil).x / max(bounds.width, 1))
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            isHeld = true
+            follow(event)
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            follow(event)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            isHeld = false
+            onChange(nil)
+        }
+
+        override func rightMouseDown(with event: NSEvent) {
+            if !isHeld { super.rightMouseDown(with: event) }
+        }
+
+        override func rightMouseDragged(with event: NSEvent) {
+            if isHeld { follow(event) } else { super.rightMouseDragged(with: event) }
+        }
+
+        override func rightMouseUp(with event: NSEvent) {
+            if !isHeld { super.rightMouseUp(with: event) }
+        }
+
+        override func otherMouseDown(with event: NSEvent) {
+            if !isHeld { super.otherMouseDown(with: event) }
+        }
+
+        override func otherMouseDragged(with event: NSEvent) {
+            if isHeld { follow(event) } else { super.otherMouseDragged(with: event) }
+        }
+
+        override func otherMouseUp(with event: NSEvent) {
+            if !isHeld { super.otherMouseUp(with: event) }
+        }
     }
 }
 
