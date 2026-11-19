@@ -1,29 +1,35 @@
 {
-    "about": "The X version, 16:9: Night Shift's warmest beside Safelight's red as the hook, the Tint sweep, two displays dimmed on their own, a click on Dark with its wallpaper, then an evening of the schedule doing all of it, and the end card",
+    "about": "The X version, 16:9, the re-shoot as its storyboard has it (scripts/demo/storyboard/reshoot.json): one layout all through, the whole screen beside the popover close up, a label over the screen and captions under it. What Safelight is; the color filter, to red and round the tints; brightness, both displays together and one at a time; Light and Dark; then an evening of the Schedule doing all three, the time of day large beside its label; and the end card",
     "platform": "x",
     "camera": "16:9",
     "size": [1920, 1080],
     "fps": 60,
-    "caption": {"size": 64, "y": 0.885, "maxWidth": 1500},
+    "words": {
+        "label": {"x": 64, "y": 255, "size": 116},
+        "clock": {"x": 2304, "y": 255, "size": 150},
+        "caption": {"x": 64, "y": 1935, "size": 80}
+    },
     "clips": [
-        {"shot": "night-shift", "from": 1.5, "to": 6.0, "captions": [
-            {"from": 1.5, "to": 3.4, "text": "Night Shift can’t go fully red."},
-            {"from": 3.4, "to": 6.0, "text": "Safelight can."}
+        {"shot": "opening", "from": 0, "to": 3.5, "label": "Safelight", "icon": true, "captions": [
+            {"from": 0, "to": 3.5, "text": ["Your Mac’s color filter, brightness and", "Light/Dark appearance, on one schedule."]}
         ]},
-        {"shot": "tint-sweep", "from": 0.6, "to": 6.2, "captions": [
-            {"from": 0.8, "to": 6.2, "text": "Or any other tint."}
+        {"shot": "color-filter", "from": 0, "to": 7.8, "label": "Color filter", "captions": [
+            {"from": 0.3, "to": 2.3, "text": "Tints the whole screen", "small": "the desktop, the menu bar, even the pointer"},
+            {"from": 2.3, "to": 4.4, "text": "All the way to red", "small": "further than Night Shift goes"},
+            {"from": 4.4, "to": 7.8, "text": "Or any other tint"}
         ]},
-        {"shot": "two-displays", "from": 0.2, "to": 8.0, "captions": [
-            {"from": 2.2, "to": 8.0, "text": "Each display dims on its own", "x": 0.71, "y": 0.87}
+        {"shot": "brightness", "from": 0, "to": 9.3, "label": "Brightness", "captions": [
+            {"from": 0, "to": 3.1, "text": "Brightness for every display", "small": "one slider dims them all"},
+            {"from": 3.1, "to": 9.3, "text": "Or each on its own", "small": "with Adjust independently on"}
         ]},
-        {"shot": "dark-switch", "from": 0, "to": 5.0, "captions": [
-            {"from": 0.3, "to": 5.0, "text": "Light or Dark in one click", "small": "with a wallpaper for each"}
+        {"shot": "appearance", "from": 0, "to": 7.2, "label": "Light / Dark", "captions": [
+            {"from": 0, "to": 7.2, "text": "Light or Dark in one click", "small": "with a wallpaper for each"}
         ]},
-        {"shot": "day-timelapse", "from": 0, "to": 11.3, "captions": [
-            {"from": 0.2, "to": 4.7, "text": "All on one schedule", "small": "an evening, sped up"},
-            {"from": 4.8, "to": 8.6, "text": "Light and Dark switch with it"},
-            {"from": 9.0, "to": 11.3, "text": "Deep, dim red by 22:30"}
+        {"shot": "schedule", "from": 0, "to": 11.3, "label": "Schedule", "clock": true, "captions": [
+            {"from": 0.7, "to": 4.8, "text": "All three on one schedule", "small": "an evening, sped up"},
+            {"from": 4.8, "to": 8.9, "text": "Light and Dark switch with it"},
+            {"from": 8.9, "to": 11.3, "text": "Deep, dim red by 22:30"}
         ]}
     ],
-    "endCard": {"duration": 3.0, "fade": 0.4, "lines": ["Safelight", "Free and open source, for Mac", "github.com/mopfaff/Safelight"]}
+    "endCard": {"duration": 3.4, "fade": 0.4, "lines": ["Safelight", "Free and open source, for Mac", "github.com/mopfaff/Safelight"]}
 }

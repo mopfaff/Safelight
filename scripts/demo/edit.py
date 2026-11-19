@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # Cuts Safelight's demo videos from the finished demo shots (scripts/make-demo.sh <scene>), as each edit
-# file in scripts/demo/edits/ has it: which shots, from when to when in each, the captions over them and an
-# end card, and the platform the video is for, which sets its colours and how it's encoded. Run it with
-# scripts/make-demo.sh --edit, which draws Safelight's icon for the end card first.
+# file in scripts/demo/edits/ has it: which shots, from when to when in each, the words with them (a label
+# for each shot, captions, a clock) and an end card, and the platform the video is for, which sets its
+# colours and how it's encoded. Run it with scripts/make-demo.sh --edit, which draws Safelight's icon for
+# the label and the end card first.
 #
 #   edit.py [<edit>...]          writes build/demo/edits/<edit>/safelight-<edit>.mp4 for each edit named, or
 #                                for all of them, with stills/ (frames of it as PNGs: a little way in, the
@@ -10,8 +11,13 @@
 #   edit.py verify [<edit>...]   decodes the videos as macOS's players do (AVFoundation), in each video's own
 #                                colours, and compares them with the frames they were made from
 #
-# Only editorial things happen here: cuts between shots, captions, the end card faded in over the last shot.
-# Nothing changes what a screen shows inside a shot. Each shot's master (its <scene>-<camera>.mkv, Display
+# Only editorial things happen here: cuts between shots, the words, the end card faded in over the last shot.
+# Nothing changes what a screen shows inside a shot. The words go in the black a shot's panes leave round
+# them: white, left-aligned, on nothing. The clock is the one thing here that reads a shot's recording: the
+# time of day on each of its frames, from the log beside its master (log.json's "timeOfDay"). It's drawn
+# here and not into the master by compose.py as it belongs with the label, on its line and in its type,
+# which each edit places for its own shape; so a master stays the screens alone, every value as the
+# display maths made it, and the words can change without a shot being made again. Each shot's master (its <scene>-<camera>.mkv, Display
 # P3, 10 bits, every value as compose.py made it; or the .mp4, in HEVC, of a shot made before 19 November
 # 2026) is decoded here as it was encoded (compose.ycbcr: BT.709's luma and chroma at video's
 # limited range, chroma at the left of its two columns), so the values are the master's own; a 16:9 master,
@@ -38,18 +44,22 @@
 #   "base"       another edit whose keys this one starts from (its own replace them)
 #   "platform"   youtube, x or github; "camera" the shots' camera, 9:16 or 16:9; "size" of the video in
 #                pixels (the master's, or half of it); "fps" (60, or 30 taking every other frame)
-#   "caption"    how captions look: "size" of the text in pixels, "y" where the middle of a caption sits (a
-#                fraction of the height), "maxWidth" in pixels, which none may be wider than
-#   "clips"      in order, each {"shot", "from", "to"}, in seconds of the shot, and its "captions": each
-#                {"from", "to", in seconds of the shot, "text" (a line, or a list of them), "small" (a smaller
-#                line under it), "x" and "y" (where its middle sits, fractions of the width and height; the
-#                middle across, and the edit's "y", unless given)}. A caption fades in, unless it's there as
-#                the clip starts, and out, unless it lasts until the clip is cut
+#   "words"      where the words go, in pixels of the shots' masters, as their panes are, whatever the
+#                video's size: "label", "clock" and "caption", each {"x", "y", "size"}: the left edge of the
+#                label and of the captions, and the right edge of the clock, at x; the middle of their
+#                height at y (of all a caption's lines together); the size of their type
+#   "clips"      in order, each {"shot", "from", "to"}, in seconds of the shot, with "label", the words over
+#                the shot all through it ("icon": true puts Safelight's icon before them), "clock": true for
+#                the time of day the shot's clock reads on each frame (HH:MM, its digits all as wide, so
+#                it stays put as they change), and its "captions": each {"from", "to", in seconds of the
+#                shot, "text" (a line, or a list of them), "small" (a smaller, greyer line under it)}. A
+#                caption fades in, unless it's there as the clip starts, and out, unless it lasts until
+#                the clip is cut or the next one comes as it goes
 #   "endCard"    {"duration", "fade" (over the end of the last clip), "lines"}: Safelight's icon over black,
 #                with its name and the lines under it, or null for none
 #
 # Re-running gives the same files, byte for byte. Needs what compose.py needs.
-import argparse, collections, copy, json, multiprocessing, shutil, subprocess, sys
+import argparse, collections, copy, functools, json, math, multiprocessing, shutil, subprocess, sys
 from pathlib import Path
 import numpy as np
 import Quartz
@@ -150,7 +160,13 @@ class Edit:
                 raise SystemExit(f"{self.name}: {clip['shot']}'s {camera} is {size[0]}×{size[1]}, not {self.size[0]}×{self.size[1]} or a whole multiple of it")
             if scene["fps"] % self.fps or not 0 <= clip["from"] < clip["to"] <= scene["duration"]:
                 raise SystemExit(f"{self.name}: {clip['shot']} is {scene['duration']} s at {scene['fps']} fps; can't cut {clip['from']}–{clip['to']} s at {self.fps} fps")
-            self.clips.append(dict(clip, master=master, size=size, shot_fps=scene["fps"]))
+            times = None
+            if clip.get("clock"):
+                # The time of day on each of the shot's frames, as its recording's log has it
+                times = [frame.get("timeOfDay") for frame in json.loads((master.parent / "log.json").read_text())["frames"]]
+                if not all(times):
+                    raise SystemExit(f"{self.name}: {clip['shot']} has no clock of its own to show")
+            self.clips.append(dict(clip, master=master, size=size, shot_fps=scene["fps"], times=times))
         self.card = self.spec.get("endCard")
         self.plan = self._plan()
         self.duration = len(self.plan) / self.fps
@@ -173,8 +189,7 @@ class Edit:
                         continue
                     appear = smooth((t - caption["from"]) / 0.25) if caption["from"] > clip["from"] + 1e-9 else 1.0
                     leave = smooth((caption["to"] - t) / 0.2) if caption["to"] < clip["to"] - 1e-9 else 1.0
-                    rise = round((1 - appear) * 0.012 * self.size[1])
-                    on.append((n, appear * leave, rise))
+                    on.append((n, appear * leave))
                 plan.append(Entry(c, first + k * step, on, 0.0))
         if self.card:
             fade = round(self.card["fade"] * self.fps)
@@ -189,7 +204,7 @@ class Edit:
         frames = {min(round(0.5 * self.fps), len(self.plan) - 1)}
         shown = collections.defaultdict(list)
         for k, entry in enumerate(self.plan):
-            for i, opacity, _ in entry.captions:
+            for i, opacity in entry.captions:
                 shown[i].append(k)
         frames |= {ks[len(ks) // 2] for ks in shown.values()}
         if self.card:
@@ -199,16 +214,49 @@ class Edit:
     # The pictures over the shots, made once in each worker
 
     def prepare(self):
-        style = self.spec["caption"]
+        words = self.spec["words"]
+        # The words' places are in the masters' pixels: so much of one in the video's
+        self.k = k = self.size[0] / self.clips[0]["size"][0]
         self.caption_art = []
         for caption in self.captions:
-            art = caption_picture(caption.get("text"), caption.get("small"), style["size"])
-            if art.shape[1] > style["maxWidth"]:
-                raise SystemExit(f"{self.name}: the caption {caption['text']!r} is {art.shape[1]} pixels wide, more than its maxWidth, {style['maxWidth']}")
-            x = round(caption.get("x", 0.5) * self.size[0] - art.shape[1] / 2)
-            y = round(caption.get("y", style["y"]) * self.size[1] - art.shape[0] / 2)
-            self.caption_art.append((art, x, y))
+            lines = [caption["text"]] if isinstance(caption["text"], str) else list(caption["text"])
+            spec = words["caption"]
+            size = spec["size"] * k
+            # As tall as the storyboard has them: a line 1.22 of its type's size, the small one 0.66 of that type
+            line_h, small_h = size * 1.22, size * 0.66 * 1.3 if caption.get("small") else 0
+            top = spec["y"] * k - (line_h * len(lines) + small_h) / 2
+            art = [line_picture(line, spec["x"] * k, top + line_h * (n + 0.5), size, "Semibold", WHITE) for n, line in enumerate(lines)]
+            if caption.get("small"):
+                art.append(line_picture(caption["small"], spec["x"] * k, top + line_h * len(lines) + small_h * 0.5, size * 0.66, "Medium", GREY))
+            for picture, x, y in art:
+                if x + picture.shape[1] > self.size[0] - spec["x"] * k or y < 0 or y + picture.shape[0] > self.size[1]:
+                    raise SystemExit(f"{self.name}: the caption {caption['text']!r} doesn't fit in the video from where it starts")
+            self.caption_art.append(art)
+        # Each clip's label, Safelight's icon before it if asked for, half as tall again as its type
+        self.label_art = []
+        for clip in self.clips:
+            art = []
+            if label := clip.get("label"):
+                spec = words["label"]
+                x, y, size = spec["x"] * k, spec["y"] * k, spec["size"] * k
+                if clip.get("icon"):
+                    side = round(size * 1.5)
+                    icon = Image.open(ICON).convert("RGBA").convert("RGBa").resize((side, side), Image.LANCZOS).convert("RGBA")
+                    icon = np.asarray(icon, np.float32) / 255
+                    icon[..., :3] = in_space(icon[..., :3], self.platform["space"])
+                    # The icon's picture has room round its shape, so it starts a little left of the words' edge
+                    art.append((icon, round(x - side * 0.1), round(y - side / 2)))
+                    x += side * 0.95
+                art.append(line_picture(label, x, y, size, "Semibold", WHITE))
+            self.label_art.append(art)
         self.card_values = end_card(self.size, self.card["lines"], self.platform["space"]) if self.card else None
+
+    @functools.lru_cache(maxsize=None)
+    def clock_art(self, time):
+        """The clock reading `time`, HH:MM, its right edge where the edit has it: in digits all as wide (the
+        type's own, "tnum"), so each stays where it is as the minutes go by"""
+        spec = self.spec["words"]["clock"]
+        return line_picture(time, spec["x"] * self.k, spec["y"] * self.k, spec["size"] * self.k, "Bold", WHITE, anchor="rm", features=("tnum",))
 
     def picture(self, raw, size, entry):
         """The video's values (in its own colour space, 0...1) on a frame of the plan"""
@@ -221,9 +269,13 @@ class Edit:
             light = light.reshape(self.size[1], scale, self.size[0], scale, 3).mean(axis=(1, 3))
             values = to_values(light)
         values = in_space(values, self.platform["space"])
-        for i, opacity, rise in entry.captions:
-            art, x, y = self.caption_art[i]
-            over(values, art, x, y + rise, opacity)
+        for art, x, y in self.label_art[entry.clip]:
+            over(values, art, x, y)
+        if times := self.clips[entry.clip]["times"]:
+            over(values, *self.clock_art(times[entry.frame][:5]))
+        for i, opacity in entry.captions:
+            for art, x, y in self.caption_art[i]:
+                over(values, art, x, y, opacity)
         if entry.card:
             values = values * (1 - entry.card) + self.card_values * entry.card
         return values
@@ -246,26 +298,26 @@ def font(size, weight):
     return f
 
 
-def caption_picture(text, small, size, supersample=4):
-    """A caption: its lines in SF Pro Semibold, white, and a smaller line under them, on a rounded dark
-    pill, drawn at 4 times the size and scaled down, so the pill's edge is smooth"""
-    lines = [text] if isinstance(text, str) else list(text)
+WHITE, GREY = (1.0, 1.0, 1.0), (176 / 255, 176 / 255, 186 / 255)
+
+
+def line_picture(text, x, y, size, weight, colour, anchor="lm", features=None, supersample=4):
+    """A line of words in SF Pro, in one colour on nothing: its picture (straight alpha) and the pixel its
+    top left goes at, for the line's left edge ("lm", or its right, "rm") to be at x and the middle of its
+    type's height at y, in pixels of the video, which needn't be whole ones. Drawn at 4 times the size and
+    averaged down, so it's as sharp wherever it falls on the pixels."""
     s = supersample
-    big, little = font(size * s, "Semibold"), font(round(size * 0.62) * s, "Medium")
-    line_h, small_h = round(size * 1.2) * s, round(size * 0.62 * 1.3) * s
-    pad_x, pad_y = round(size * 0.6) * s, round(size * 0.34) * s
-    widths = [big.getlength(line) for line in lines] + ([little.getlength(small)] if small else [])
-    width = (int(max(widths)) // s + 1) * s + 2 * pad_x
-    height = line_h * len(lines) + (small_h if small else 0) + 2 * pad_y
-    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((0, 0, width - 1, height - 1), radius=min(height // 2, round(size * 0.7) * s), fill=(0, 0, 0, 158))
-    for n, line in enumerate(lines):
-        draw.text((width / 2, pad_y + line_h * (n + 0.5)), line, font=big, fill=(255, 255, 255, 255), anchor="mm")
-    if small:
-        draw.text((width / 2, pad_y + line_h * len(lines) + small_h * 0.45), small, font=little, fill=(222, 222, 228, 255), anchor="mm")
-    image = image.convert("RGBa").resize((width // s, height // s), Image.BOX).convert("RGBA")
-    return np.asarray(image, np.float32) / 255
+    face = font(round(size * s), weight)
+    ax, ay = round(x * s), round(y * s)
+    left, top, right, bottom = face.getbbox(text, anchor=anchor, features=features)
+    x0, y0 = math.floor((ax + left) / s) - 1, math.floor((ay + top) / s) - 1
+    x1, y1 = math.ceil((ax + right) / s) + 1, math.ceil((ay + bottom) / s) + 1
+    mask = Image.new("L", ((x1 - x0) * s, (y1 - y0) * s), 0)
+    ImageDraw.Draw(mask).text((ax - x0 * s, ay - y0 * s), text, font=face, fill=255, anchor=anchor, features=features)
+    picture = np.empty((y1 - y0, x1 - x0, 4), np.float32)
+    picture[..., :3] = colour
+    picture[..., 3] = np.asarray(mask.resize((x1 - x0, y1 - y0), Image.BOX), np.float32) / 255
+    return picture, x0, y0
 
 
 def end_card(size, lines, space):

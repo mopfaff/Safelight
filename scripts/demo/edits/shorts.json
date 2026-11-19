@@ -1,23 +1,28 @@
 {
-    "about": "The YouTube Shorts version: Night Shift's warmest beside Safelight's red as the hook, then the Tint sweep, then an evening of the schedule, and the end card. Captions clear of the bottom fifth, where Shorts puts the title, and of the buttons down the right",
+    "about": "The YouTube Shorts version, 9:16, the re-shoot as its storyboard has it: the popover's top half over the whole screen, the label and the captions above them, and the bottom fifth left empty, where Shorts puts its own title. What Safelight is, the color filter, then an evening of the Schedule with the time of day large beside its label, and the end card; Brightness and Light/Dark by hand are left out, as the Schedule shows both",
     "platform": "youtube",
     "camera": "9:16",
     "size": [2160, 3840],
     "fps": 60,
-    "caption": {"size": 116, "y": 0.74, "maxWidth": 1600},
+    "words": {
+        "label": {"x": 80, "y": 130, "size": 110},
+        "clock": {"x": 2080, "y": 130, "size": 140},
+        "caption": {"x": 80, "y": 330, "size": 80}
+    },
     "clips": [
-        {"shot": "night-shift", "from": 1.5, "to": 6.0, "captions": [
-            {"from": 1.5, "to": 3.4, "text": ["Night Shift can’t", "go fully red."], "y": 0.085},
-            {"from": 3.4, "to": 6.0, "text": "Safelight can.", "y": 0.085}
+        {"shot": "opening", "from": 0, "to": 3.5, "label": "Safelight", "icon": true, "captions": [
+            {"from": 0, "to": 3.5, "text": ["Your Mac’s color filter, brightness and", "Light/Dark appearance, on one schedule."]}
         ]},
-        {"shot": "tint-sweep", "from": 0.6, "to": 6.2, "captions": [
-            {"from": 0.8, "to": 6.2, "text": "Or any other tint."}
+        {"shot": "color-filter", "from": 0, "to": 7.8, "label": "Color filter", "captions": [
+            {"from": 0.3, "to": 2.3, "text": "Tints the whole screen", "small": "the desktop, the menu bar, even the pointer"},
+            {"from": 2.3, "to": 4.4, "text": "All the way to red", "small": "further than Night Shift goes"},
+            {"from": 4.4, "to": 7.8, "text": "Or any other tint"}
         ]},
-        {"shot": "day-timelapse", "from": 0, "to": 11.3, "captions": [
-            {"from": 0.2, "to": 4.7, "text": "All on one schedule", "small": "an evening, sped up"},
-            {"from": 4.8, "to": 8.6, "text": ["Light and Dark", "switch with it"]},
-            {"from": 9.0, "to": 11.3, "text": "Deep, dim red by 22:30"}
+        {"shot": "schedule", "from": 0, "to": 11.3, "label": "Schedule", "clock": true, "captions": [
+            {"from": 0.7, "to": 4.8, "text": "All three on one schedule", "small": "an evening, sped up"},
+            {"from": 4.8, "to": 8.9, "text": "Light and Dark switch with it"},
+            {"from": 8.9, "to": 11.3, "text": "Deep, dim red by 22:30"}
         ]}
     ],
-    "endCard": {"duration": 3.0, "fade": 0.4, "lines": ["Safelight", "Free and open source, for Mac", "github.com/mopfaff/Safelight"]}
+    "endCard": {"duration": 3.4, "fade": 0.4, "lines": ["Safelight", "Free and open source, for Mac", "github.com/mopfaff/Safelight"]}
 }
