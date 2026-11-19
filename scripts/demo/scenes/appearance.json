@@ -1,0 +1,43 @@
+{
+  "about": "The re-shoot's Light/Dark shot, on the plain afternoon screen (Light, the filter off): Dark clicked under Appearance, and the popover, the menu bar and the wallpaper change over to Dark as macOS does it, from Sonoma Horizon to Sonoma's Dark picture; then, once the wallpaper has changed over (it takes 2 s from about a second after the click), Light clicked, and it all comes back, the screen as it began. Two fixed panes, the whole screen and the popover close up with the menu bar's clock, with no camera move",
+  "fps": 60,
+  "duration": 7.2,
+  "appearance": "light",
+  "accentColor": "blue",
+  "language": "en-US",
+  "locale": "en_GB",
+  "desktop": true,
+  "settings": {
+    "colorFilter": false,
+    "tint": 0,
+    "intensity": 0.25,
+    "brightness": 1,
+    "wallpaper": {
+      "light": "/System/Library/Desktop Pictures/.wallpapers/Sonoma Horizon/Sonoma Horizon.heic",
+      "dark": "/System/Library/Desktop Pictures/Sonoma.heic"
+    }
+  },
+  "pointer": { "button": "Color filters" },
+  "actions": [
+    { "at": 0.1, "move": { "button": "Dark" }, "duration": 0.4, "easing": "easeInOut" },
+    { "at": 0.6, "click": { "button": "Dark" }, "duration": 0.1 },
+    { "at": 3.5, "move": { "button": "Light" }, "duration": 0.3, "easing": "easeInOut" },
+    { "at": 3.9, "click": { "button": "Light" }, "duration": 0.1 }
+  ],
+  "camera": {
+    "16:9": {
+      "size": [3840, 2160],
+      "panes": [
+        { "rect": [64, 448, 2240, 1260], "keys": [{ "at": 0, "centre": [1280, 720], "height": 1440 }] },
+        { "rect": [2400, 60, 1376, 2040], "keys": [{ "at": 0, "centre": [2327, 345], "height": 690 }] }
+      ]
+    },
+    "9:16": {
+      "size": [2160, 3840],
+      "panes": [
+        { "rect": [300, 472, 1560, 1260], "keys": [{ "at": 0, "centre": [2334.5, 180], "height": 360 }] },
+        { "rect": [0, 1792, 2160, 1216], "keys": [{ "at": 0, "centre": [1280, 720], "height": 1440 }] }
+      ]
+    }
+  }
+}

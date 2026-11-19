@@ -1,0 +1,43 @@
+{
+  "about": "The re-shoot's opening shot: the plain afternoon screen (Light, the filter off, full brightness), Safelight's popover open, nothing changing, while the edit says what Safelight is; the pointer comes over from the desktop to rest on the Color filters switch, where the Color filter shot finds it. Two fixed panes, the whole screen and the popover close up with the menu bar's clock",
+  "fps": 60,
+  "duration": 3.5,
+  "appearance": "light",
+  "accentColor": "blue",
+  "language": "en-US",
+  "locale": "en_GB",
+  "desktop": true,
+  "settings": {
+    "colorFilter": false,
+    "tint": 0,
+    "intensity": 0.25,
+    "brightness": 1,
+    "wallpaper": {
+      "light": "/System/Library/Desktop Pictures/.wallpapers/Sonoma Horizon/Sonoma Horizon.heic",
+      "dark": "/System/Library/Desktop Pictures/Sonoma.heic"
+    }
+  },
+  "pointer": [
+    -130,
+    430
+  ],
+  "actions": [
+    { "at": 2.3, "move": { "button": "Color filters" }, "duration": 0.9, "easing": "easeInOut" }
+  ],
+  "camera": {
+    "16:9": {
+      "size": [3840, 2160],
+      "panes": [
+        { "rect": [64, 448, 2240, 1260], "keys": [{ "at": 0, "centre": [1280, 720], "height": 1440 }] },
+        { "rect": [2400, 60, 1376, 2040], "keys": [{ "at": 0, "centre": [2327, 345], "height": 690 }] }
+      ]
+    },
+    "9:16": {
+      "size": [2160, 3840],
+      "panes": [
+        { "rect": [300, 472, 1560, 1260], "keys": [{ "at": 0, "centre": [2334.5, 180], "height": 360 }] },
+        { "rect": [0, 1792, 2160, 1216], "keys": [{ "at": 0, "centre": [1280, 720], "height": 1440 }] }
+      ]
+    }
+  }
+}
