@@ -127,7 +127,7 @@ def summary(subreddit, period_days=None, top_share=0.1):
     n_top = max(1, int(len(posts) * top_share))
     top, scores = posts[:n_top], sorted(p["score"] for p in posts)
     pick = lambda q: scores[min(len(scores) - 1, int(q * len(scores)))]
-    print(f"\n===== r/{subreddit}: {len(posts)} posts, {posts[-1]['when']:%Y-%m-%d} to {max(p['when'] for p in posts):%Y-%m-%d}")
+    print(f"\n===== r/{subreddit}: {len(posts)} posts, {min(p['when'] for p in posts):%Y-%m-%d} to {max(p['when'] for p in posts):%Y-%m-%d}")
     print(f"score: median {pick(.5)}, 75% {pick(.75)}, 90% {pick(.9)}, 99% {pick(.99)}, best {scores[-1]}"
           f" · top group = best {n_top} (score {top[-1]['score']}+)")
 
