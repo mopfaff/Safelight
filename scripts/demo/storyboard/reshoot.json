@@ -1,0 +1,112 @@
+{
+  "title": "Safelight demo, re-shoot: storyboard",
+  "about": "One world for the whole video: Sonoma Horizon by day and Sonoma by night, a document open on the desktop, and one fixed layout, the whole screen beside the popover large enough to read (the menu bar's clock with it), with no camera move. Every shot starts and ends on the same plain afternoon screen, so each change of look is something the popover just did, never a cut. Every still is a recording composed in this layout by the real pipeline: shots 2 and 3 from drafts of their new scenes, the rest from the existing recordings, whose notes say how the re-made shot will differ. Not yet as it will be: the document window is a stand-in (a real AppKit window, pictured by the window server) for the real app's window, and the menu bar's clock says 21:00 in shots 1 to 4, where it will say the afternoon time shot 5 starts from.",
+  "document": { "frame": [250, 170, 1560, 1040] },
+  "layouts": {
+    "16:9": {
+      "size": [3840, 2160],
+      "panes": {
+        "screen": { "rect": [64, 448, 2240, 1260], "centre": [1280, 720], "height": 1440 },
+        "popover": { "rect": [2400, 60, 1376, 2040], "centre": [2334.5, 330], "height": 660 }
+      },
+      "label": { "x": 64, "y": 255, "size": 116, "align": "left" },
+      "clock": { "x": 2304, "y": 255, "size": 150, "align": "right" },
+      "caption": { "x": 64, "y": 1935, "size": 80, "align": "left" }
+    },
+    "9:16": {
+      "size": [2160, 3840],
+      "panes": {
+        "popover": { "rect": [300, 472, 1560, 1260], "centre": [2334.5, 180], "height": 360 },
+        "screen": { "rect": [0, 1792, 2160, 1216], "centre": [1280, 720], "height": 1440 }
+      },
+      "label": { "x": 80, "y": 130, "size": 110, "align": "left" },
+      "clock": { "x": 2080, "y": 130, "size": 140, "align": "right" },
+      "caption": { "x": 80, "y": 330, "size": 80, "align": "left" }
+    }
+  },
+  "shots": [
+    {
+      "name": "1 · What it is",
+      "from": 0,
+      "to": 3.5,
+      "label": "Safelight",
+      "what": "The plain afternoon screen: Light, a document open, Safelight's popover open from the menu bar, everything off. Nothing changes; the pointer comes to rest by Color filters. The README's first sentence is the caption.",
+      "stills": [
+        { "recording": "dark-switch", "frame": 0, "caption": ["Your Mac’s color filter, brightness and", "Light/Dark appearance, on one schedule."], "icon": true }
+      ]
+    },
+    {
+      "name": "2 · Color filter",
+      "from": 3.5,
+      "to": 11.3,
+      "label": "Color filter",
+      "what": "Color filters clicked on; Intensity dragged from Low to High, and the white page goes fully red (2.2 s). Then Tint dragged once round the colours and back to red (3 s). Color filters clicked off: the plain screen again. Recorded as a draft of the new scene, color-filter.",
+      "stills": [
+        { "recording": "drafts/color-filter", "frame": 126, "caption": "Tints the whole screen", "small": "the page, the photo, even the pointer" },
+        { "recording": "drafts/color-filter", "frame": 204, "caption": "All the way to red", "small": "further than Night Shift goes" },
+        { "recording": "drafts/color-filter", "frame": 290, "caption": "Or any other tint" },
+        { "recording": "drafts/color-filter", "frame": 462, "caption": "Or any other tint", "note": "Color filters clicked off: the plain screen again, where the next shot starts." }
+      ]
+    },
+    {
+      "name": "3 · Brightness",
+      "from": 11.3,
+      "to": 15.3,
+      "label": "Brightness",
+      "what": "Brightness dragged down to 35% and back up (1.5 s down, a hold, 1 s up): the display's backlight, so the whole screen dims, the popover with it. One display, one slider. The two-displays shot is left out: see the last row. Recorded as a draft of the new scene, brightness.",
+      "stills": [
+        { "recording": "drafts/brightness", "frame": 132, "caption": "Brightness for every display", "small": "together, or each on its own" }
+      ]
+    },
+    {
+      "name": "4 · Light / Dark",
+      "from": 15.3,
+      "to": 21.3,
+      "label": "Light / Dark",
+      "what": "Dark clicked: the menu bar, the document and the popover change over as macOS does it (0.5 s) and the wallpaper dissolves to its night picture (2 s). Then Light clicked, and it all comes back.",
+      "stills": [
+        { "recording": "dark-switch", "frame": 110, "caption": "Light or Dark in one click", "small": "with a wallpaper for each" },
+        { "recording": "dark-switch", "frame": 329, "caption": "Light or Dark in one click", "small": "with a wallpaper for each", "note": "Re-made: then a click on Light, back to the afternoon screen." }
+      ]
+    },
+    {
+      "name": "5 · Schedule",
+      "from": 21.3,
+      "to": 33.3,
+      "label": "Schedule",
+      "what": "Schedule switched on, and the clock runs from 17:15 to 22:45, large above the screen: the filter comes on in amber and deepens, brightness falls, at 20:30 the switch to Dark plays in real time, deep dim red by 22:30. The same layout, no camera move.",
+      "stills": [
+        { "recording": "day-timelapse", "frame": 20, "clock": true, "caption": "All three on one schedule", "small": "an evening, sped up" },
+        { "recording": "day-timelapse", "frame": 240, "clock": true, "caption": "All three on one schedule", "small": "an evening, sped up" },
+        { "recording": "day-timelapse", "frame": 400, "clock": true, "caption": "Light and Dark switch with it" },
+        { "recording": "day-timelapse", "frame": 660, "clock": true, "caption": "Deep, dim red by 22:30" }
+      ]
+    },
+    {
+      "name": "6 · End card (X and Shorts)",
+      "from": 33.3,
+      "to": 36.3,
+      "what": "As now: the icon, the name, “Free and open source, for Mac” and the address, faded in over the last shot. The README cut ends at 33.3 s without it.",
+      "stills": [
+        { "picture": "edits/x/stills/2136.png" }
+      ]
+    },
+    {
+      "name": "Shorts, 9:16",
+      "what": "The same shots stacked: the popover's top half above (Schedule to Brightness, where the hand is, with the menu bar's clock), the whole screen under it, the bottom fifth left empty for Shorts' own title. Shots 1, 2, 5 and the end card, about 26 s; Brightness and Light/Dark by hand are left out, as the schedule shows both.",
+      "label": "Color filter",
+      "stills": [
+        { "recording": "drafts/color-filter", "frame": 204, "layout": "9:16", "caption": "All the way to red", "small": "further than Night Shift goes" },
+        { "recording": "day-timelapse", "frame": 240, "layout": "9:16", "label": "Schedule", "clock": true, "caption": "All three on one schedule", "small": "an evening, sped up" }
+      ]
+    },
+    {
+      "name": "Left out · two displays",
+      "what": "In this layout both displays fit only this small, and the dimming is the same idea as shot 3, so it goes into shot 3's caption. Bringing it back would be the one shot with a different picture on the left.",
+      "label": "Brightness",
+      "stills": [
+        { "recording": "two-displays", "frame": 470, "document": false, "caption": "Each display dims on its own", "views": { "screen": { "centre": [235, 925], "height": 2700 }, "popover": { "centre": [2295, 350], "height": 700 } }, "note": "From the old two-displays recording (Dark, Sonoma)." }
+      ]
+    }
+  ]
+}

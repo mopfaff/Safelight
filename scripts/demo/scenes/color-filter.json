@@ -1,0 +1,46 @@
+{
+  "about": "The re-shoot's Color filter shot, on the plain afternoon screen (Light, the filter off, full brightness): Color filters clicked on, Intensity dragged from Low (25%) to High (100%), so white goes fully red, Tint dragged once round the colours and back to red, and Color filters clicked off, the screen as it began. Filmed by two fixed panes, the whole screen and the popover close up with the menu bar's clock, with no camera move",
+  "fps": 60,
+  "duration": 7.8,
+  "appearance": "light",
+  "accentColor": "blue",
+  "language": "en-US",
+  "locale": "en_GB",
+  "desktop": true,
+  "settings": {
+    "colorFilter": false,
+    "tint": 0,
+    "intensity": 0.25,
+    "brightness": 1,
+    "wallpaper": {
+      "light": "/System/Library/Desktop Pictures/.wallpapers/Sonoma Horizon/Sonoma Horizon.heic",
+      "dark": "/System/Library/Desktop Pictures/Sonoma.heic"
+    }
+  },
+  "pointer": { "button": "Color filters" },
+  "actions": [
+    { "at": 0.3, "click": { "button": "Color filters" }, "duration": 0.1 },
+    { "at": 0.6, "move": { "control": "Intensity" }, "duration": 0.3, "easing": "easeInOut" },
+    { "at": 1.0, "drag": "Intensity", "from": 0.25, "to": 1.0, "duration": 2.2, "easing": "easeInOut" },
+    { "at": 3.3, "move": { "control": "Tint" }, "duration": 0.3, "easing": "easeInOut" },
+    { "at": 3.7, "drag": "Tint", "from": 0, "to": 360, "duration": 3.0, "easing": "easeInOut" },
+    { "at": 6.8, "move": { "button": "Color filters" }, "duration": 0.35, "easing": "easeInOut" },
+    { "at": 7.25, "click": { "button": "Color filters" }, "duration": 0.1 }
+  ],
+  "camera": {
+    "16:9": {
+      "size": [3840, 2160],
+      "panes": [
+        { "rect": [64, 448, 2240, 1260], "keys": [{ "at": 0, "centre": [1280, 720], "height": 1440 }] },
+        { "rect": [2400, 60, 1376, 2040], "keys": [{ "at": 0, "centre": [2334.5, 330], "height": 660 }] }
+      ]
+    },
+    "9:16": {
+      "size": [2160, 3840],
+      "panes": [
+        { "rect": [300, 472, 1560, 1260], "keys": [{ "at": 0, "centre": [2334.5, 180], "height": 360 }] },
+        { "rect": [0, 1792, 2160, 1216], "keys": [{ "at": 0, "centre": [1280, 720], "height": 1440 }] }
+      ]
+    }
+  }
+}
