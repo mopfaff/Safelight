@@ -73,7 +73,16 @@ struct SliderGeometry {
             sublayers.forEach(walk)
         }
         walk(root)
-        return found.sorted { $0.frame.minY < $1.frame.minY }
+        // A Brightness slider is drawn twice in the same place, a copy behind it for its shadow
+        // (`BrightnessSlider`): it's one slider here
+        var sliders: [SliderGeometry] = []
+        for slider in found.sorted(by: { $0.frame.minY < $1.frame.minY }) {
+            if let last = sliders.last, abs(last.frame.minX - slider.frame.minX) < 0.5, abs(last.frame.minY - slider.frame.minY) < 0.5, abs(last.frame.width - slider.frame.width) < 0.5 {
+                continue
+            }
+            sliders.append(slider)
+        }
+        return sliders
     }
 
     /// The first AppKit slider of class `type` in a hosting view, as its cell draws it: its track, as

@@ -1,12 +1,13 @@
 {
-  "about": "The re-shoot's Brightness shot, on the plain afternoon screen (Light, the filter off): Brightness dragged from full down to 35% and, after a moment, back up, the display's backlight following. Filmed by two fixed panes, the whole screen and the popover close up with the menu bar's clock, with no camera move",
+  "about": "The re-shoot's Brightness shot, on the plain afternoon screen (Light, the filter off), with both displays: the camera pulls back from the popover's display to the two as they're arranged; Brightness dragged down to 40% and back up, both displays dimming together; Adjust independently switched on, then the Dell's slider dragged down and the Studio Display's after it, one display at a time; Adjust independently switched off, Brightness dragged back up, both together, and the camera returns to the one display, the screen as it began. Two panes, the displays and the popover close up with the menu bar's clock; the camera moves only while nothing changes",
   "fps": 60,
-  "duration": 4.0,
+  "duration": 9.3,
   "appearance": "light",
   "accentColor": "blue",
   "language": "en-US",
   "locale": "en_GB",
   "desktop": true,
+  "otherDisplays": true,
   "settings": {
     "colorFilter": false,
     "tint": 0,
@@ -19,23 +20,43 @@
   },
   "pointer": { "button": "Color filters" },
   "actions": [
-    { "at": 0.1, "move": { "control": "Brightness" }, "duration": 0.35, "easing": "easeInOut" },
-    { "at": 0.5, "drag": "Brightness", "from": 1, "to": 0.35, "duration": 1.5, "easing": "easeInOut" },
-    { "at": 2.5, "drag": "Brightness", "from": 0.35, "to": 1, "duration": 1.0, "easing": "easeInOut" }
+    { "at": 0.1, "move": { "control": "Brightness" }, "duration": 0.4, "easing": "easeInOut" },
+    { "at": 0.7, "drag": "Brightness", "from": 1, "to": 0.4, "duration": 1.0, "easing": "easeInOut" },
+    { "at": 1.9, "drag": "Brightness", "from": 0.4, "to": 1, "duration": 0.7, "easing": "easeInOut" },
+    { "at": 2.7, "move": { "button": "Adjust independently" }, "duration": 0.3, "easing": "easeInOut" },
+    { "at": 3.1, "click": { "button": "Adjust independently" }, "duration": 0.1 },
+    { "at": 3.5, "move": { "control": "Brightness DELL SE2216H" }, "duration": 0.3, "easing": "easeInOut" },
+    { "at": 3.9, "drag": "Brightness DELL SE2216H", "from": 1, "to": 0.4, "duration": 1.0, "easing": "easeInOut" },
+    { "at": 5.0, "move": { "control": "Brightness Studio Display" }, "duration": 0.3, "easing": "easeInOut" },
+    { "at": 5.4, "drag": "Brightness Studio Display", "from": 1, "to": 0.4, "duration": 1.0, "easing": "easeInOut" },
+    { "at": 6.5, "move": { "button": "Adjust independently" }, "duration": 0.3, "easing": "easeInOut" },
+    { "at": 6.9, "click": { "button": "Adjust independently" }, "duration": 0.1 },
+    { "at": 7.3, "move": { "control": "Brightness" }, "duration": 0.3, "easing": "easeInOut" },
+    { "at": 7.7, "drag": "Brightness", "from": 0.4, "to": 1, "duration": 0.8, "easing": "easeInOut" }
   ],
   "camera": {
     "16:9": {
       "size": [3840, 2160],
       "panes": [
-        { "rect": [64, 448, 2240, 1260], "keys": [{ "at": 0, "centre": [1280, 720], "height": 1440 }] },
-        { "rect": [2400, 60, 1376, 2040], "keys": [{ "at": 0, "centre": [2334.5, 330], "height": 660 }] }
+        { "rect": [64, 448, 2240, 1260], "keys": [
+          { "at": 0, "centre": [1280, 720], "height": 1440 },
+          { "at": 0.6, "centre": [235, 925], "height": 2700, "easing": "easeInOut" },
+          { "at": 8.6, "centre": [235, 925], "height": 2700 },
+          { "at": 9.2, "centre": [1280, 720], "height": 1440, "easing": "easeInOut" }
+        ] },
+        { "rect": [2400, 60, 1376, 2040], "keys": [{ "at": 0, "centre": [2334.5, 345], "height": 690 }] }
       ]
     },
     "9:16": {
       "size": [2160, 3840],
       "panes": [
         { "rect": [300, 472, 1560, 1260], "keys": [{ "at": 0, "centre": [2334.5, 180], "height": 360 }] },
-        { "rect": [0, 1792, 2160, 1216], "keys": [{ "at": 0, "centre": [1280, 720], "height": 1440 }] }
+        { "rect": [0, 1792, 2160, 1216], "keys": [
+          { "at": 0, "centre": [1280, 720], "height": 1440 },
+          { "at": 0.6, "centre": [235, 925], "height": 2700, "easing": "easeInOut" },
+          { "at": 8.6, "centre": [235, 925], "height": 2700 },
+          { "at": 9.2, "centre": [1280, 720], "height": 1440, "easing": "easeInOut" }
+        ] }
       ]
     }
   }
