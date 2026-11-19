@@ -114,7 +114,7 @@ struct Control {
                 return Double(range.lowerBound)...Double(range.upperBound)
             }, value: { Double(controller.intensity) }),
             // In degrees, as the app has it
-            "Tint": Control(kind: .appKit(HueSlider.self), range: { 0...360 }, value: { Double(controller.tint) }),
+            "Tint": Control(kind: .appKit(ColorScaleSlider.self), range: { 0...360 }, value: { Double(controller.tint) }),
         ]
         if controller.independentDisplays.isEmpty {
             all["Brightness"] = Control(kind: .swiftUI(index: 1), range: { 0...1 }, value: { Double(controller.brightness) })
@@ -204,7 +204,7 @@ enum SwitchAnimations {
 
 /// The app, which takes the mouse events of a shot from the scene while it's recorded. An AppKit
 /// control tracks the mouse while it's pressed in a loop of its own: an NSSlider's (as Tint's
-/// HueSlider overrides mouseDown) checks the button is down (`NSEvent.pressedMouseButtons`, which
+/// ColorScaleSlider overrides mouseDown) checks the button is down (`NSEvent.pressedMouseButtons`, which
 /// asks the window server), then waits for each event in turn (`nextEvent(matching:…)` with no end,
 /// in the event-tracking mode) and looks for any more already there to skip to the latest (with no
 /// date, in a coalescing mode), until the button goes up. So while a shot's recorded, the button is

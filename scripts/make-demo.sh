@@ -9,8 +9,16 @@
 #                                   by frame: the pointer, each slider's value and where its knob is drawn,
 #                                   and the color filter, brightness and appearance Safelight has set, with
 #                                   the calls it made. For a scene with "desktop": true, also desktop.png,
-#                                   and scripts/demo/compose.py makes its videos from them: <scene>-16x9.mp4
+#                                   and scripts/demo/compose.py makes its videos from them: <scene>-16x9.mkv
 #                                   and the rest, as its "camera" has them, and stills/
+#   scripts/make-demo.sh --camera 16:9 <scene>
+#                                   makes only that one of the scene's cameras' videos, when an edit needs
+#                                   no other: half the frames to make. With --verify or --draft too.
+#   scripts/make-demo.sh --draft <scene>
+#                                   makes a small video to look at while working on a scene, in a fraction
+#                                   of the time: every fourth frame at half the size, into build/demo/drafts/
+#                                   <scene>/ (<scene>-16x9-draft.mp4, stills/), leaving the shot in
+#                                   build/demo/<scene>/ as it was
 #   scripts/make-demo.sh --verify <scene>
 #                                   makes it twice and says whether the two are the same, byte for byte
 #   scripts/make-demo.sh --record <scene>
@@ -88,25 +96,41 @@ if [[ "${1-}" == --edit ]]; then
     exec python3 scripts/demo/edit.py "$@"
 fi
 
-VERIFY=0 CHECK=0 RECORD_ONLY=0
-if [[ "${1-}" == --verify ]]; then
-    VERIFY=1
+VERIFY=0 CHECK=0 RECORD_ONLY=0 DRAFT=0 CAMERA=""
+# What compose.py is told besides the scene: which camera, and whether it's a draft
+COMPOSE=()
+while [[ "${1-}" == --* ]]; do
+    case $1 in
+        --verify) VERIFY=1 ;;
+        --record) RECORD_ONLY=1 ;;
+        --check) CHECK=1 ;;
+        --draft) DRAFT=1 COMPOSE+=(--draft) ;;
+        --camera)
+            CAMERA=${2-}
+            COMPOSE+=(--camera "$CAMERA")
+            (( $# > 1 )) && shift ;;
+        *) break ;;
+    esac
     shift
-elif [[ "${1-}" == --record ]]; then
-    RECORD_ONLY=1
-    shift
-elif [[ "${1-}" == --check ]]; then
-    CHECK=1
-    shift
-fi
-if (( $# != 1 && !(CHECK && ($# == 2 || $# == 3)) )) || [[ $# == 3 && "${3-}" != independently ]]; then
-    echo "Usage: scripts/make-demo.sh [--verify | --record] <scene> | --check <scene> [light|dark] [independently], the scene one of: ${(j:, :)${(@)${(f)$(ls scripts/demo/scenes)}:r}}" >&2
+done
+if (( VERIFY + CHECK + RECORD_ONLY + DRAFT > 1 )) || (( $# != 1 && !(CHECK && ($# == 2 || $# == 3)) )) || [[ $# == 3 && "${3-}" != independently ]] ||
+        { (( ${#COMPOSE} )) && (( CHECK || RECORD_ONLY )) }; then
+    echo "Usage: scripts/make-demo.sh [--verify | --draft] [--camera 16:9|9:16] <scene> | --record <scene> | --check <scene> [light|dark] [independently], the scene one of: ${(j:, :)${(@)${(f)$(ls scripts/demo/scenes)}:r}}" >&2
     exit 2
 fi
 SCENE=$1
 SCENE_FILE="scripts/demo/scenes/$SCENE.json"
 if [[ ! -f "$SCENE_FILE" ]]; then
     echo "There's no $SCENE_FILE" >&2
+    exit 2
+fi
+# Said now, not after the recording
+if (( ${#COMPOSE} )) && ! python3 -c 'import json, sys; sys.exit(sys.argv[2] not in json.load(open(sys.argv[1])).get("camera", {}))' "$SCENE_FILE" "${CAMERA:-16:9}" 2>/dev/null; then
+    if [[ -n "$CAMERA" ]]; then
+        echo "$SCENE_FILE has no $CAMERA camera" >&2
+    else
+        echo "$SCENE_FILE has no camera to make a draft's video with" >&2
+    fi
     exit 2
 fi
 
@@ -230,13 +254,17 @@ shoot() {
         python3 scripts/demo/compose.py needs "$SCENE" --folder "$out.new" | while read -r appearance wallpaper independently; do
             windowServer "$SCENE_FILE" -appearance "$appearance" -wallpaperAppearance "$wallpaper" -adjustsDisplaysIndependently "$independently"
         done
-        python3 scripts/demo/compose.py "$SCENE" --folder "$out.new"
+        python3 scripts/demo/compose.py "$SCENE" --folder "$out.new" "${COMPOSE[@]}"
     fi
     rm -rf "$out"
     mv "$out.new" "$out"
 }
 if (( RECORD_ONLY )); then
     shoot "$BUILD_DIR/recorded/$SCENE"
+    exit 0
+fi
+if (( DRAFT )); then
+    shoot "build/demo/drafts/$SCENE"
     exit 0
 fi
 shoot "$OUT"

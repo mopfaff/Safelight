@@ -30,22 +30,25 @@
 #   3. A camera films it: a crop of the stage, moving and zooming as the scene's "camera" says, scaled
 #      in light, as a camera's sensor would take it. A camera can have panes, each a part of the video
 #      filming the stage on its own (a close view of the popover above both displays whole, say).
-#   4. pipeline.to_video() makes the colours of the video, which ffmpeg encodes at fixed settings, so
-#      the same recording gives the same files, byte for byte.
+#   4. pipeline.to_video() makes the colours of the video, which ffmpeg writes as they are (FFV1, which
+#      loses nothing), at fixed settings, so the same recording gives the same files, byte for byte.
 #   A frame made of the same as the one before (Repeats) isn't made again: the video gets the one before's
 #   picture. The pictures every frame is made from are worked out once and shared by the workers (Shot.kept).
 #
 #   compose.py <scene>          writes into build/demo/<scene>/, for each of the scene's cameras (16x9,
-#                               9x16): <scene>-<camera>.mp4, the master, in Display P3 (HEVC, 10 bits, its
-#                               colour tagged so players show the display's own red), and
-#                               stills/<camera>-NNNN.png of the first, middle and last frames, and any
-#                               others the scene lists in "stills", in P3. The demo's sRGB videos are
-#                               edit.py's, from the masters
+#                               9x16), or only the one --camera names: <scene>-<camera>.mkv, the master, in
+#                               Display P3 at 10 bits, every value as it was made (FFV1; a second of 4K
+#                               takes 100 MB or more), and stills/<camera>-NNNN.png of the first, middle
+#                               and last frames, and any others the scene lists in "stills", in P3. The
+#                               master is what edit.py cuts the demo's videos from; players don't open it
+#   compose.py <scene> --draft  writes <scene>-<camera>-draft.mp4 instead, to look at while a scene is
+#                               being worked on: every fourth frame at half the size (H.264, 8 bits, in
+#                               Display P3), and the stills at that size. Nothing is cut from a draft
 #   compose.py check <scene>    compares the recorder's first frame, with the window server's shadow and
 #                               rims added, against the window server's own picture of the popover over the
 #                               same desktop (make-demo.sh --check records both into build/demo/<scene>/check/)
-#   compose.py verify <scene>   decodes the videos as macOS's players do (AVFoundation, colour matched to
-#                               Display P3) and compares them with the colours they were made from
+#   compose.py verify <scene>   decodes the masters and compares them with the values they were made
+#                               from, made again here, on the first, middle and last frames
 #   compose.py needs <scene>    the window server's pictures of the popover over the desktop the recording
 #                               needs, a line for each: the popover's appearance, the wallpaper's picture
 #                               under it, and YES or NO, whether the displays are adjusted independently,
@@ -72,7 +75,7 @@
 # filter off: the desktop with the popover closed (desktop-closed.png), no pointer, at the same
 # brightness, through Night Shift's matrix as CoreBrightness makes it (pipeline.night_shift_matrix).
 #
-# Needs what pipeline.py needs, and ffmpeg with libx265.
+# Needs what pipeline.py needs, and ffmpeg (with libx264 for a draft).
 import argparse, collections, functools, hashlib, json, math, multiprocessing, subprocess, sys, tempfile
 from pathlib import Path
 import numpy as np
@@ -94,10 +97,32 @@ def read_png(path):
     return np.asarray(image.convert(mode), np.float32) / 255, icc
 
 
+def same_profile(icc, other):
+    """Whether two ICC profiles are the same but for when they were made (bytes 24 to 35 of the header).
+    macOS makes a display's profile anew now and then, the same but for that: the Studio Display's of 17
+    November 2026 differed from its 1 November one in those bytes alone, and pictures taken in the one are
+    in the other's colours."""
+    return icc == other or (len(icc) == len(other) and icc[:24] == other[:24] and icc[36:] == other[36:])
+
+
+def display_now(log, number):
+    """The display a recording has as `number`, as macOS numbers it now: displays get new numbers when
+    they're connected again, so it's the one with the name the recording has for that number"""
+    name = next((d["name"] for d in log.get("displays", []) if d["id"] == number), None)
+    _, online, _ = Quartz.CGGetOnlineDisplayList(32, None, None)
+    names = {display: pipeline.Display.live(display).name for display in online}
+    if name is None or names.get(number) == name:
+        return number
+    found = [display for display, its in names.items() if its == name]
+    if len(found) != 1:
+        raise SystemExit(f"The recording's display {number} is {name}, and {len(found)} displays connected now have that name")
+    return found[0]
+
+
 def to_display(rgb, icc, display):
     """Encoded values in the colour space of `icc` matched to the display's, by CoreGraphics, as the
     window server matches a window's"""
-    if icc == display.profile.data:
+    if same_profile(icc, display.profile.data):
         return rgb.astype(np.float32)
     return pipeline.cg_convert(rgb.astype(np.float64), icc, display.profile.data).astype(np.float32)
 
@@ -130,7 +155,7 @@ class WindowServerLayer:
         about = json.loads((self.folder / "about.json").read_text())
         with_shadow, icc = read_png(self.folder / "with-shadow.png")
         alone, alone_icc = read_png(self.folder / "alone.png")
-        if icc != display.profile.data or alone_icc != display.profile.data:
+        if not same_profile(icc, display.profile.data) or not same_profile(alone_icc, display.profile.data):
             raise SystemExit(f"{self.folder}'s pictures aren't in {display.name}'s colours; delete it and make the shot again")
         self.scale = about["scale"]
         self.margin = int(about["margin"] * self.scale)
@@ -158,7 +183,7 @@ class WindowServerLayer:
             if about.get("canvas") != canvas or not np.array_equal(read_png(desktop / "backdrop.png")[0][..., :3], backdrop):
                 continue
             taken, taken_icc = read_png(desktop / "window-server.png")
-            if taken_icc != self.display.profile.data:
+            if not same_profile(taken_icc, self.display.profile.data):
                 raise SystemExit(f"{desktop}'s pictures aren't in {self.display.name}'s colours; delete it and make the shot again")
             picture = np.full(self.shadow.shape[:2] + (3,), np.nan, np.float32)
             window = [round(v * self.scale) for v in about["window"]]
@@ -246,7 +271,7 @@ class Shot:
         desktop = self.log.get("desktop")
         if not desktop:
             raise SystemExit(f"{scene} wasn't recorded on the desktop; give its scene \"desktop\": true")
-        self.display = pipeline.Display.live(desktop["display"])
+        self.display = pipeline.Display.live(display_now(self.log, desktop["display"]))
         if self.display.kind != pipeline.BACKLIGHT:
             raise SystemExit(f"{self.display.name} isn't a display whose backlight Safelight dims, as the desktop's is")
         self.scale = desktop["scale"]
@@ -475,7 +500,7 @@ class Stage:
         if others:
             per_point = desktop["millimetres"][0] / width
             for other in others:
-                display = pipeline.Display.live(other["display"])
+                display = pipeline.Display.live(display_now(shot.log, other["display"]))
                 def desktop(other=other, display=display):
                     pixels, icc = read_png(shot.folder / other["image"])
                     return to_display(pixels[..., :3], icc, display)
@@ -625,13 +650,25 @@ def label(camera):
     return _labels[key]
 
 
+def round_about(values, pick):
+    """The least (`pick` np.minimum) or the most (np.maximum) of each value and the eight round it, those
+    there are at an edge: what scipy.ndimage's minimum_filter and maximum_filter of size 3 give, value for
+    value, many times faster"""
+    down = values.copy()
+    pick(down[1:], values[:-1], out=down[1:])
+    pick(down[:-1], values[1:], out=down[:-1])
+    out = down.copy()
+    pick(out[:, 1:], down[:, :-1], out=out[:, 1:])
+    pick(out[:, :-1], down[:, 1:], out=out[:, :-1])
+    return out
+
+
 def film_pane(shot, camera, frame):
     """A pane's picture of the light the stage gives off on `frame`: each display it films scaled in
     light with a Lanczos filter, kept from ringing: each pixel between the least and the most light of
     the display's pixels round where it's taken from (scaled the same way from the display's darkest and
     brightest in each 3 by 3), so sharp text gets no dark or bright halo. Where a display's edge is in the
     picture, it's scaled with black beyond it, as the stage is there."""
-    from scipy import ndimage
     view = camera.view(frame / shot.fps)
     width, height = camera.rect[2], camera.rect[3]
     per_point = width / (view[2] - view[0])
@@ -671,8 +708,8 @@ def film_pane(shot, camera, frame):
         channels = []
         for c in range(3):
             sharp = scaled(light[..., c], Image.Resampling.LANCZOS)
-            least = scaled(ndimage.minimum_filter(light[..., c], 3), Image.Resampling.BILINEAR)
-            most = scaled(ndimage.maximum_filter(light[..., c], 3), Image.Resampling.BILINEAR)
+            least = scaled(round_about(light[..., c], np.minimum), Image.Resampling.BILINEAR)
+            most = scaled(round_about(light[..., c], np.maximum), Image.Resampling.BILINEAR)
             channels.append(np.clip(sharp, least, most))
         picture[v0:v1, u0:u1] += np.dstack(channels).astype(np.float64)
     return picture
@@ -680,15 +717,29 @@ def film_pane(shot, camera, frame):
 
 # --- The videos -----------------------------------------------------------------------------------
 
-# Each kind of video: the colour space its values are in, its bits, and how ffmpeg encodes it. The tags
-# say Display P3's primaries (SMPTE EG 432-1), the sRGB tone curve (IEC 61966-2-1) it uses, and BT.709's
-# luma and chroma at video's limited range, as the values are made here. (Each shot also had an sRGB copy,
-# H.264 at 8 bits, until 18 November 2026: nothing used it, as edit.py makes the demo's sRGB videos from
-# the masters.)
-VIDEOS = {
-    "": ("display-p3", 10, ["-c:v", "libx265", "-preset", "slow", "-crf", "12", "-tag:v", "hvc1",
-                            "-x265-params", "log-level=error:lookahead-slices=0:colorprim=smpte432:transfer=iec61966-2-1:colormatrix=bt709:range=limited:chromaloc=0"]),
-}
+# Each kind of video: what its name ends in, the colour space its values are in, its bits, and how ffmpeg
+# encodes it. The tags say Display P3's primaries (SMPTE EG 432-1), the sRGB tone curve (IEC 61966-2-1) it
+# uses, and BT.709's luma and chroma at video's limited range, as the values are made here.
+# The master is FFV1, which keeps every value: it's only what edit.py cuts from, and encoding it costs a
+# fiftieth of what the HEVC it was until 19 November 2026 did (x265 at slow and crf 12 took 6.8 s of
+# processor time for a 4K frame, nearly three quarters of a make, FFV1 0.12 s), for 100 MB or more a
+# second of 4K. Each frame on its own, in 24 slices, so the file doesn't depend on how many threads wrote it.
+MASTER = (".mkv", "display-p3", 10, ["-c:v", "ffv1", "-level", "3", "-g", "1", "-slices", "24", "-slicecrc", "1"])
+# A draft is for looking at, in QuickTime Player or a browser: every DRAFT_STEP-th frame at half the size
+DRAFT = ("-draft.mp4", "display-p3", 8, ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-movflags", "+write_colr+faststart"])
+DRAFT_STEP = 4
+
+
+def draft_spec(spec):
+    """A camera's video at half the size, its panes with it"""
+    def half(values):
+        if any(v % 4 for v in values):
+            raise SystemExit(f"A draft is half the size, in even numbers of pixels, which {values} can't be halved to")
+        return [v // 2 for v in values]
+    spec = dict(spec, size=half(spec["size"]))
+    if "panes" in spec:
+        spec["panes"] = [dict(pane, rect=half(pane["rect"])) for pane in spec["panes"]]
+    return spec
 
 
 def ycbcr(values, bits):
@@ -708,6 +759,29 @@ def ycbcr(values, bits):
     return b"".join(np.clip(p, 0, (1 << bits) - 1).astype(dtype).tobytes() for p in planes)
 
 
+def rgb_from_ycbcr(raw, width, height):
+    """A frame of a 10-bit 4:2:0 master as its encoded values, 0...1: ycbcr undone, the chroma taken back
+    to every pixel from where it sits, at the left of its two columns, between its two rows"""
+    planes = np.frombuffer(raw, "<u2")
+    n = width * height
+    y = (planes[:n].reshape(height, width).astype(np.float32) / 4 - 16) / 219
+
+    def chroma(plane):
+        c = (plane.reshape(height // 2, width // 2).astype(np.float32) / 4 - 128) / 224
+        above, below = np.vstack([c[:1], c[:-1]]), np.vstack([c[1:], c[-1:]])
+        rows = np.empty((height, width // 2), np.float32)
+        rows[0::2], rows[1::2] = 0.75 * c + 0.25 * above, 0.75 * c + 0.25 * below
+        out = np.empty((height, width), np.float32)
+        out[:, 0::2] = rows
+        out[:, 1::2] = (rows + np.hstack([rows[:, 1:], rows[:, -1:]])) / 2
+        return out
+
+    cb, cr = chroma(planes[n:n + n // 4]), chroma(planes[n + n // 4:])
+    r, b = y + 1.5748 * cr, y + 1.8556 * cb
+    g = (y - 0.2126 * r - 0.0722 * b) / 0.7152
+    return np.clip(np.dstack([r, g, b]), 0, 1)
+
+
 def ffmpeg(path, camera, fps, space, bits, settings):
     """ffmpeg encoding the planes it's sent as they are. The raw frames are tagged with the colours
     they're in, as the video is: untagged, ffmpeg takes them for BT.601 and converts them to the
@@ -717,7 +791,7 @@ def ffmpeg(path, camera, fps, space, bits, settings):
     colours = ["-color_primaries", primaries, "-color_trc", "iec61966-2-1", "-colorspace", "bt709", "-color_range", "tv", "-chroma_sample_location", "left"]
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", pixel_format,
                "-s", f"{camera.size[0]}x{camera.size[1]}", "-r", str(fps), *colours, "-i", "-",
-               *settings, "-pix_fmt", pixel_format, *colours, "-movflags", "+write_colr", "-map_metadata", "-1",
+               *settings, "-pix_fmt", pixel_format, *colours, "-map_metadata", "-1",
                "-fflags", "+bitexact", "-flags:v", "+bitexact", str(path)]
     return subprocess.Popen(command, stdin=subprocess.PIPE)
 
@@ -731,16 +805,10 @@ def _open(scene, folder, cache):
 
 
 def _render(task):
-    """One frame of one video: its planes for each kind, and its P3 values if it's kept as a still"""
-    cameras, frame, still = task
-    light = film(_shot, cameras, frame)
-    videos = {}
-    for suffix, (space, bits, _) in VIDEOS.items():
-        values = pipeline.to_video(light, _shot.display, space, 16).astype(np.float64) / 65535
-        videos[suffix] = ycbcr(values, bits)
-        if still and space == "display-p3":
-            videos["still"] = np.round(values * 255).astype(np.uint8)
-    return videos
+    """One frame of one video: its planes, at so many bits, and its P3 values if it's kept as a still"""
+    cameras, frame, still, space, bits = task
+    values = pipeline.to_video(film(_shot, cameras, frame), _shot.display, space, 16).astype(np.float64) / 65535
+    return ycbcr(values, bits), np.round(values * 255).astype(np.uint8) if still else None
 
 
 class Repeats:
@@ -748,7 +816,8 @@ class Repeats:
     byte for byte), the same record in the log but for what nothing here draws from (its number and time,
     the time of day and clock time, the calls the app made), and the same view in each pane. Such a frame
     comes out the same as the one before, byte for byte, so it's that one's picture again. 9–40% of a
-    shot's frames were, where nothing moves: before and after a drag, on a hold."""
+    shot's frames were, where nothing moves: before and after a drag, on a hold. In a draft, the one
+    before is the one made before, a few frames back."""
 
     UNDRAWN = {"frame", "time", "timeOfDay", "clockTime", "calls"}
 
@@ -757,43 +826,54 @@ class Repeats:
         self.records = [json.dumps({k: v for k, v in record.items() if k not in self.UNDRAWN}, sort_keys=True) for record in shot.log["frames"]]
         self.pictures = [hashlib.sha256((shot.folder / "frames" / f"{frame:04d}.png").read_bytes()).digest() for frame in range(shot.count)]
 
-    def same_as_before(self, cameras, frame):
-        if frame == 0 or self.records[frame] != self.records[frame - 1] or self.pictures[frame] != self.pictures[frame - 1]:
+    def same(self, cameras, frame, before):
+        if before < 0 or self.records[frame] != self.records[before] or self.pictures[frame] != self.pictures[before]:
             return False
-        return all(camera.view(frame / self.shot.fps) == camera.view((frame - 1) / self.shot.fps) for camera in cameras)
+        return all(camera.view(frame / self.shot.fps) == camera.view(before / self.shot.fps) for camera in cameras)
 
 
-def compose(scene, folder, workers):
+def cameras_of(shot, only=None):
+    """The scene's cameras by name, or the one named `only`"""
+    specs = shot.scene["camera"]
+    if only is not None and only not in specs:
+        raise SystemExit(f"{shot.name} has no {only} camera; it has {', '.join(specs)}")
+    return {name: spec for name, spec in specs.items() if only in (None, name)}
+
+
+def compose(scene, folder, workers, only=None, draft=False):
+    suffix, space, bits, settings = DRAFT if draft else MASTER
+    step = DRAFT_STEP if draft else 1
     # The pictures every frame is made from, made here once and shared by the workers (Shot.kept)
     with tempfile.TemporaryDirectory(prefix=f"compose-{scene}-") as cache:
         shot = Shot(scene, folder, cache)
-        videos = [Camera.all(name, spec, shot.stage.bounds) for name, spec in shot.scene["camera"].items()]
-        stills = {0, shot.count // 2, shot.count - 1} | set(shot.scene.get("stills", []))
+        videos = [Camera.all(name, draft_spec(spec) if draft else spec, shot.stage.bounds) for name, spec in cameras_of(shot, only).items()]
+        # A draft's stills are of the frames it has
+        stills = {frame - frame % step for frame in {0, shot.count // 2, shot.count - 1} | set(shot.scene.get("stills", []))}
         (shot.folder / "stills").mkdir(exist_ok=True)
         repeats = Repeats(shot)
         with multiprocessing.get_context("spawn").Pool(workers, _open, (scene, folder, cache)) as pool:
             for cameras in videos:
                 camera = cameras[0]
                 name = camera.name.replace(":", "x")
-                encoders = {suffix: ffmpeg(shot.folder / f"{scene}-{name}{suffix}.mp4", camera, shot.fps, space, bits, settings)
-                            for suffix, (space, bits, settings) in VIDEOS.items()}
+                path = shot.folder / f"{scene}-{name}{suffix}"
+                encoder = ffmpeg(path, camera, shot.fps / step, space, bits, settings)
 
-                def write(frame, videos):
-                    for suffix, encoder in encoders.items():
-                        encoder.stdin.write(videos[suffix])
+                def write(frame, result):
+                    planes, still = result
+                    encoder.stdin.write(planes)
                     if frame in stills:
-                        pipeline.save(str(shot.folder / "stills" / f"{name}-{frame:04d}.png"), videos["still"])
+                        pipeline.save(str(shot.folder / "stills" / f"{name}-{frame:04d}.png"), still)
                     print(f"\r{name}: {frame + 1}/{shot.count}", end="", flush=True)
 
                 # Written in order, with only so many frames waiting at once; a frame that's the same as the
                 # one before is that one's picture again (but a still is made, for its P3 values)
                 waiting = collections.deque()
                 made = 0
-                for frame in range(shot.count):
-                    if waiting and frame not in stills and repeats.same_as_before(cameras, frame):
+                for frame in range(0, shot.count, step):
+                    if waiting and frame not in stills and repeats.same(cameras, frame, frame - step):
                         waiting.append((frame, waiting[-1][1]))
                     else:
-                        waiting.append((frame, pool.apply_async(_render, ((cameras, frame, frame in stills),))))
+                        waiting.append((frame, pool.apply_async(_render, ((cameras, frame, frame in stills, space, bits),))))
                         made += 1
                     if len(waiting) > 2 * workers:
                         done, result = waiting.popleft()
@@ -801,12 +881,11 @@ def compose(scene, folder, workers):
                 while waiting:
                     done, result = waiting.popleft()
                     write(done, result.get())
-                for suffix, encoder in encoders.items():
-                    encoder.stdin.close()
-                    if encoder.wait() != 0:
-                        raise SystemExit(f"ffmpeg couldn't encode {scene}-{name}{suffix}.mp4")
-                print(f"\r{name}: {', '.join(f'{scene}-{name}{suffix}.mp4' for suffix in VIDEOS)}, "
-                      f"{shot.count - made} of its {shot.count} frames the same as the one before")
+                encoder.stdin.close()
+                if encoder.wait() != 0:
+                    raise SystemExit(f"ffmpeg couldn't encode {path.name}")
+                count = len(range(0, shot.count, step))
+                print(f"\r{name}: {path.name}, {path.stat().st_size / 1e6:.0f} MB, {count - made} of its {count} frames the same as the one before")
 
 
 # --- Checks ---------------------------------------------------------------------------------------
@@ -829,7 +908,7 @@ def check(folder):
     recorder, recorder_icc = read_png(folder / "recorder.png")
     backdrop, backdrop_icc = read_png(folder / "backdrop.png")
     theirs, theirs_icc = read_png(folder / "window-server.png")
-    if theirs_icc != display.profile.data:
+    if not same_profile(theirs_icc, display.profile.data):
         raise SystemExit("The window server's picture isn't in the display's colours")
     layer = WindowServerLayer(about["appearance"], about["window"][2:], display)
     scale = about["scale"]
@@ -861,42 +940,47 @@ def check(folder):
     Image.fromarray(np.clip(diff * 16, 0, 255).astype(np.uint8)).save(folder / "difference.png")
 
 
-def decode(path, count, wanted):
-    """The frames numbered in `wanted` of a video of `count` frames, decoded by AVFoundation, as QuickTime
-    Player and Safari decode them, with their colours matched to Display P3: each one's number and values"""
-    import AVFoundation, CoreMedia
-    asset = AVFoundation.AVURLAsset.URLAssetWithURL_options_(Foundation_url(path), None)
-    track = asset.tracksWithMediaType_(AVFoundation.AVMediaTypeVideo)[0]
-    settings = {Quartz.kCVPixelBufferPixelFormatTypeKey: Quartz.kCVPixelFormatType_64RGBAHalf,
-                AVFoundation.AVVideoColorPropertiesKey: {
-                    AVFoundation.AVVideoColorPrimariesKey: AVFoundation.AVVideoColorPrimaries_P3_D65,
-                    AVFoundation.AVVideoTransferFunctionKey: AVFoundation.AVVideoTransferFunction_IEC_sRGB,
-                    AVFoundation.AVVideoYCbCrMatrixKey: AVFoundation.AVVideoYCbCrMatrix_ITU_R_709_2}}
-    reader = AVFoundation.AVAssetReader.alloc().initWithAsset_error_(asset, None)[0]
-    output = AVFoundation.AVAssetReaderTrackOutput.alloc().initWithTrack_outputSettings_(track, settings)
-    reader.addOutput_(output)
-    reader.startReading()
-    frame = 0
-    while (sample := output.copyNextSampleBuffer()) is not None:
-        if frame in wanted:
-            yield frame, pixel_buffer(CoreMedia.CMSampleBufferGetImageBuffer(sample))
-        frame += 1
-    if frame != count:
-        raise SystemExit(f"{path.name} has {frame} frames, not {count}")
+def master_of(shot, name):
+    """A camera's master in the shot's folder, or nothing if that camera's wasn't made"""
+    path = shot.folder / f"{shot.name}-{name.replace(':', 'x')}{MASTER[0]}"
+    return path if path.exists() else None
+
+
+def decode(path, size, count, wanted):
+    """The frames numbered in `wanted` of a master of `count` frames, each `size` in pixels: each one's
+    number and its 10-bit planes, as ffmpeg decodes them, which is as they were written"""
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries", "stream=nb_read_packets",
+                            "-of", "csv=p=0", str(path)], capture_output=True, text=True, check=True).stdout.strip().strip(",")
+    if int(probe) != count:
+        raise SystemExit(f"{path.name} has {probe} frames, not {count}")
+    picked = "+".join(f"eq(n\\,{frame})" for frame in sorted(wanted))
+    process = subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path), "-map", "0:v:0", "-vf", f"select={picked}",
+                                "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-"], stdout=subprocess.PIPE)
+    length = size[0] * size[1] * 3
+    for frame in sorted(wanted):
+        raw = process.stdout.read(length)
+        if len(raw) != length:
+            raise SystemExit(f"Couldn't decode frame {frame} of {path.name}")
+        yield frame, raw
+    process.stdout.close()
+    process.wait()
 
 
 def verify(scene, folder):
-    """Each video decoded by AVFoundation, as QuickTime Player and Safari decode it, with its colours
-    matched to Display P3, against the values it was made from, on its stills' frames"""
+    """Each master's first, middle and last frames, decoded, against the values they're made from, made
+    again here: the same, value for value, or how many aren't"""
     shot = Shot(scene, folder)
+    suffix, space, bits, _ = MASTER
     for name, spec in shot.scene["camera"].items():
+        if not (path := master_of(shot, name)):
+            print(f"{name}: no master, not made")
+            continue
         camera = Camera.all(name, spec, shot.stage.bounds)
-        name = name.replace(":", "x")
-        for suffix, (space, bits, _) in VIDEOS.items():
-            path = shot.folder / f"{scene}-{name}{suffix}.mp4"
-            for frame, decoded in decode(path, shot.count, {0, shot.count // 2, shot.count - 1}):
-                made = pipeline.to_video(film(shot, camera, frame), shot.display, space, 16).astype(np.float64) / 65535
-                report(f"{path.name} frame {frame}", np.round(decoded * 255), np.round(np.clip(made, 0, 1) * 255))
+        for frame, decoded in decode(path, camera[0].size, shot.count, {0, shot.count // 2, shot.count - 1}):
+            made = ycbcr(pipeline.to_video(film(shot, camera, frame), shot.display, space, 16).astype(np.float64) / 65535, bits)
+            ours, theirs = np.frombuffer(made, "<u2").astype(np.int32), np.frombuffer(decoded, "<u2").astype(np.int32)
+            off = np.abs(ours - theirs)
+            print(f"{path.name} frame {frame}: " + ("every value as made" if not off.any() else f"{np.count_nonzero(off)} of {off.size} values differ, by {off.max()} at most"))
 
 
 def hues(scene, folder, size=40):
@@ -915,15 +999,17 @@ def hues(scene, folder, size=40):
     x, y, w, h = shot.log["desktop"]["popover"]
     popover = (x - 48, y - 48, x + w + 48, y + h + 48)
     for name, spec in shot.scene["camera"].items():
+        if not (path := master_of(shot, name)):
+            continue
         camera = Camera(name, spec, shot.stage.bounds)
         views = {frame: camera.view(frame / shot.fps) for frame in wanted}
         left, top = max(v[0] for v in views.values()) + 4, max(max(v[1] for v in views.values()) + 4, 40)
         right, bottom = min(v[2] for v in views.values()) - 4, min(v[3] for v in views.values()) - 4
         squares = [(sx, sy, sx + size, sy + size) for sx in np.arange(left, right - size, size) for sy in np.arange(top, bottom - size, size)
                    if sx + size <= popover[0] or sx >= popover[2] or sy + size <= popover[1] or sy >= popover[3]]
-        path = shot.folder / f"{scene}-{name.replace(':', 'x')}.mp4"
         print(f"{path.name}, {len(squares)} squares of {size} points:")
-        for frame, decoded in decode(path, shot.count, set(wanted)):
+        for frame, raw in decode(path, camera.size, shot.count, set(wanted)):
+            decoded = rgb_from_ycbcr(raw, *camera.size)
             matrix = pipeline.tint_matrix(tint[frame] / 360, frames[frame]["system"]["intensity"])
             brightness = shot.settings(frame)[1]
             view = views[frame]
@@ -1060,6 +1146,8 @@ def main():
     parser.add_argument("scene")
     parser.add_argument("--folder", help="where the recording is, and the videos go: build/demo/<scene>/ unless given")
     parser.add_argument("--workers", type=int, default=min(multiprocessing.cpu_count(), 8))
+    parser.add_argument("--camera", help="make only this one of the scene's cameras (16:9, 9:16), not all of them")
+    parser.add_argument("--draft", action="store_true", help="a small video to look at, not the master: every fourth frame at half the size")
     args = parser.parse_args()
     if args.command == "check":
         check(args.folder or BUILD / args.scene / "check")
@@ -1075,7 +1163,7 @@ def main():
         for popover, wallpaper, size in log.needs():
             print(popover, wallpaper, "YES" if log.independently[size] else "NO")
     else:
-        compose(args.scene, args.folder, args.workers)
+        compose(args.scene, args.folder, args.workers, args.camera, args.draft)
 
 
 if __name__ == "__main__":

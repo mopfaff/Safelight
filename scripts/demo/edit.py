@@ -11,8 +11,9 @@
 #                                colours, and compares them with the frames they were made from
 #
 # Only editorial things happen here: cuts between shots, captions, the end card faded in over the last shot.
-# Nothing changes what a screen shows inside a shot. Each shot's master (its <scene>-<camera>.mp4, Display
-# P3, HEVC, 10 bits) is decoded here as it was encoded (compose.ycbcr: BT.709's luma and chroma at video's
+# Nothing changes what a screen shows inside a shot. Each shot's master (its <scene>-<camera>.mkv, Display
+# P3, 10 bits, every value as compose.py made it; or the .mp4, in HEVC, of a shot made before 19 November
+# 2026) is decoded here as it was encoded (compose.ycbcr: BT.709's luma and chroma at video's
 # limited range, chroma at the left of its two columns), so the values are the master's own; a 16:9 master,
 # 3840×2160, is halved to 1920×1080 by averaging each 2×2 pixels' light, as compose.py's camera scales.
 #
@@ -54,7 +55,7 @@ import numpy as np
 import Quartz
 from PIL import Image, ImageDraw, ImageFont
 import pipeline
-from compose import Foundation_url, pixel_buffer, report, ycbcr
+from compose import Foundation_url, pixel_buffer, report, rgb_from_ycbcr, ycbcr
 
 ROOT = Path(__file__).resolve().parents[2]
 EDITS = ROOT / "scripts" / "demo" / "edits"
@@ -103,29 +104,6 @@ def in_space(values, space):
     return to_values(to_light(values) @ P3_TO_SRGB.T)
 
 
-def rgb_from_ycbcr(raw, width, height):
-    """A frame of a 10-bit 4:2:0 master as its encoded values, 0...1: compose.ycbcr undone, the chroma
-    taken back to every pixel from where it sits, at the left of its two columns, between its two rows"""
-    planes = np.frombuffer(raw, "<u2")
-    n = width * height
-    y = (planes[:n].reshape(height, width).astype(np.float32) / 4 - 16) / 219
-
-    def chroma(plane):
-        c = (plane.reshape(height // 2, width // 2).astype(np.float32) / 4 - 128) / 224
-        above, below = np.vstack([c[:1], c[:-1]]), np.vstack([c[1:], c[-1:]])
-        rows = np.empty((height, width // 2), np.float32)
-        rows[0::2], rows[1::2] = 0.75 * c + 0.25 * above, 0.75 * c + 0.25 * below
-        out = np.empty((height, width), np.float32)
-        out[:, 0::2] = rows
-        out[:, 1::2] = (rows + np.hstack([rows[:, 1:], rows[:, -1:]])) / 2
-        return out
-
-    cb, cr = chroma(planes[n:n + n // 4]), chroma(planes[n + n // 4:])
-    r, b = y + 1.5748 * cr, y + 1.8556 * cb
-    g = (y - 0.2126 * r - 0.0722 * b) / 0.7152
-    return np.clip(np.dstack([r, g, b]), 0, 1)
-
-
 # --- The edit -------------------------------------------------------------------------------------
 
 def smooth(x):
@@ -161,9 +139,11 @@ class Edit:
         self.clips = []
         for clip in self.spec["clips"]:
             scene = json.loads((SCENES / f"{clip['shot']}.json").read_text())
-            master = (BUILD / clip["shot"] / f"{clip['shot']}-{camera.replace(':', 'x')}.mp4")
-            if not master.exists():
-                raise SystemExit(f"There's no {master.relative_to(ROOT)}: make it with scripts/make-demo.sh {clip['shot']}")
+            # The master as compose.py makes it, or as it did before 19 November 2026
+            named = BUILD / clip["shot"] / f"{clip['shot']}-{camera.replace(':', 'x')}"
+            master = next((path for path in (named.with_name(named.name + end) for end in (".mkv", ".mp4")) if path.exists()), None)
+            if not master:
+                raise SystemExit(f"There's no {named.relative_to(ROOT)}.mkv: make it with scripts/make-demo.sh {clip['shot']}")
             size = tuple(scene["camera"][camera]["size"])
             scale = size[0] // self.size[0]
             if size[0] != self.size[0] * scale or size[1] != self.size[1] * scale:
