@@ -15,24 +15,17 @@
 #               in points, as a camera's key in a scene has them. "label", "clock" and "caption" say where the
 #               words go: "x", "y" (the middle of their height) and "size" in pixels, "align" left, centre or
 #               right of x
-#   "document"  the window on the desktop: its "frame" on the popover's display (left, top, width, height in
-#               points). It's the storyboard's stand-in for a real app's window: a real AppKit window with a
-#               text document, pictured by the window server in Light and Dark (storyboard/DocumentWindow.swift,
-#               built and run here when its pictures are missing; nothing shows on screen), put over the
-#               desktop under the popover's layer as the window server puts one window's picture over what's
-#               behind, in the menu bar's appearance on that frame. It has to be clear of the popover: the
-#               popover's glass was recorded over the desktop without it
 #   "shots"     in order, each with "name", "from" and "to" in seconds of the video, "label" (the words over
 #               the screen), "what" (what happens, for the sheet), and "stills": each the "recording" (a scene's
 #               name, or drafts/<scene>) and "frame" it's of, the "layout" (16:9 unless given), "caption"
 #               and "small" (the words under the screen then), "label" (if not the shot's), "icon" (true:
 #               Safelight's icon before the label), "clock" (true: the scene's time of day on that
-#               frame, large), "views" (a pane's view, if not the layout's), "document" (false: no window)
-#               and "note" (how the shot as re-made will differ from this still). "picture" instead of a
-#               recording is a finished picture's path under build/demo/, shown as it is
+#               frame, large), "views" (a pane's view, if not the layout's) and "note" (how the shot as
+#               re-made will differ from this still). "picture" instead of a recording is a finished
+#               picture's path under build/demo/, shown as it is
 #
-# Needs what compose.py needs, and swiftc for the document window's pictures.
-import argparse, json, subprocess, sys
+# Needs what compose.py needs.
+import argparse, json
 from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -49,67 +42,6 @@ def font(size, weight="Semibold"):
     f = ImageFont.truetype(FONT, round(size))
     f.set_variation_by_name(weight)
     return f
-
-
-# --- The document window --------------------------------------------------------------------------
-
-def document_pictures(size):
-    """The window server's pictures of the document window, Light and Dark, taken when they're missing or
-    of another size: DocumentWindow.swift, built here. Each as its values (straight alpha), its colour
-    profile, and where the window's own top left is in it, in pixels"""
-    folder = OUT / "window"
-    about = folder / "about.json"
-    wanted = {"size": list(size), "source": (ROOT / "scripts/demo/storyboard/DocumentWindow.swift").read_text()}
-    if not about.exists() or json.loads(about.read_text()) != wanted:
-        folder.mkdir(parents=True, exist_ok=True)
-        tool = folder / "DocumentWindow"
-        subprocess.run(["xcrun", "swiftc", "-swift-version", "5", "-O", "-o", str(tool), str(ROOT / "scripts/demo/storyboard/DocumentWindow.swift")], check=True)
-        subprocess.run([str(tool), str(folder), str(size[0]), str(size[1])], check=True)
-        about.write_text(json.dumps(wanted))
-    pictures = {}
-    for appearance in ("light", "dark"):
-        pixels, icc = compose.read_png(folder / f"window-{appearance}.png")
-        solid = pixels[..., 3] == 1
-        h, w = solid.shape
-        top, left = int(np.argmax(solid[:, w // 2])), int(np.argmax(solid[h // 2]))
-        if not solid[top, w // 2] or (w - left - int(np.argmax(solid[h // 2, ::-1])), h - top - int(np.argmax(solid[::-1, w // 2]))) != (size[0] * 2, size[1] * 2):
-            raise SystemExit(f"window-{appearance}.png isn't a picture of a window {size[0]}×{size[1]} points")
-        pictures[appearance] = (pixels, icc, (left, top))
-    return pictures
-
-
-class Recording(compose.Shot):
-    """A recorded scene with the storyboard's document window on its desktop"""
-
-    def __init__(self, scene, folder, document):
-        self.document = None
-        super().__init__(scene, folder)
-        if document:
-            x, y, w, h = document["frame"]
-            px, py, pw, ph = self.window[0] - 80, self.window[1], self.window[2] + 160, self.window[3] + 80
-            if x * self.scale < px + pw and (x + w) * self.scale > px and y * self.scale < py + ph:
-                raise SystemExit("The document window is under the popover, whose glass was recorded without it")
-            self.document = {}
-            for appearance, (pixels, icc, (left, top)) in document_pictures((w, h)).items():
-                values = np.dstack([compose.to_display(pixels[..., :3], icc, self.display), pixels[..., 3:]])
-                self.document[appearance] = (values, (round(x * self.scale) - left, round(y * self.scale) - top))
-
-    def desktop_state(self, frame, region):
-        desktop = super().desktop_state(frame, region)
-        if not self.document:
-            return desktop
-        record = self.log["frames"][frame]
-        appearance = record["desktop"]["menuBar"] if "desktop" in record else self.popover_state(frame)[0]
-        values, (wx, wy) = self.document[appearance]
-        x0, y0, x1, y1 = region
-        ix0, iy0, ix1, iy1 = max(x0, wx), max(y0, wy), min(x1, wx + values.shape[1]), min(y1, wy + values.shape[0])
-        if ix0 >= ix1 or iy0 >= iy1:
-            return desktop
-        desktop = np.array(desktop, np.float32)
-        part = values[iy0 - wy:iy1 - wy, ix0 - wx:ix1 - wx]
-        under = desktop[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0]
-        desktop[iy0 - y0:iy1 - y0, ix0 - x0:ix1 - x0] = part[..., :3] * part[..., 3:] + (1 - part[..., 3:]) * under
-        return desktop
 
 
 # --- The stills -----------------------------------------------------------------------------------
@@ -131,11 +63,10 @@ def still(board, recordings, layout_name, entry, label):
     width, height = (v // SCALE for v in layout["size"])
     if "picture" in entry:
         return np.asarray(Image.open(BUILD / entry["picture"]).convert("RGB").resize((width, height), Image.LANCZOS))
-    key = (entry["recording"], entry.get("document", True))
-    if key not in recordings:
+    if entry["recording"] not in recordings:
         folder = BUILD / entry["recording"]
-        recordings[key] = Recording(folder.name, folder, board.get("document") if key[1] else None)
-    shot = recordings[key]
+        recordings[entry["recording"]] = compose.Shot(folder.name, folder)
+    shot = recordings[entry["recording"]]
     cameras = []
     for name, pane in layout["panes"].items():
         view = entry.get("views", {}).get(name, pane)

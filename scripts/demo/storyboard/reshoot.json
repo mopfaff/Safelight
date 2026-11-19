@@ -1,7 +1,6 @@
 {
   "title": "Safelight demo, re-shoot: storyboard",
-  "about": "One world for the whole video: Sonoma Horizon by day and Sonoma by night, a document open on the desktop, and one fixed layout, the whole screen beside the popover large enough to read (the menu bar's clock with it), with no camera move. Every shot starts and ends on the same plain afternoon screen, so each change of look is something the popover just did, never a cut. Every still is a recording composed in this layout by the real pipeline: shots 2 and 3 from drafts of their new scenes, the rest from the existing recordings, whose notes say how the re-made shot will differ. Not yet as it will be: the document window is a stand-in (a real AppKit window, pictured by the window server) for the real app's window, and the menu bar's clock says 21:00 in shots 1 to 4, where it will say the afternoon time shot 5 starts from.",
-  "document": { "frame": [250, 170, 1560, 1040] },
+  "about": "One world for the whole video: Sonoma Horizon by day and Sonoma by night, the desktop with nothing on it but Safelight's popover, and one fixed layout, the whole screen beside the popover large enough to read (the menu bar's clock with it), with no camera move. Every shot starts and ends on the same plain afternoon screen, so each change of look is something the popover just did, never a cut. Every still is a recording composed in this layout by the real pipeline: shots 2 and 3 from drafts of their new scenes, the rest from the existing recordings, whose notes say how the re-made shot will differ. Not yet as it will be: the menu bar's clock says 21:00 in shots 1 to 4, where it will say the afternoon time shot 5 starts from.",
   "layouts": {
     "16:9": {
       "size": [3840, 2160],
@@ -30,7 +29,7 @@
       "from": 0,
       "to": 3.5,
       "label": "Safelight",
-      "what": "The plain afternoon screen: Light, a document open, Safelight's popover open from the menu bar, everything off. Nothing changes; the pointer comes to rest by Color filters. The README's first sentence is the caption.",
+      "what": "The plain afternoon screen: Light, Safelight's popover open from the menu bar, everything off. Nothing changes; the pointer comes to rest by Color filters. The README's first sentence is the caption.",
       "stills": [
         { "recording": "dark-switch", "frame": 0, "caption": ["Your Mac’s color filter, brightness and", "Light/Dark appearance, on one schedule."], "icon": true }
       ]
@@ -40,9 +39,9 @@
       "from": 3.5,
       "to": 11.3,
       "label": "Color filter",
-      "what": "Color filters clicked on; Intensity dragged from Low to High, and the white page goes fully red (2.2 s). Then Tint dragged once round the colours and back to red (3 s). Color filters clicked off: the plain screen again. Recorded as a draft of the new scene, color-filter.",
+      "what": "Color filters clicked on; Intensity dragged from Low to High, and the screen goes fully red, the popover's white with it (2.2 s). Then Tint dragged once round the colours and back to red (3 s). Color filters clicked off: the plain screen again. Recorded as a draft of the new scene, color-filter.",
       "stills": [
-        { "recording": "drafts/color-filter", "frame": 126, "caption": "Tints the whole screen", "small": "the page, the photo, even the pointer" },
+        { "recording": "drafts/color-filter", "frame": 126, "caption": "Tints the whole screen", "small": "the desktop, the menu bar, even the pointer" },
         { "recording": "drafts/color-filter", "frame": 204, "caption": "All the way to red", "small": "further than Night Shift goes" },
         { "recording": "drafts/color-filter", "frame": 290, "caption": "Or any other tint" },
         { "recording": "drafts/color-filter", "frame": 462, "caption": "Or any other tint", "note": "Color filters clicked off: the plain screen again, where the next shot starts." }
@@ -63,7 +62,7 @@
       "from": 15.3,
       "to": 21.3,
       "label": "Light / Dark",
-      "what": "Dark clicked: the menu bar, the document and the popover change over as macOS does it (0.5 s) and the wallpaper dissolves to its night picture (2 s). Then Light clicked, and it all comes back.",
+      "what": "Dark clicked: the menu bar and the popover change over as macOS does it (0.5 s) and the wallpaper dissolves to its night picture (2 s). Then Light clicked, and it all comes back.",
       "stills": [
         { "recording": "dark-switch", "frame": 110, "caption": "Light or Dark in one click", "small": "with a wallpaper for each" },
         { "recording": "dark-switch", "frame": 329, "caption": "Light or Dark in one click", "small": "with a wallpaper for each", "note": "Re-made: then a click on Light, back to the afternoon screen." }
@@ -105,7 +104,7 @@
       "what": "In this layout both displays fit only this small, and the dimming is the same idea as shot 3, so it goes into shot 3's caption. Bringing it back would be the one shot with a different picture on the left.",
       "label": "Brightness",
       "stills": [
-        { "recording": "two-displays", "frame": 470, "document": false, "caption": "Each display dims on its own", "views": { "screen": { "centre": [235, 925], "height": 2700 }, "popover": { "centre": [2295, 350], "height": 700 } }, "note": "From the old two-displays recording (Dark, Sonoma)." }
+        { "recording": "two-displays", "frame": 470, "caption": "Each display dims on its own", "views": { "screen": { "centre": [235, 925], "height": 2700 }, "popover": { "centre": [2295, 350], "height": 700 } }, "note": "From the old two-displays recording (Dark, Sonoma)." }
       ]
     }
   ]
