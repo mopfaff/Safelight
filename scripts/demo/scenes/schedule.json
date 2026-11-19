@@ -1,5 +1,5 @@
 {
-  "about": "The re-shoot's Schedule shot: a day's evening on Safelight's Schedule as a timelapse, from 17:15 to 22:45: the screen plain white in the afternoon, then from 17:30 warmer and dimmer, the color filter coming on in amber at 18:25 and deepening to orange, the switch to Dark at 20:30, played in real time as macOS fades the screen and dissolves the wallpaper, and a deep, dim red by 22:30. Safelight's own schedule code sets every minute from its own timer; the menu bar's clock shows the time. As day-timelapse, filmed by two fixed panes, the whole screen and the popover close up with the menu bar's clock, with no camera move",
+  "about": "The re-shoot's Schedule shot: on the plain afternoon screen at 17:15, the pointer comes up from Appearance and clicks the Schedule switch on, in the shot's own time; then a day's evening on Safelight's Schedule as a timelapse, to 22:45: the screen plain white in the afternoon, then from 17:30 warmer and dimmer, the color filter coming on in amber at 18:25 and deepening to orange, the switch to Dark at 20:30, played in real time as macOS fades the screen and dissolves the wallpaper, and a deep, dim red by 22:30. Safelight's own schedule code sets every minute from its own timer; the menu bar's clock shows the time. As day-timelapse, filmed by two fixed panes, the whole screen and the popover close up with the menu bar's clock, with no camera move",
   "fps": 60,
   "duration": 11.3,
   "appearance": "light",
@@ -9,7 +9,7 @@
   "desktop": true,
   "settings": {
     "colorFilter": false,
-    "tint": 25,
+    "tint": 0,
     "intensity": 0.25,
     "brightness": 1,
     "wallpaper": {
@@ -25,9 +25,14 @@
     { "time": "20:30", "colorFilter": true, "intensity": 0.75, "tint": 15, "brightness": 0.65, "appearance": "dark" },
     { "time": "22:30", "colorFilter": true, "intensity": 1, "tint": 0, "brightness": 0.4, "appearance": "dark" }
   ],
+  "pointer": { "button": "Light" },
+  "actions": [
+    { "at": 0.1, "move": { "button": "Schedule" }, "duration": 0.4, "easing": "easeInOut" },
+    { "at": 0.6, "click": { "button": "Schedule" }, "duration": 0.1 }
+  ],
   "clock": [
     { "at": 0, "time": "17:15" },
-    { "at": 2.0, "time": "18:30" },
+    { "at": 1.25, "time": "17:15:01.25" },
     { "at": 4.2, "time": "20:18" },
     { "at": 4.8, "time": "20:30", "easing": "easeOut" },
     { "at": 7.8, "time": "20:30:03" },

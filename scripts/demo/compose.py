@@ -1063,9 +1063,12 @@ def check_schedule(scene, folder):
     """Safelight's settings on each frame of a scene with a schedule against the schedule's for the minute
     the clock reads then (its timer sets them on each whole minute), worked out as Safelight does
     (schedule_settings); what it has set the Mac to, which it only writes when it's changed by more than
-    a little (Color Tint by 0.0001, the brightness by 0.001); each keyframe's own settings on the frame
+    a little (Color Tint by 0.0001, the brightness by 0.001), the display's backlight being what Safelight
+    gives it for a brightness (CombinedBrightness.backlight: the slider's top three quarters, nothing
+    below 0.25, where it dims the picture instead); each keyframe's own settings on the frame
     its minute is reached; and the appearance: the app's from the keyframe's minute, the system's from
-    when the change is posted (AppearanceTransition.swift) """
+    when the change is posted (AppearanceTransition.swift). Where the pointer clicks the Schedule switch
+    on in the shot, from the frame it's on: before, the settings are the scene's own, as it left them"""
     folder = Path(folder) if folder else BUILD / scene
     spec = json.loads((SCENES / f"{scene}.json").read_text())
     log = json.loads((folder / "log.json").read_text())
@@ -1073,12 +1076,26 @@ def check_schedule(scene, folder):
     if not keyframes or "clock" not in spec:
         raise SystemExit(f"{scene} has no schedule and clock of its own")
     display = log["desktop"]["display"]
+    # Color Tint's lowest intensity, and CombinedBrightness.lowestBacklight
     low = np.float32(0.25)
     worst = collections.defaultdict(float)
     reached = {}
     switches = []
     last_dark = None
-    for record in log["frames"]:
+    # The Schedule is on from the first frame, unless the log says it isn't yet (a click switches it on)
+    on_from = next((n for n, record in enumerate(log["frames"]) if record["app"].get("isScheduleOn", True)), None)
+    if on_from is None:
+        raise SystemExit(f"{scene}: the Schedule is never on")
+    if any(not record["app"].get("isScheduleOn", True) for record in log["frames"][on_from:]):
+        raise SystemExit(f"{scene}: the Schedule is switched off again after frame {on_from}")
+    if on_from:
+        first, before = log["frames"][0], log["frames"][on_from - 1]
+        unchanged = all(before[part] == first[part] for part in ("app", "system"))
+        print(f"{scene}: the Schedule is off until frame {on_from} ({log['frames'][on_from]['time']:.3f} s into the shot, {log['frames'][on_from]['timeOfDay']}), "
+              f"the settings till then {'as the scene has them' if unchanged else 'NOT as the scene has them'}")
+        if not unchanged:
+            raise SystemExit("Something changed the settings before the Schedule was on")
+    for record in log["frames"][on_from:]:
         hours, minutes, seconds = record["timeOfDay"].split(":")
         minute = int(hours) * 60 + int(minutes)
         intensity, tint, brightness, dark = schedule_settings(keyframes, minute)
@@ -1095,14 +1112,15 @@ def check_schedule(scene, folder):
         worst["system hue"] = max(worst["system hue"], abs(system["hue"] - float(np.float32(tint / np.float32(360)))))
         worst["system intensity"] = max(worst["system intensity"], abs(system["intensity"] - expected["intensity"]))
         shown = next(d["brightness"] for d in system["displays"] if d["id"] == display)
-        worst["system brightness"] = max(worst["system brightness"], abs(shown - expected["brightness"]))
+        backlight = float(max(brightness - low, np.float32(0)) / (np.float32(1) - low))
+        worst["system brightness"] = max(worst["system brightness"], abs(shown - backlight))
         for keyframe in keyframes:
             if keyframe["time"] == f"{hours}:{minutes}" and keyframe["time"] not in reached:
                 reached[keyframe["time"]] = (record, keyframe)
         if system["appearance"] != last_dark:
             switches.append((record["frame"], record["timeOfDay"], system["appearance"]))
             last_dark = system["appearance"]
-    print(f"{scene}: {len(log['frames'])} frames from {log['frames'][0]['timeOfDay']} to {log['frames'][-1]['timeOfDay']}, against the schedule's settings for each minute:")
+    print(f"{scene}: {len(log['frames']) - on_from} frames from {log['frames'][on_from]['timeOfDay']} to {log['frames'][-1]['timeOfDay']}, against the schedule's settings for each minute:")
     limits = {"app intensity": 1e-6, "app tint": 1e-4, "app brightness": 1e-6, "system hue": 1e-4, "system intensity": 1e-4, "system brightness": 1e-3}
     for name, value in worst.items():
         print(f"  {name}: most off {value:.2g}{'' if value <= limits[name] else '  TOO FAR'}")
@@ -1114,7 +1132,7 @@ def check_schedule(scene, folder):
                  and (not keyframe["colorFilter"] or app["intensity"] == float(np.float32(keyframe["intensity"]))))
         print(f"  keyframe {time} reached on frame {record['frame']} ({record['time']:.3f} s into the shot, {record['timeOfDay']}): "
               f"app {'on' if app['isColorFilterOn'] else 'off'} {app['intensity']:.4f} {app['tint']:.2f}° {app['brightness']:.4f} {'Dark' if app['isDarkAppearance'] else 'Light'}, "
-              f"Mac hue {system['hue'] * 360:.2f}° {system['intensity']:.4f} brightness {shown:.4f} {system['appearance']}: "
+              f"Mac hue {system['hue'] * 360:.2f}° {system['intensity']:.4f} backlight {shown:.4f} {system['appearance']}: "
               f"{'the keyframe exactly' if exact else 'NOT the keyframe'}")
     for frame, time, appearance in switches[1:]:
         print(f"  the Mac's appearance {appearance} from frame {frame} ({time})")

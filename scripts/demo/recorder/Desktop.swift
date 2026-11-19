@@ -186,25 +186,29 @@ final class DesktopMaker {
     private let otherScreens: [NSScreen]
     /// What the menu bar's clock says through the shot, for a scene with a clock of its own
     private let clockTitles: [String]
+    /// What it says all through a shot that begins at a time of its own, without a clock: 21:00 unless given
+    private let clockTitle: String?
     private var systemItems: [NSStatusItem] = []
     private var safelightItem: NSStatusItem?
     private var done: ((Desktop) -> Void)?
 
     /// The desktop as it is in Dark or not, with the wallpaper's picture for Dark or not, and the same on
-    /// each of `otherScreens`; with `clockTitles`, the menu bar's clock as it says each, apart
-    init(screen: NSScreen, isDark: Bool, wallpaperIsDark: Bool, wallpaper: URL, otherScreens: [NSScreen] = [], clockTitles: [String] = []) {
+    /// each of `otherScreens`; with `clockTitles`, the menu bar's clock as it says each, apart; with
+    /// `clockTitle`, the menu bar's clock saying that, on every display
+    init(screen: NSScreen, isDark: Bool, wallpaperIsDark: Bool, wallpaper: URL, otherScreens: [NSScreen] = [], clockTitles: [String] = [], clockTitle: String? = nil) {
         self.screen = screen
         self.isDark = isDark
         self.wallpaperIsDark = wallpaperIsDark
         self.wallpaper = wallpaper
         self.otherScreens = otherScreens
         self.clockTitles = clockTitles
+        self.clockTitle = clockTitle
         if !clockTitles.isEmpty && !otherScreens.isEmpty { fail("Other displays' menu bars have no clock of the scene's") }
     }
 
     /// The stand-ins, made before Safelight opens, as each new item goes to the left of the ones before
     func addSystemItems() {
-        systemItems = Self.makeSystemItems(clock: clockTitles.first)
+        systemItems = Self.makeSystemItems(clock: clockTitles.first ?? clockTitle)
     }
 
     /// Draws the desktop once the menu bar has laid out the stand-ins and `safelightItem`, then takes
@@ -431,7 +435,7 @@ final class DesktopMaker {
 
     /// Wi-Fi, Spotlight, Control Center and the clock, as on a new Mac, from right to left. The clock
     /// says 21:00, as FixedTime.swift does, on a day of its own, so the picture is the same every day,
-    /// or for a scene with a clock of its own, `clock`; either way with all its digits as wide, as macOS's
+    /// or for a scene with a clock or a time of its own, `clock`; either way with all its digits as wide, as macOS's
     /// own clock has them (its digits change in place as the minutes go by, the rest of it staying put:
     /// measured in captures of the menu bar on 4 November 2026, where 10:41's glyphs were where SF's
     /// monospaced digits put them, and not its proportional ones). So the clock, and the items left of

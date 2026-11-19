@@ -532,6 +532,8 @@ struct Log: Encodable {
         let adjustsDisplaysIndependently: Bool
         /// Each display's own brightness while they're adjusted independently, by its name
         let displayBrightness: [String: Double]?
+        /// For a scene with a schedule, whether the Schedule switch is on
+        let isScheduleOn: Bool?
     }
 
     struct System: Encodable {
@@ -612,12 +614,18 @@ final class Recorder: NSObject, NSApplicationDelegate {
             fail("Safelight's copy reaches the system's settings; RecordedSystem.swift isn't standing in for them")
         }
 
+        // A scene that begins at a time of its own: the app's views that show the time have it
+        if let start = scene.time.flatMap({ _ in scene.startOfDay }) {
+            (FixedTime.hour, FixedTime.minute) = (Int(start) / 3600, Int(start) / 60 % 60)
+        }
+
         // On the desktop, the menu bar's items are drawn beside Safelight's icon, the stand-ins made
         // before it as each new item goes to the left
         if scene.desktop {
             guard scene.canvas == nil, let screen else { fail("A scene on the desktop has its canvas worked out from it, so it can't have one of its own") }
             desktopMaker = DesktopMaker(screen: screen, isDark: isDark, wallpaperIsDark: wallpaperIsDark, wallpaper: wallpaper,
-                                        otherScreens: scene.otherDisplays ? NSScreen.screens.filter { $0 != screen } : [], clockTitles: clockTitles())
+                                        otherScreens: scene.otherDisplays ? NSScreen.screens.filter { $0 != screen } : [], clockTitles: clockTitles(),
+                                        clockTitle: scene.time.map { _ in DesktopMaker.clockTitle(at: wallClock(0)) })
             desktopMaker?.addSystemItems()
         }
 
@@ -640,7 +648,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
     }
 
     /// What the menu bar's clock says through a scene with a clock of its own, each once, in order; none
-    /// for any other scene, whose clock says 21:00
+    /// for any other scene, whose clock says 21:00, or the scene's `time`
     private func clockTitles() -> [String] {
         guard scene.clock != nil else { return [] }
         let count = Int((scene.duration * Double(scene.fps)).rounded())
@@ -734,8 +742,8 @@ final class Recorder: NSObject, NSApplicationDelegate {
 
     private func record(window: NSWindow, host: NSHostingView<MenuView>, arrowTipOnScreen: NSPoint) {
         guard let frameLayer = window.contentView?.superview?.layer else { fail("The popover has no layer to draw") }
-        // With a clock of its own, the wall clock reads the first key's time of day at the first frame
-        if let start = scene.clock?.first?.seconds {
+        // With a clock or a time of its own, the wall clock reads that time of day at the first frame
+        if let start = scene.startOfDay {
             scene_wall_clock_set(UInt64(DemoScene.day + start - Self.clockStart))
         }
         let windowSize = window.frame.size
@@ -825,11 +833,12 @@ final class Recorder: NSObject, NSApplicationDelegate {
         // Mouse events as the window would be sent them, timed by the scene's clock, which every clock
         // read on the main thread gives as well (Interposers.c), from when each is handled. Each comes a
         // millisecond after the one before in its frame, as no two real ones come at once. A frame's are
-        // made first, then handled in turn (`handle`).
+        // made first, then handled in turn (`handle`). With a clock of the scene's own, it's that clock
+        // they're timed by, which runs as the shot does while the pointer does anything (DemoScene).
         var eventsThisFrame = 0
         var pending: [(event: NSEvent, nanoseconds: UInt64)] = []
         func send(_ type: NSEvent.EventType, at point: CGPoint, time: Double) {
-            let timestamp = Self.clockStart + time + 0.001 * Double(eventsThisFrame)
+            let timestamp = Self.clockStart + scene.clockTime(at: time) + 0.001 * Double(eventsThisFrame)
             eventsThisFrame += 1
             guard let event = NSEvent.mouseEvent(with: type, location: inWindow(point), modifierFlags: [], timestamp: timestamp,
                                                  windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
@@ -854,7 +863,9 @@ final class Recorder: NSObject, NSApplicationDelegate {
         // With a schedule, the Schedule switch is on as the shot begins, as it's been since some time before:
         // the keyframes are the Schedule's, and Safelight has set the Mac from them for the time of day the
         // scene's clock reads at its first frame, which it's set to now. Then its timer sets the Mac every
-        // minute (`minutes`), as it does from when Safelight opens, here from a whole minute.
+        // minute (`minutes`), as it does from when Safelight opens, here from a whole minute. Unless the
+        // pointer clicks the Schedule switch in the shot: then it's off as the shot begins, the keyframes
+        // there for when it's clicked on, and the timer fires all the same, as it does with the Schedule off.
         var scheduleTimer: Timer?
         if let keyframes = scene.schedule {
             let controller = ColorController.shared
@@ -873,17 +884,21 @@ final class Recorder: NSObject, NSApplicationDelegate {
                 fail("Couldn't find the Schedule's timer, which sets the Mac every minute")
             }
             scheduleTimer = timer
-            scene_clock_set(Self.clockNanoseconds(0))
-            controller.isAutoMode = true
-            // Settled, with the switch over and the sliders dimmed
-            host._renderForTest(interval: 0)
-            for _ in 0..<5 {
-                host._renderForTest(interval: 1)
-                SwitchAnimations.render(in: host, interval: 1)
-            }
-            window.displayIfNeeded()
-            guard controller.isAutoMode, !controller.isChangingAppearance, controller.isDarkAppearance == (appearance == "dark") else {
-                fail("The Schedule has the Mac in another appearance than the scene's as it begins")
+            if scene.clicks(SystemStrings.schedule) {
+                guard !controller.isAutoMode else { fail("The Schedule is on before the pointer clicks it on") }
+            } else {
+                scene_clock_set(Self.clockNanoseconds(0))
+                controller.isAutoMode = true
+                // Settled, with the switch over and the sliders dimmed
+                host._renderForTest(interval: 0)
+                for _ in 0..<5 {
+                    host._renderForTest(interval: 1)
+                    SwitchAnimations.render(in: host, interval: 1)
+                }
+                window.displayIfNeeded()
+                guard controller.isAutoMode, !controller.isChangingAppearance, controller.isDarkAppearance == (appearance == "dark") else {
+                    fail("The Schedule has the Mac in another appearance than the scene's as it begins")
+                }
             }
         }
 
@@ -1026,6 +1041,8 @@ final class Recorder: NSObject, NSApplicationDelegate {
                 pending.remove(at: index)
                 scene_main_queue_run(nanoseconds)
                 scene_clock_set(nanoseconds)
+                // What it sets going is drawn a display frame at a time, with a clock of the scene's (`advance`)
+                animatingUntil = max(animatingUntil, Double(nanoseconds) / 1e9 - Self.clockStart + 1)
                 if event.type == .leftMouseDown { isButtonDown = true }
                 if event.type == .leftMouseUp { isButtonDown = false }
             }
@@ -1102,7 +1119,8 @@ final class Recorder: NSObject, NSApplicationDelegate {
                              brightness: Double(controller.brightness), isDarkAppearance: controller.isDarkAppearance,
                              adjustsDisplaysIndependently: controller.adjustsDisplaysIndependently,
                              displayBrightness: controller.independentDisplays.isEmpty ? nil
-                                 : Dictionary(controller.independentDisplays.map { ($0.name, Double(controller[brightnessOf: $0.key])) }) { first, _ in first }),
+                                 : Dictionary(controller.independentDisplays.map { ($0.name, Double(controller[brightnessOf: $0.key])) }) { first, _ in first },
+                             isScheduleOn: scene.schedule == nil ? nil : controller.isAutoMode),
                 system: Log.System(colorFilter: RecordedSystem.colorFilterEnabled && RecordedSystem.colorFilterType == 16,
                                    hue: RecordedSystem.hue, intensity: RecordedSystem.intensity,
                                    appearance: RecordedSystem.theme == 1 ? "dark" : "light",
@@ -1182,9 +1200,9 @@ final class Recorder: NSObject, NSApplicationDelegate {
         UInt64(((clockStart + clock) * 1e9).rounded())
     }
 
-    /// What the wall clock reads `clock` seconds after the first frame, with a scene clock of its own
+    /// What the wall clock reads `clock` seconds after the first frame, with a clock or a time of the scene's
     private func wallClock(_ clock: Double) -> Date {
-        Date(timeIntervalSince1970: DemoScene.day + (scene.clock?.first?.seconds ?? 0) + clock)
+        Date(timeIntervalSince1970: DemoScene.day + (scene.startOfDay ?? 0) + clock)
     }
 
     /// The time of day `clock` seconds after a first frame at `start` seconds after midnight: HH:MM:SS.sss

@@ -33,14 +33,21 @@ struct DemoScene: Decodable {
     var pointer: Place?
     var actions: [Action] = []
     /// The Schedule's keyframes, with the Schedule switch on as the shot begins, so Safelight sets the
-    /// Mac from them as the time of day moves on (`clock`); left out, the Schedule is off and its own
+    /// Mac from them as the time of day moves on (`clock`), or off until the pointer clicks it on, if it
+    /// does (`{"click": {"button": "Schedule"}}`); left out, the Schedule is off and its own
     var schedule: [Keyframe]?
     /// The time of day through the shot, which every clock on the main thread gives, the wall clock and
     /// the one the main queue and animations run on (Interposers.c), so time can run faster than it does
-    /// in the shot; left out, it runs as the shot does, from 21:16:40
+    /// in the shot; left out, it runs as the shot does, from 21:16:40, or from the scene's `time`. The
+    /// pointer's actions come only while it runs as the shot does, as a press lasts as long on both
     var clock: [ClockKey]?
+    /// The time of day the shot begins at, a whole minute ("17:15"), for a scene without a clock of its
+    /// own: the menu bar's clock says it all through the shot, which is shorter than a minute, and the
+    /// wall clock runs from it as the shot does. Left out, the menu bar's clock says 21:00, as the
+    /// screenshots' does.
+    var time: String?
 
-    private enum Keys: String, CodingKey { case about, fps, duration, appearance, accentColor, language, locale, canvas, desktop, otherDisplays, settings, pointer, actions, schedule, clock }
+    private enum Keys: String, CodingKey { case about, fps, duration, appearance, accentColor, language, locale, canvas, desktop, otherDisplays, settings, pointer, actions, schedule, clock, time }
 
     init(from decoder: Decoder) throws {
         let keys = try decoder.container(keyedBy: Keys.self)
@@ -66,12 +73,44 @@ struct DemoScene: Decodable {
             guard clock[0].seconds == clock[0].seconds.rounded() else {
                 throw DecodingError.dataCorruptedError(forKey: .clock, in: keys, debugDescription: "The clock starts on a whole second")
             }
-            guard actions.isEmpty else {
-                throw DecodingError.dataCorruptedError(forKey: .clock, in: keys, debugDescription: "A shot with a clock of its own has nothing for the pointer to do, as its events are timed by the shot")
+            // The pointer's events are timed by the scene's clock, as everything the app does is, and a
+            // press lasts as long as the action does in the shot: so the two run in step meanwhile
+            for action in actions where !clockKeepsTime(from: action.at, to: action.end) {
+                throw DecodingError.dataCorruptedError(forKey: .clock, in: keys, debugDescription: "The pointer's action at \(action.at) s comes while the clock runs faster or slower than the shot: give the clock keys as far apart in the time of day as in the shot round it, with no easing")
             }
         } else if schedule != nil {
             throw DecodingError.dataCorruptedError(forKey: .schedule, in: keys, debugDescription: "A shot with a schedule has a clock of its own, for the time of day the Schedule follows")
         }
+        time = try keys.decodeIfPresent(String.self, forKey: .time)
+        if let time {
+            guard clock == nil else {
+                throw DecodingError.dataCorruptedError(forKey: .time, in: keys, debugDescription: "A shot with a clock of its own begins at its first key's time, not at a time of its own")
+            }
+            let seconds = try ClockKey.secondsOfDay(time)
+            guard seconds.truncatingRemainder(dividingBy: 60) == 0, duration < 60 else {
+                throw DecodingError.dataCorruptedError(forKey: .time, in: keys, debugDescription: "A shot's time is a whole minute, \(time) isn't, and the shot is shorter than a minute, as the menu bar's clock says that minute all through it: a longer one has a clock of its own")
+            }
+        }
+    }
+
+    /// The time of day at the first frame, in seconds after midnight: the clock's first key's, or the
+    /// scene's `time`; neither, and the scene has no time of day of its own
+    var startOfDay: Double? {
+        if let first = clock?.first { return first.seconds }
+        return time.flatMap { try? ClockKey.secondsOfDay($0) }
+    }
+
+    /// Whether the scene's clock runs in step with the shot from `start` to `end`, in seconds of the shot:
+    /// every pair of keys either side of any of that time as far apart in the time of day as in the shot,
+    /// with nothing easing between them. Without a clock of its own, it always does.
+    func clockKeepsTime(from start: Double, to end: Double) -> Bool {
+        guard let clock else { return true }
+        for (earlier, later) in zip(clock, clock.dropFirst()) where later.at > start && earlier.at < end {
+            var seconds = later.seconds - earlier.seconds
+            if seconds < 0 { seconds += 86400 }
+            guard later.easing == .linear, abs(seconds - (later.at - earlier.at)) < 1e-9 else { return false }
+        }
+        return true
     }
 
     /// A keyframe of the Schedule, as its row in the Schedule window has it: the time of day it's

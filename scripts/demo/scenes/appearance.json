@@ -1,11 +1,12 @@
 {
-  "about": "The re-shoot's Light/Dark shot, on the plain afternoon screen (Light, the filter off): Dark clicked under Appearance, and the popover, the menu bar and the wallpaper change over to Dark as macOS does it, from Sonoma Horizon to Sonoma's Dark picture; then, once the wallpaper has changed over (it takes 2 s from about a second after the click), Light clicked, and it all comes back, the screen as it began. Two fixed panes, the whole screen and the popover close up with the menu bar's clock, with no camera move",
+  "about": "The re-shoot's Light/Dark shot, on the plain afternoon screen (Light, the filter off): Dark clicked under Appearance, and the popover, the menu bar and the wallpaper change over to Dark as macOS does it, from Sonoma Horizon to Sonoma's Dark picture; then, once the wallpaper has changed over (it takes 2 s from about a second after the click), Light clicked, and it all comes back, the screen as it began. The pointer starts on Brightness's knob, where the Brightness shot leaves it. Two fixed panes, the whole screen and the popover close up with the menu bar's clock, with no camera move",
   "fps": 60,
   "duration": 7.2,
   "appearance": "light",
   "accentColor": "blue",
   "language": "en-US",
   "locale": "en_GB",
+  "time": "17:15",
   "desktop": true,
   "settings": {
     "colorFilter": false,
@@ -17,7 +18,7 @@
       "dark": "/System/Library/Desktop Pictures/Sonoma.heic"
     }
   },
-  "pointer": { "button": "Color filters" },
+  "pointer": { "control": "Brightness" },
   "actions": [
     { "at": 0.1, "move": { "button": "Dark" }, "duration": 0.4, "easing": "easeInOut" },
     { "at": 0.6, "click": { "button": "Dark" }, "duration": 0.1 },
