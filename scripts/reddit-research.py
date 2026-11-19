@@ -57,21 +57,29 @@ def load_scraper():
 
 
 def fetch(numbers):
+    import threading
+    import time
     scrape = load_scraper()
     OUT.mkdir(parents=True, exist_ok=True)
     with open(OUT / "fetch.log", "a", encoding="utf-8") as log:
+        lock = threading.Lock()     # the scraper logs from several threads
+
         def say(line):
-            log.write(str(line) + "\n")
-            log.flush()
-            # The window's log names every post; here only the outcomes
-            if any(mark in str(line) for mark in ("🚀", "✅", "⚠️", "❌", "🏆")):
-                print(str(line).strip(), flush=True)
+            with lock:
+                log.write(str(line) + "\n")
+                log.flush()
+                # The window's log names every post; here only the outcomes
+                if any(mark in str(line) for mark in ("🚀", "📋", "✅", "⏳", "⚠️", "❌", "🏆")):
+                    print(str(line).strip(), flush=True)
         for n in numbers:
             run = RUNS[n - 1]
             print(f"\n[{n}] {describe(run)}", flush=True)
+            began = time.monotonic()
             scrape(str(OUT), say, run["names"], want_images=False, all_posts=True,
                    want_comments=run["want_comments"], only_new=False, sort=run["sort"],
                    period=run["period"], max_posts=run["max_posts"])
+            say(f"⏱️ [{n}] took {(time.monotonic() - began) / 60:.1f} min")
+            print(f"[{n}] took {(time.monotonic() - began) / 60:.1f} min", flush=True)
 
 
 def load_posts(subreddit, period_days=None):
