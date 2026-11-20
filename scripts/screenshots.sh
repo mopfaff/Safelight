@@ -5,13 +5,14 @@
 #
 #   scripts/screenshots.sh    writes docs/popover-dark.png, popover-light.png, schedule-dark.png and
 #                             schedule-light.png
-#   scripts/screenshots.sh --desktop
-#                             instead writes, to build/screenshots/out/, the popover and the Schedule
-#                             window over a desktop: the top right corner of the screen, 540 × 675 and
-#                             1128 × 678 points of it, with the wallpapers the demo has, Sonoma Horizon
-#                             in Light and Sonoma's Dark picture in Dark. The popover's glass is drawn
-#                             over the wallpaper, as it can't be by putting the README's screenshot on
-#                             one. scripts/make-reddit-pictures.py makes the Reddit gallery's from them.
+#   scripts/screenshots.sh --desktop [dark|light]
+#                             instead writes, for both appearances or the one given, to
+#                             build/screenshots/out/, the popover and the Schedule window over a
+#                             desktop: the top right corner of the screen, 540 × 675 and 1128 × 678
+#                             points of it, with the wallpapers the demo has, Sonoma Horizon in Light
+#                             and Sonoma's Dark picture in Dark. The popover's glass is drawn over the
+#                             wallpaper, as it can't be by putting the README's screenshot on one.
+#                             scripts/make-reddit-pictures.py makes the Reddit gallery's from them.
 #
 # It builds a copy of Safelight.swift into "Safelight Screenshots.app" with scripts/screenshots/,
 # whose NoSystemChanges.swift stands in for the functions that change the color filter, brightness and
@@ -73,7 +74,7 @@ fi
 # as the README is, with 24-hour times.
 if [[ "${1:-}" == --desktop ]]; then
     CANVASES=540x675,1128x678
-    for appearance in dark light; do
+    for appearance in ${2:-dark light}; do
         LOG="$BUILD_DIR/screenshots-$appearance-desktop.log"
         rm -f "$LOG"
         if [[ $appearance == dark ]]; then

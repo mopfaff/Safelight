@@ -71,6 +71,8 @@ final class Screenshots: NSObject, NSApplicationDelegate {
     private var activity: NSObjectProtocol?
     /// When the app last became active or stopped being active, by `systemUptime`
     private var lastActivationChange: TimeInterval = 0
+    /// When a window last became key or stopped being key
+    private var lastKeyChange: TimeInterval = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Nothing would stop it changing the Mac if the stand-ins weren't the ones called
@@ -87,6 +89,12 @@ final class Screenshots: NSObject, NSApplicationDelegate {
         for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 self?.lastActivationChange = ProcessInfo.processInfo.systemUptime
+            }
+        }
+
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.lastKeyChange = ProcessInfo.processInfo.systemUptime
             }
         }
 
@@ -285,7 +293,11 @@ final class Screenshots: NSObject, NSApplicationDelegate {
         after(1) {
             Task { @MainActor in
                 let lastChange = self.lastActivationChange
-                if NSApp.isActive, ProcessInfo.processInfo.systemUptime - lastChange > 0.75, let window, window.isVisible {
+                // Over a desktop the popover stays open from one picture to the next, and a click elsewhere
+                // meanwhile leaves it open but no longer key, its controls grey, though the app is active again
+                if overDesktop, let window, !window.isKeyWindow { window.makeKey() }
+                if NSApp.isActive, ProcessInfo.processInfo.systemUptime - lastChange > 0.75, let window, window.isVisible,
+                   !overDesktop || window.isKeyWindow && ProcessInfo.processInfo.systemUptime - self.lastKeyChange > 0.75 {
                     await self.snapshot(window, as: name, overBackdrop: overBackdrop, overDesktop: overDesktop, menuBar: menuBar)
                     if NSApp.isActive, self.lastActivationChange == lastChange { return next() }
                 }
