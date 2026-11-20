@@ -11,6 +11,9 @@
 #   1-popover-portrait(-light).png              the popover on a 4:5 ground, 1080 × 1350
 #   1-popover-portrait-no-clock(-light).png     the same without the menu bar's clock, so the popover
 #                                               itself is in the middle rather than it and the clock
+#   1-popover-centred(-light).png and           with the clock, but the popover itself in the middle, so
+#   1-popover-portrait-centred(-light).png      the clock reaches further to the right than the icon is
+#                                               from the left
 #
 # Needs Pillow (pip install pillow).
 import io, os
@@ -56,6 +59,8 @@ for appearance, suffix in (("dark", ""), ("light", "-light")):
     write(f"1-popover{suffix}.png", popover, LANDSCAPE, appearance)
     write(f"2-schedule{suffix}.png", schedule, LANDSCAPE, appearance)
     write(f"1-popover-portrait{suffix}.png", popover, PORTRAIT, appearance)
-    write(f"1-popover-portrait-no-clock{suffix}.png", without_clock(popover), PORTRAIT, appearance,
-          centre_x=(POPOVER_LEFT + POPOVER_RIGHT + 1) / 2)
-print(f"Wrote 8 pictures to {os.path.relpath(out, os.getcwd())}")
+    middle = (POPOVER_LEFT + POPOVER_RIGHT + 1) / 2
+    write(f"1-popover-portrait-no-clock{suffix}.png", without_clock(popover), PORTRAIT, appearance, centre_x=middle)
+    write(f"1-popover-centred{suffix}.png", popover, LANDSCAPE, appearance, centre_x=middle)
+    write(f"1-popover-portrait-centred{suffix}.png", popover, PORTRAIT, appearance, centre_x=middle)
+print(f"Wrote 12 pictures to {os.path.relpath(out, os.getcwd())}")
