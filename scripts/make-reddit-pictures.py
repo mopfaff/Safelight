@@ -38,10 +38,13 @@
 #                                               clock, 1647 × 1355 (about 5:4): the desktop left of the
 #                                               popover stays in it to show the filter, as Dome's rock
 #                                               does, and the popover is large enough to read on a phone
+#   …-split-labelled.png and                   the -split pictures with "Filter on" and "Filter off" written
+#   …-split-5x4-labelled.png                    below the popover, on either side of the line, so the
+#                                               halves are known for what they are at first sight
 #
 # Needs Pillow (pip install pillow), and for the -split pictures NumPy and PyObjC as well.
 import io, os, sys
-from PIL import Image, ImageCms, ImageDraw
+from PIL import Image, ImageCms, ImageDraw, ImageFilter, ImageFont
 
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 docs = os.path.join(root, "docs")
@@ -63,6 +66,9 @@ FIVE_FOUR = 1599 + 48
 TINT = (0, 0.90)
 # How far the -split pictures' line leans: its top this many pixels right of the middle, its bottom left
 LEAN = 150
+# The -labelled pictures' words: in the menu bar's font, 17 points, their middle this far above the bottom
+# (halfway between the popover and the bottom edge), and each this far from the line
+LABELS, LABEL_FONT, LABEL_SIZE, LABEL_UP, LABEL_GAP = ("Filter on", "Filter off"), "/System/Library/Fonts/SFNS.ttf", 34, 66, 40
 
 def srgb(name, folder=docs):  # the screenshots are in Display P3; Reddit's pictures are drawn as sRGB
     image = Image.open(os.path.join(folder, name)).convert("RGBA")
@@ -85,6 +91,23 @@ def split(taken, folder):
     ImageDraw.Draw(mask).polygon([(0, 0), (width * 2 + LEAN * 4, 0), (width * 2 - LEAN * 4, height * 4), (0, height * 4)], fill=255)
     mask = np.asarray(mask.resize((width, height), Image.LANCZOS), np.float64)[..., None] / 255
     return Image.fromarray(np.round(on * mask + off * (1 - mask)).astype(np.uint8))
+
+def labelled(picture, whole):
+    """A -split picture, or a cut of one that has its left edge, with the halves' names written on either
+    side of the line. `whole` is the size of the picture the line was drawn through."""
+    font = ImageFont.truetype(LABEL_FONT, LABEL_SIZE)
+    font.set_variation_by_name("Semibold")
+    y = picture.height - LABEL_UP
+    line = whole[0] / 2 + LEAN - 2 * LEAN * y / whole[1]
+    places = (((line - LABEL_GAP, y), "rm"), ((line + LABEL_GAP, y), "lm"))
+    # A soft shadow under the words, so they are as clear over Light's bright desktop as over Dark's
+    shadow = Image.new("L", picture.size, 0)
+    for label, (place, anchor) in zip(LABELS, places):
+        ImageDraw.Draw(shadow).text(place, label, font=font, anchor=anchor, fill=150)
+    picture = Image.composite(Image.new("RGB", picture.size, (0, 0, 0)), picture, shadow.filter(ImageFilter.GaussianBlur(6)))
+    for label, (place, anchor) in zip(LABELS, places):
+        ImageDraw.Draw(picture).text(place, label, font=font, anchor=anchor, fill=(255, 255, 255))
+    return picture
 
 def without_clock(popover):
     """The popover's screenshot with the clock gone. The popover's shadow reaches up behind the clock,
@@ -133,12 +156,14 @@ for appearance, suffix in (("dark", ""), ("light", "-light")):
             srgb(taken.format(appearance), desktops).convert("RGB").crop((0, 0) + size).save(os.path.join(out, name), optimize=True)
             count += 1
             if name.startswith("1-popover"):
-                split(taken.format(appearance), desktops).crop((0, 0) + size).save(os.path.join(out, name.replace(".png", "-split.png")), optimize=True)
-                count += 1
+                uncut = split(taken.format(appearance), desktops)
+                cuts = {"-split": uncut.crop((0, 0) + size)}
                 if size == LANDSCAPE:
-                    whole = Image.open(os.path.join(out, name.replace(".png", "-split.png")))
-                    whole.crop((0, 0, FIVE_FOUR, size[1])).save(os.path.join(out, name.replace(".png", "-split-5x4.png")), optimize=True)
-                    count += 1
+                    cuts["-split-5x4"] = uncut.crop((0, 0, FIVE_FOUR, size[1]))
+                for ending, cut in cuts.items():
+                    cut.save(os.path.join(out, name.replace(".png", ending + ".png")), optimize=True)
+                    labelled(cut, uncut.size).save(os.path.join(out, name.replace(".png", ending + "-labelled.png")), optimize=True)
+                    count += 2
             if size == PORTRAIT:
                 tight = name.replace("-desktop", "-desktop-tight")
                 Image.open(os.path.join(out, name)).crop((TIGHTER, 0, size[0] - TIGHTER, size[1])).save(os.path.join(out, tight), optimize=True)
