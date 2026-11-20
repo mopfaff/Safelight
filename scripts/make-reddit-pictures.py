@@ -19,6 +19,10 @@
 #   2-schedule-desktop(-light).png              with the popover's glass drawn over them. These are from
 #                                               the pictures `scripts/screenshots.sh --desktop` takes
 #                                               (in build/screenshots/out/), and are left out without them.
+#   1-popover-portrait-desktop-tight(-light).png
+#                                               the portrait one with 21 pixels off each side, 1038 × 1350,
+#                                               so the clock is as far from the right edge as it is on a
+#                                               Mac's screen: its last digit 24 points from it
 #
 # Needs Pillow (pip install pillow).
 import io, os
@@ -33,6 +37,9 @@ GROUND = {"dark": (0, 0, 0), "light": (233, 233, 238)}
 # In docs/popover-*.png: the popover's sides, and where the clock is in the menu bar above it
 POPOVER_LEFT, POPOVER_RIGHT = 46, 681
 CLOCK_LEFT, CLOCK_BOTTOM = 600, 48
+# Over a desktop 540 points wide the clock's last digit is 69 pixels from the right edge, and on a Mac's
+# screen 24 points, 48 pixels; taken off both sides, the popover stays in the middle
+TIGHTER = 21
 
 def srgb(name, folder=docs):  # the screenshots are in Display P3; Reddit's pictures are drawn as sRGB
     image = Image.open(os.path.join(folder, name)).convert("RGBA")
@@ -83,6 +90,10 @@ for appearance, suffix in (("dark", ""), ("light", "-light")):
         # The points are whole, so the landscape one is a row of pixels taller than the Schedule's
         srgb(taken.format(appearance), desktops).convert("RGB").crop((0, 0) + size).save(os.path.join(out, name.format(suffix)), optimize=True)
         count += 1
+        if size == PORTRAIT:
+            picture = Image.open(os.path.join(out, name.format(suffix)))
+            picture.crop((TIGHTER, 0, size[0] - TIGHTER, size[1])).save(os.path.join(out, name.format("-tight" + suffix)), optimize=True)
+            count += 1
 print(f"Wrote {count} pictures to {os.path.relpath(out, os.getcwd())}")
 if missing:
     print(f"Left out {', '.join(missing)}: run scripts/screenshots.sh --desktop first")
