@@ -10,8 +10,9 @@
 #                             build/screenshots/out/, the popover and the Schedule window over a
 #                             desktop: the top right corner of the screen, 540 × 675 and 1128 × 678
 #                             points of it, with the wallpapers the demo has, Sonoma Horizon in Light
-#                             and Sonoma's Dark picture in Dark. The popover's glass is drawn over the
-#                             wallpaper, as it can't be by putting the README's screenshot on one.
+#                             and Sonoma's Dark picture in Dark, which the popover's Wallpaper picker
+#                             shows too. The popover's glass is drawn over the wallpaper, as it can't
+#                             be by putting the README's screenshot on one.
 #                             scripts/make-reddit-pictures.py makes the Reddit gallery's from them.
 #
 # It builds a copy of Safelight.swift into "Safelight Screenshots.app" with scripts/screenshots/,
@@ -39,7 +40,15 @@ if [[ $(grep -c '^@main$' Safelight/Safelight.swift) != 1 ]]; then
     echo "Couldn't find Safelight's @main line to leave out" >&2
     exit 2
 fi
-sed '/^@main$/d' Safelight/Safelight.swift >"$BUILD_DIR/src/Safelight.swift"
+# And, over a desktop, picks its wallpaper's picture for the appearance and makes the wallpaper the
+# popover shows as Safelight does, as scripts/make-demo.sh's recorder does
+INDEX='    private static func index(in source: CGImageSource, isDark: Bool) -> Int {'
+MAKE='    private static func makeWallpaper(at wallpaper: URL, light: (file: URL, isDark: Bool), dark: (file: URL, isDark: Bool)) -> Bool {'
+if [[ $(grep -cxF "$INDEX" Safelight/Safelight.swift) != 1 || $(grep -cxF "$MAKE" Safelight/Safelight.swift) != 1 ]]; then
+    echo "Couldn't find WallpaperManager's index(in:isDark:) and makeWallpaper(at:light:dark:) for the desktop to use" >&2
+    exit 2
+fi
+sed -e '/^@main$/d' -e "s/^$INDEX\$/${INDEX/private /}/" -e "s/^$MAKE\$/${MAKE/private /}/" Safelight/Safelight.swift >"$BUILD_DIR/src/Safelight.swift"
 
 cp scripts/screenshots/Info.plist "$APP/Contents/Info.plist"
 # The menu bar icon is a symbol in the asset catalog
@@ -74,17 +83,19 @@ fi
 # as the README is, with 24-hour times.
 if [[ "${1:-}" == --desktop ]]; then
     CANVASES=540x675,1128x678
-    for appearance in ${2:-dark light}; do
+    if [[ $# -ge 2 && $2 != dark && $2 != light ]]; then
+        echo "The appearance is dark or light, not $2" >&2
+        exit 2
+    fi
+    appearances=(dark light)
+    if [[ $# -ge 2 ]]; then appearances=($2); fi
+    for appearance in $appearances; do
         LOG="$BUILD_DIR/screenshots-$appearance-desktop.log"
         rm -f "$LOG"
-        if [[ $appearance == dark ]]; then
-            wallpaper=("/System/Library/Desktop Pictures/Sonoma.heic" 1)
-        else
-            wallpaper=("/System/Library/Desktop Pictures/.wallpapers/Sonoma Horizon/Sonoma Horizon.heic" 0)
-        fi
         open -W -n --stdout "$LOG" --stderr "$LOG" "$APP" --args -appearance $appearance \
             -AppleLanguages '(en-US)' -AppleLocale en_GB -output "$PWD/$OUT" \
-            -desktop "$wallpaper[1]" -desktopIndex "$wallpaper[2]" -canvases $CANVASES
+            -desktopLight "/System/Library/Desktop Pictures/.wallpapers/Sonoma Horizon/Sonoma Horizon.heic" \
+            -desktopDark "/System/Library/Desktop Pictures/Sonoma.heic" -canvases $CANVASES
         for shot in popover-$appearance-desktop-540x675 popover-$appearance-desktop-1128x678 schedule-$appearance-desktop-1128x678; do
             if [[ ! -f "$OUT/$shot.png" ]]; then
                 echo "Screenshots failed (full log: $LOG):" >&2

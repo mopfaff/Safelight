@@ -46,12 +46,14 @@ typealias MenuBarImage = (image: CGImage, frame: CGRect)
 final class Screenshots: NSObject, NSApplicationDelegate {
     private let output = URL(fileURLWithPath: UserDefaults.standard.string(forKey: "output") ?? ".")
     private let appearance = UserDefaults.standard.string(forKey: "appearance") ?? "dark"
-    /// With `-desktop`, a wallpaper's file: the pictures are then of the popover and the Schedule window
-    /// over the top right corner of a desktop with that wallpaper, each `-canvases` size of it in turn
-    /// ("540x675,1128x678", in points), with the menu bar's items along its top, rather than of the
-    /// windows alone. `-desktopIndex` is which of the file's pictures, for one with a Dark picture too.
-    private let desktop = UserDefaults.standard.string(forKey: "desktop").map { URL(fileURLWithPath: $0) }
-    private let desktopIndex = UserDefaults.standard.integer(forKey: "desktopIndex")
+    /// With `-desktopLight` and `-desktopDark`, the files of the desktop's wallpaper in Light and in Dark
+    /// (the Dark picture of one with a picture for each): the pictures are then of the popover and the
+    /// Schedule window over the top right corner of a desktop with the appearance's wallpaper, each
+    /// `-canvases` size of it in turn ("540x675,1128x678", in points), with the menu bar's items along
+    /// its top, rather than of the windows alone. The popover's Wallpaper picker shows the two.
+    private let desktopLight = UserDefaults.standard.string(forKey: "desktopLight").map { URL(fileURLWithPath: $0) }
+    private let desktopDark = UserDefaults.standard.string(forKey: "desktopDark").map { URL(fileURLWithPath: $0) }
+    private var desktop: URL? { appearance == "dark" ? desktopDark : desktopLight }
     private let canvases: [CGSize] = (UserDefaults.standard.string(forKey: "canvases") ?? "").split(separator: ",").compactMap {
         let sides = $0.split(separator: "x").compactMap { Double($0) }
         return sides.count == 2 ? CGSize(width: sides[0], height: sides[1]) : nil
@@ -123,7 +125,15 @@ final class Screenshots: NSObject, NSApplicationDelegate {
         controller.chooseAppearance(isDark: isDark) // which only the Appearance picker shows
         // And macOS's own Light and Dark wallpaper, which only the Wallpaper picker shows: it's only
         // read, as the desktop isn't changed unless a picture is chosen
-        WallpaperManager.shared.showPictures(of: URL(fileURLWithPath: "/System/Library/Desktop Pictures/Sonoma.heic"))
+        var wallpaper = URL(fileURLWithPath: "/System/Library/Desktop Pictures/Sonoma.heic")
+        if let desktopLight, let desktopDark {
+            // The desktop's own, in one wallpaper as Safelight makes it when a picture is chosen for each
+            wallpaper = FileManager.default.temporaryDirectory.appendingPathComponent("Safelight Screenshots wallpaper.heic")
+            guard WallpaperManager.makeWallpaper(at: wallpaper, light: (desktopLight, false), dark: (desktopDark, true)) else {
+                fail("Couldn't make a wallpaper of \(desktopLight.path) and \(desktopDark.path)")
+            }
+        }
+        WallpaperManager.shared.showPictures(of: wallpaper)
         drawOnceInMenuBar()
     }
 
@@ -262,11 +272,11 @@ final class Screenshots: NSObject, NSApplicationDelegate {
     /// wallpaper's picture filling it as macOS's Fill Screen does, scaled to cover it, in the middle
     private func desktopPicture(for canvas: CGSize) -> CGImage {
         guard let desktop, let source = CGImageSourceCreateWithURL(desktop as CFURL, nil),
-              let picture = CGImageSourceCreateImageAtIndex(source, desktopIndex, nil),
+              let picture = CGImageSourceCreateImageAtIndex(source, WallpaperManager.index(in: source, isDark: appearance == "dark"), nil),
               let colorSpace = CGColorSpace(name: CGColorSpace.displayP3),
               let context = CGContext(data: nil, width: Int(canvas.width) * 2, height: Int(canvas.height) * 2, bitsPerComponent: 8, bytesPerRow: 0,
                                       space: colorSpace, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
-            fail("Couldn't read picture \(desktopIndex) of the wallpaper \(self.desktop?.path ?? "")")
+            fail("Couldn't read the wallpaper \(self.desktop?.path ?? "")")
         }
         let (width, height) = (screen.frame.width * 2, screen.frame.height * 2)
         let fill = max(width / CGFloat(picture.width), height / CGFloat(picture.height))
