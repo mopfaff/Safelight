@@ -73,9 +73,21 @@
 #   2-day-desktop-dome(-5x4)-labelled.png       the two with each part's time of day written at its foot,
 #                                               as large for the picture's width as the -5x4 pictures'
 #                                               words are
+#   3-schedule…-my-schedule.png and             the Schedule's and the day's pictures again with the schedule
+#   2-day-desktop-dome…-my-schedule.png         of scripts/screenshots/my-schedule.json, the one Safelight
+#                                               has on this Mac (scripts/export-schedule.py writes it),
+#                                               rather than the default one, beside the others. The
+#                                               Schedule's are from the pictures `SCHEDULE=scripts/
+#                                               screenshots/my-schedule.json scripts/screenshots.sh` takes,
+#                                               alone, with --desktop and with DARK_WALLPAPER too (in
+#                                               build/screenshots/plain-my-schedule/, out-my-schedule/
+#                                               and out-dome-my-schedule/). The day's have the
+#                                               schedule's brightness in them as well: each part as
+#                                               bright as a Studio Display's backlight is at the
+#                                               brightness the schedule has then, beside its brightest.
 #
 # Needs Pillow (pip install pillow), and for the -split and -day pictures NumPy and PyObjC as well.
-import io, os, re, sys
+import io, json, os, re, sys
 from PIL import Image, ImageCms, ImageDraw, ImageFilter, ImageFont
 
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -123,6 +135,14 @@ LOUD, QUIET = (LABEL_SIZE, "Semibold", 1.0, 150), (26, "Regular", 0.6, 90)
 DAY = ("12:00", "18:15", "21:00")
 NIGHT = os.path.join(root, "build", "demo", "recorder", "recorded", "night-desktop")
 LOWEST_INTENSITY = 0.25
+# The schedule the -my-schedule pictures are of, and what their names and the folders
+# scripts/screenshots.sh puts its pictures with that schedule in end with
+MINE = os.path.join(root, "scripts", "screenshots", "my-schedule.json")
+OWN = "-my-schedule"
+# The brightness below which Safelight has the backlight at its lowest and dims the picture instead
+# (CombinedBrightness.lowestBacklight), and how much light a Studio Display's backlight gives at its
+# lowest, as a share of its most: 4 of 600 nits (scripts/demo/pipeline.py, hid_brightness)
+LOWEST_BACKLIGHT, LOWEST_LIGHT = 0.25, 400 / 60000
 
 def srgb(name, folder=docs):  # the screenshots are in Display P3; Reddit's pictures are drawn as sRGB
     image = Image.open(os.path.join(folder, name)).convert("RGBA")
@@ -181,27 +201,33 @@ def default_schedule():
              "brightness": float(brightness), "appearance": "dark" if dark == "true" else "light"}
             for hour, minute, on, intensity, tint, brightness, dark in (match.groups() for match in found)]
 
-def day():
-    """The whole desktop at each of DAY's times on the default schedule, as the screen shows it then, in
-    sRGB at half its size, a point to the pixel: in Light the wallpaper alone, as the menu bar's items are
-    all at its right, in the last part, and in Dark the desktop the recorder drew. And where the
-    leftmost of those items begins, which through_day() keeps in the last part."""
+def day(schedule, dimmed=False):
+    """The whole desktop at each of DAY's times on `schedule`, as the screen shows it then, in sRGB at
+    half its size, a point to the pixel: the last, in Dark, the desktop the recorder drew, and the ones
+    before it their appearance's wallpaper alone, as the menu bar's items are all at its right, in the
+    last part. If `dimmed`, each at the schedule's brightness then as well: as a Studio Display, whose
+    backlight Safelight sets, gives off that much less light. And where the leftmost of the menu
+    bar's items begins, which through_day() keeps in the last part."""
     import numpy as np
     sys.path.insert(0, os.path.join(root, "scripts", "demo"))
     import compose, pipeline
-    schedule, looks = default_schedule(), []
+    looks = []
     for time in DAY:
-        intensity, tint, _, dark = compose.schedule_settings(schedule, int(time[:2]) * 60 + int(time[3:]))
-        # As ColorKeyframe.Settings has it: the filter is off below its lowest intensity
-        looks.append((bool(dark), (float(tint) / 360, min(float(intensity), 1)) if intensity >= LOWEST_INTENSITY else None))
-    if [dark for dark, _ in looks] != [False, False, True]:
-        sys.exit(f"The default schedule isn't Light, Light and Dark at {', '.join(DAY)} any more, as the desktop through a day is drawn")
+        intensity, tint, brightness, dark = compose.schedule_settings(schedule, int(time[:2]) * 60 + int(time[3:]))
+        if dimmed and brightness < LOWEST_BACKLIGHT:
+            sys.exit(f"The schedule's brightness at {time} is below {LOWEST_BACKLIGHT}, where Safelight dims the picture as well, which isn't drawn here")
+        # As ColorKeyframe.Settings has it: the filter is off below its lowest intensity. And the backlight
+        # as CombinedBrightness.backlight(at:) has it: the brightness's top three quarters
+        looks.append((bool(dark), (float(tint) / 360, min(float(intensity), 1)) if intensity >= LOWEST_INTENSITY else None,
+                      (float(brightness) - LOWEST_BACKLIGHT) / (1 - LOWEST_BACKLIGHT) if dimmed else 1.0))
+    if not looks[-1][0]:
+        sys.exit(f"The schedule isn't Dark at {DAY[-1]}, as the desktop with the menu bar's items is recorded")
     desktops = []
-    for dark, tint in looks:
-        image = Image.open(os.path.join(NIGHT, "desktop-closed.png" if dark else "wallpaper-light.png"))
-        display = pipeline.Display("desktop", pipeline.BACKLIGHT, pipeline.Profile(image.info["icc_profile"]))
+    for part, (dark, tint, backlight) in enumerate(looks):
+        image = Image.open(os.path.join(NIGHT, "desktop-closed.png" if part == len(looks) - 1 else "wallpaper-dark.png" if dark else "wallpaper-light.png"))
+        display = pipeline.Display("desktop", pipeline.BACKLIGHT, pipeline.Profile(image.info["icc_profile"]), LOWEST_LIGHT)
         frame = np.asarray(image.convert("RGB"), np.float64) / 255
-        shown = Image.fromarray(pipeline.to_video(pipeline.shown(frame, display, tint=tint), display, "srgb"))
+        shown = Image.fromarray(pipeline.to_video(pipeline.shown(frame, display, tint=tint, brightness=backlight), display, "srgb"))
         desktops.append(shown.resize((image.width // 2, image.height // 2), Image.BOX))
     # The menu bar's items are where the Dark desktop isn't its wallpaper alone
     alone = np.asarray(Image.open(os.path.join(NIGHT, "wallpaper-dark.png")).convert("RGB"))
@@ -295,16 +321,34 @@ for appearance, suffix in (("dark", ""), ("light", "-light")):
                 tight = name.replace("-desktop", "-desktop-tight")
                 Image.open(place(name)).crop((TIGHTER, 0, size[0] - TIGHTER, size[1])).save(place(tight), optimize=True)
                 count += 1
-if all(os.path.exists(os.path.join(NIGHT, name)) for name in ("desktop-closed.png", "wallpaper-light.png")):
-    desktops, items = day()
+# The default schedule's, and with the schedule of MINE, the same on it, with its brightness
+days = {"": (default_schedule(), False)}
+if os.path.exists(MINE):
+    days[OWN] = (json.load(open(MINE)), True)
+    for appearance, suffix in (("dark", ""), ("light", "-light")):
+        taken = {f"3-schedule{suffix}{OWN}.png": (os.path.join(root, "build", "screenshots", "plain" + OWN), f"schedule-{appearance}.png")}
+        for wallpaper, desktops in DESKTOPS.items():
+            taken[f"3-schedule-desktop{wallpaper}{suffix}{OWN}.png"] = (desktops + OWN, f"schedule-{appearance}-desktop-1128x678.png")
+        for name, (folder, file) in taken.items():
+            if not os.path.exists(os.path.join(folder, file)):
+                missing.append(name)
+            elif "-desktop" in name:
+                srgb(file, folder).convert("RGB").crop((0, 0) + LANDSCAPE).save(place(name), optimize=True)
+                count += 1
+            else:
+                write(name, srgb(file, folder), LANDSCAPE, appearance)
+                count += 1
+for own, (schedule, dimmed) in days.items():
+    if not all(os.path.exists(os.path.join(NIGHT, name)) for name in ("desktop-closed.png", "wallpaper-light.png", "wallpaper-dark.png")):
+        missing.append(f"2-day-desktop-dome{own}.png (scripts/make-demo.sh --record night-desktop draws its desktop)")
+        continue
+    desktops, items = day(schedule, dimmed)
     # The right of the desktop in the shape of the -5x4 pictures
     cuts = {"": 0, "-5x4": desktops[0].width - round(desktops[0].height * FIVE_FOUR / LANDSCAPE[1])}
     for ending, left in cuts.items():
         for name, picture in zip(("", "-labelled"), through_day(desktops, items, left)):
-            picture.save(place(f"2-day-desktop-dome{ending}{name}.png"), optimize=True)
+            picture.save(place(f"2-day-desktop-dome{ending}{name}{own}.png"), optimize=True)
         count += 2
-else:
-    missing.append("2-day-desktop-dome.png (scripts/make-demo.sh --record night-desktop draws its desktop)")
 print(f"Wrote {count} pictures to {os.path.relpath(out, os.getcwd())}")
 if missing:
-    print(f"Left out {', '.join(missing)}: run scripts/screenshots.sh --desktop first (with DARK_WALLPAPER for Dome's)")
+    print(f"Left out {', '.join(missing)}: run scripts/screenshots.sh --desktop first (with DARK_WALLPAPER for Dome's, and with SCHEDULE for the{OWN} ones)")

@@ -21,6 +21,14 @@
 #                             hasn't had it: its catalogue,
 #                             /System/Library/AssetsV2/com_apple_MobileAsset_DesktopPicture/, says where
 #                             Apple keeps it.)
+#   SCHEDULE=scripts/screenshots/my-schedule.json scripts/screenshots.sh [--desktop [dark|light]]
+#                             draws the same with that schedule in the Schedule window rather than the
+#                             default one, and the popover at that schedule's settings at 21:00. The
+#                             file has a schedule as the demo's scenes write one;
+#                             scripts/export-schedule.py writes the one Safelight has on this Mac to it.
+#                             These go to folders of their own, named for the file, and docs/ is left
+#                             alone: build/screenshots/plain-my-schedule/ for the windows by themselves,
+#                             and out-my-schedule/ or out-dome-my-schedule/ over a desktop.
 #
 # It builds a copy of Safelight.swift into "Safelight Screenshots.app" with scripts/screenshots/,
 # whose NoSystemChanges.swift stands in for the functions that change the color filter, brightness and
@@ -44,6 +52,16 @@ if [[ "${1:-}" == --desktop && "$DARK_WALLPAPER" != "/System/Library/Desktop Pic
         exit 2
     fi
     OUT="$BUILD_DIR/out-${(L)DARK_WALLPAPER:t:r}"
+fi
+SCHEDULE="${SCHEDULE:-}"
+SCHEDULE_ARGS=()
+if [[ -n "$SCHEDULE" ]]; then
+    if [[ ! -f "$SCHEDULE" ]]; then
+        echo "There's no schedule at $SCHEDULE" >&2
+        exit 2
+    fi
+    if [[ "${1:-}" == --desktop ]]; then OUT="$OUT-${SCHEDULE:t:r}"; else OUT="$BUILD_DIR/plain-${SCHEDULE:t:r}"; fi
+    SCHEDULE_ARGS=(-scheduleFile "${SCHEDULE:A}")
 fi
 SHOTS=(popover-dark popover-light schedule-dark schedule-light)
 
@@ -110,7 +128,7 @@ if [[ "${1:-}" == --desktop ]]; then
         open -W -n --stdout "$LOG" --stderr "$LOG" "$APP" --args -appearance $appearance \
             -AppleLanguages '(en-US)' -AppleLocale en_GB -output "$PWD/$OUT" \
             -desktopLight "/System/Library/Desktop Pictures/.wallpapers/Sonoma Horizon/Sonoma Horizon.heic" \
-            -desktopDark "${DARK_WALLPAPER:A}" -canvases $CANVASES
+            -desktopDark "${DARK_WALLPAPER:A}" -canvases $CANVASES $SCHEDULE_ARGS
         for shot in popover-$appearance-desktop-540x675 popover-$appearance-desktop-1128x678 schedule-$appearance-desktop-1128x678; do
             if [[ ! -f "$OUT/$shot.png" ]]; then
                 echo "Screenshots failed (full log: $LOG):" >&2
@@ -126,7 +144,7 @@ for appearance in dark light; do
     LOG="$BUILD_DIR/screenshots-$appearance.log"
     rm -f "$LOG"
     open -W -n --stdout "$LOG" --stderr "$LOG" "$APP" --args -appearance $appearance \
-        -AppleLanguages '(en-US)' -AppleLocale en_GB -output "$PWD/$OUT"
+        -AppleLanguages '(en-US)' -AppleLocale en_GB -output "$PWD/$OUT" $SCHEDULE_ARGS
     for shot in popover-$appearance schedule-$appearance; do
         if [[ ! -f "$OUT/$shot.png" ]]; then
             echo "Screenshots failed (full log: $LOG):" >&2
@@ -135,6 +153,11 @@ for appearance in dark light; do
         fi
     done
 done
+if [[ -n "$SCHEDULE" ]]; then
+    # The README's are of the default schedule
+    echo "Wrote the screenshots with the schedule of $SCHEDULE to $OUT"
+    exit 0
+fi
 changed=()
 for shot in $SHOTS; do
     if [[ -f "docs/$shot.png" ]] && "$APP/Contents/MacOS/$NAME" -compare "docs/$shot.png" "$OUT/$shot.png"; then

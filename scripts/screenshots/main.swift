@@ -58,6 +58,10 @@ final class Screenshots: NSObject, NSApplicationDelegate {
         let sides = $0.split(separator: "x").compactMap { Double($0) }
         return sides.count == 2 ? CGSize(width: sides[0], height: sides[1]) : nil
     }
+    /// With `-scheduleFile`, a file with the schedule the Schedule window shows instead of the default
+    /// one, as the demo's scenes write a schedule (scripts/export-schedule.py writes the one Safelight
+    /// has on this Mac). The popover then shows that schedule's settings at 21:00.
+    private let scheduleFile = UserDefaults.standard.string(forKey: "scheduleFile").map { URL(fileURLWithPath: $0) }
     private let appDelegate = AppDelegate()
     /// The Retina display the windows are put on, so they're drawn at twice their size
     private let screen = NSScreen.screens.first { $0.backingScaleFactor >= 2 } ?? NSScreen.screens[0]
@@ -122,6 +126,19 @@ final class Screenshots: NSObject, NSApplicationDelegate {
         controller.intensity = 0.90
         controller.isColorFilterOn = true
         controller.brightness = 0.68
+        if let scheduleFile {
+            // Or on the schedule given, as it has them at the time FixedTime.swift keeps it at
+            controller.schedule = keyframes(in: scheduleFile)
+            guard let evening = ColorKeyframe.settings(in: controller.schedule, at: Double(FixedTime.hour * 60 + FixedTime.minute)) else {
+                fail("\(scheduleFile.path) has no keyframes")
+            }
+            controller.isColorFilterOn = evening.isColorFilterOn
+            if evening.isColorFilterOn {
+                controller.tint = evening.tint
+                controller.intensity = evening.filterIntensity
+            }
+            controller.brightness = evening.brightness
+        }
         controller.chooseAppearance(isDark: isDark) // which only the Appearance picker shows
         // And macOS's own Light and Dark wallpaper, which only the Wallpaper picker shows: it's only
         // read, as the desktop isn't changed unless a picture is chosen
@@ -135,6 +152,31 @@ final class Screenshots: NSObject, NSApplicationDelegate {
         }
         WallpaperManager.shared.showPictures(of: wallpaper)
         drawOnceInMenuBar()
+    }
+
+    /// A schedule's keyframes from a file that has them as the demo's scenes do: a time ("20:30"), whether
+    /// the color filter is on, its intensity and tint, the brightness and the appearance (light or dark)
+    private func keyframes(in file: URL) -> [ColorKeyframe] {
+        struct Keyframe: Decodable {
+            let time: String
+            let colorFilter: Bool
+            let intensity: Float
+            let tint: Float
+            let brightness: Float
+            let appearance: String
+        }
+        guard let data = try? Data(contentsOf: file), let keyframes = try? JSONDecoder().decode([Keyframe].self, from: data) else {
+            fail("Couldn't read a schedule from \(file.path)")
+        }
+        return keyframes.enumerated().map { index, keyframe in
+            let time = keyframe.time.split(separator: ":").compactMap { Int($0) }
+            guard time.count == 2, (0..<24).contains(time[0]), (0..<60).contains(time[1]), ["light", "dark"].contains(keyframe.appearance),
+                  let id = UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", index)) else {
+                fail("A keyframe of \(file.path) needs a time like 20:30 and an appearance of light or dark")
+            }
+            return ColorKeyframe(id: id, minute: time[0] * 60 + time[1], isColorFilterOn: keyframe.colorFilter, intensity: keyframe.intensity,
+                                 tint: keyframe.tint, brightness: keyframe.brightness, isDarkAppearance: keyframe.appearance == "dark")
+        }
     }
 
     /// Draws once the menu bar has made room for the items, which it doesn't straight away, and so has

@@ -1,0 +1,6 @@
+[
+  {"time": "05:30", "colorFilter": true, "intensity": 1, "tint": 0, "brightness": 0.17887276, "appearance": "dark"},
+  {"time": "06:00", "colorFilter": false, "intensity": 0.25, "tint": 180, "brightness": 1, "appearance": "light"},
+  {"time": "17:10", "colorFilter": false, "intensity": 0.25, "tint": 177.81563, "brightness": 1, "appearance": "dark"},
+  {"time": "20:30", "colorFilter": true, "intensity": 1, "tint": 0, "brightness": 0.31545368, "appearance": "dark"}
+]
