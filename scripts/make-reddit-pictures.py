@@ -27,10 +27,17 @@
 #                                               pictures `DARK_WALLPAPER=build/wallpapers/Dome.heic
 #                                               scripts/screenshots.sh --desktop` takes (in
 #                                               build/screenshots/out-dome/)
+#   1-popover(-portrait)-desktop…-split.png      the popover over a desktop, the left of a slanted line with
+#                                               the color filter the popover shows on (red, at 0.9) as
+#                                               the screen shows it, and the right as the screenshot has
+#                                               it: no screenshot has the filter in it, as macOS applies
+#                                               it after the frame is drawn. The filter is the demo
+#                                               videos' (scripts/demo/pipeline.py): macOS's own matrix,
+#                                               multiplying light. The brightness isn't applied.
 #
-# Needs Pillow (pip install pillow).
-import io, os
-from PIL import Image, ImageCms
+# Needs Pillow (pip install pillow), and for the -split pictures NumPy and PyObjC as well.
+import io, os, sys
+from PIL import Image, ImageCms, ImageDraw
 
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 docs = os.path.join(root, "docs")
@@ -45,11 +52,32 @@ CLOCK_LEFT, CLOCK_BOTTOM = 600, 48
 # Over a desktop 540 points wide the clock's last digit is 69 pixels from the right edge, and on a Mac's
 # screen 24 points, 48 pixels; taken off both sides, the popover stays in the middle
 TIGHTER = 21
+# The color filter scripts/screenshots/main.swift sets for the popover: (hue, intensity)
+TINT = (0, 0.90)
+# How far the -split pictures' line leans: its top this many pixels right of the middle, its bottom left
+LEAN = 150
 
 def srgb(name, folder=docs):  # the screenshots are in Display P3; Reddit's pictures are drawn as sRGB
     image = Image.open(os.path.join(folder, name)).convert("RGBA")
     p3 = ImageCms.ImageCmsProfile(io.BytesIO(image.info["icc_profile"]))
     return ImageCms.profileToProfile(image, p3, ImageCms.createProfile("sRGB"), outputMode="RGBA")
+
+def split(taken, folder):
+    """A picture taken over a desktop, in sRGB, with the color filter on to the left of a slanted line
+    through its middle."""
+    import numpy as np
+    sys.path.insert(0, os.path.join(root, "scripts", "demo"))
+    import pipeline
+    image = Image.open(os.path.join(folder, taken))
+    display = pipeline.Display("screenshot", pipeline.BACKLIGHT, pipeline.Profile(image.info["icc_profile"]))
+    frame = np.asarray(image.convert("RGB"), np.float64) / 255
+    on = pipeline.to_video(pipeline.shown(frame, display, tint=TINT), display, "srgb")
+    off = np.asarray(srgb(taken, folder).convert("RGB"))
+    width, height = image.size
+    mask = Image.new("L", (width * 4, height * 4), 0)  # drawn four times the size for a smooth edge
+    ImageDraw.Draw(mask).polygon([(0, 0), (width * 2 + LEAN * 4, 0), (width * 2 - LEAN * 4, height * 4), (0, height * 4)], fill=255)
+    mask = np.asarray(mask.resize((width, height), Image.LANCZOS), np.float64)[..., None] / 255
+    return Image.fromarray(np.round(on * mask + off * (1 - mask)).astype(np.uint8))
 
 def without_clock(popover):
     """The popover's screenshot with the clock gone. The popover's shadow reaches up behind the clock,
@@ -97,6 +125,9 @@ for appearance, suffix in (("dark", ""), ("light", "-light")):
             # The points are whole, so the landscape one is a row of pixels taller than the Schedule's
             srgb(taken.format(appearance), desktops).convert("RGB").crop((0, 0) + size).save(os.path.join(out, name), optimize=True)
             count += 1
+            if name.startswith("1-popover"):
+                split(taken.format(appearance), desktops).crop((0, 0) + size).save(os.path.join(out, name.replace(".png", "-split.png")), optimize=True)
+                count += 1
             if size == PORTRAIT:
                 tight = name.replace("-desktop", "-desktop-tight")
                 Image.open(os.path.join(out, name)).crop((TIGHTER, 0, size[0] - TIGHTER, size[1])).save(os.path.join(out, tight), optimize=True)
