@@ -5,6 +5,13 @@
 #
 #   scripts/screenshots.sh    writes docs/popover-dark.png, popover-light.png, schedule-dark.png and
 #                             schedule-light.png
+#   scripts/screenshots.sh --desktop
+#                             instead writes, to build/screenshots/out/, the popover and the Schedule
+#                             window over a desktop: the top right corner of the screen, 540 × 675 and
+#                             1128 × 678 points of it, with the wallpapers the demo has, Sonoma Horizon
+#                             in Light and Sonoma's Dark picture in Dark. The popover's glass is drawn
+#                             over the wallpaper, as it can't be by putting the README's screenshot on
+#                             one. scripts/make-reddit-pictures.py makes the Reddit gallery's from them.
 #
 # It builds a copy of Safelight.swift into "Safelight Screenshots.app" with scripts/screenshots/,
 # whose NoSystemChanges.swift stands in for the functions that change the color filter, brightness and
@@ -64,6 +71,30 @@ fi
 # Opened with `open`, as only an app macOS launches that way can be sure of becoming active, and only an
 # active app's controls are drawn in the accent colour. Once for each appearance, in American English,
 # as the README is, with 24-hour times.
+if [[ "${1:-}" == --desktop ]]; then
+    CANVASES=540x675,1128x678
+    for appearance in dark light; do
+        LOG="$BUILD_DIR/screenshots-$appearance-desktop.log"
+        rm -f "$LOG"
+        if [[ $appearance == dark ]]; then
+            wallpaper=("/System/Library/Desktop Pictures/Sonoma.heic" 1)
+        else
+            wallpaper=("/System/Library/Desktop Pictures/.wallpapers/Sonoma Horizon/Sonoma Horizon.heic" 0)
+        fi
+        open -W -n --stdout "$LOG" --stderr "$LOG" "$APP" --args -appearance $appearance \
+            -AppleLanguages '(en-US)' -AppleLocale en_GB -output "$PWD/$OUT" \
+            -desktop "$wallpaper[1]" -desktopIndex "$wallpaper[2]" -canvases $CANVASES
+        for shot in popover-$appearance-desktop-540x675 popover-$appearance-desktop-1128x678 schedule-$appearance-desktop-1128x678; do
+            if [[ ! -f "$OUT/$shot.png" ]]; then
+                echo "Screenshots failed (full log: $LOG):" >&2
+                cat "$LOG" >&2
+                exit 2
+            fi
+        done
+    done
+    echo "Wrote the pictures over a desktop to $OUT"
+    exit 0
+fi
 for appearance in dark light; do
     LOG="$BUILD_DIR/screenshots-$appearance.log"
     rm -f "$LOG"

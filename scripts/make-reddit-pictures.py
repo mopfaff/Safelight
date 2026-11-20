@@ -14,6 +14,11 @@
 #   1-popover-centred(-light).png and           with the clock, but the popover itself in the middle, so
 #   1-popover-portrait-centred(-light).png      the clock reaches further to the right than the icon is
 #                                               from the left
+#   1-popover-desktop(-light).png,              over a desktop, as on screen: the wallpapers the demo has,
+#   1-popover-portrait-desktop(-light).png and  Sonoma Horizon in Light and Sonoma's Dark picture in Dark,
+#   2-schedule-desktop(-light).png              with the popover's glass drawn over them. These are from
+#                                               the pictures `scripts/screenshots.sh --desktop` takes
+#                                               (in build/screenshots/out/), and are left out without them.
 #
 # Needs Pillow (pip install pillow).
 import io, os
@@ -22,14 +27,15 @@ from PIL import Image, ImageCms
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 docs = os.path.join(root, "docs")
 out = os.path.join(root, "build", "reddit", "coolgithubprojects")
+desktops = os.path.join(root, "build", "screenshots", "out")
 LANDSCAPE, PORTRAIT = (2256, 1355), (1080, 1350)
 GROUND = {"dark": (0, 0, 0), "light": (233, 233, 238)}
 # In docs/popover-*.png: the popover's sides, and where the clock is in the menu bar above it
 POPOVER_LEFT, POPOVER_RIGHT = 46, 681
 CLOCK_LEFT, CLOCK_BOTTOM = 600, 48
 
-def srgb(name):  # the screenshots are in Display P3; Reddit's pictures are drawn as sRGB
-    image = Image.open(os.path.join(docs, name)).convert("RGBA")
+def srgb(name, folder=docs):  # the screenshots are in Display P3; Reddit's pictures are drawn as sRGB
+    image = Image.open(os.path.join(folder, name)).convert("RGBA")
     p3 = ImageCms.ImageCmsProfile(io.BytesIO(image.info["icc_profile"]))
     return ImageCms.profileToProfile(image, p3, ImageCms.createProfile("sRGB"), outputMode="RGBA")
 
@@ -53,7 +59,13 @@ def write(name, picture, size, appearance, centre_x=None):
     canvas.alpha_composite(picture, (x, (size[1] - picture.height) // 2))
     canvas.convert("RGB").save(os.path.join(out, name), optimize=True)
 
+# A picture taken over a desktop, already whole: (its name there, its name here, its size here)
+OVER_DESKTOP = [("popover-{}-desktop-1128x678.png", "1-popover-desktop{}.png", LANDSCAPE),
+                ("popover-{}-desktop-540x675.png", "1-popover-portrait-desktop{}.png", PORTRAIT),
+                ("schedule-{}-desktop-1128x678.png", "2-schedule-desktop{}.png", LANDSCAPE)]
+
 os.makedirs(out, exist_ok=True)
+count, missing = 0, []
 for appearance, suffix in (("dark", ""), ("light", "-light")):
     popover, schedule = srgb(f"popover-{appearance}.png"), srgb(f"schedule-{appearance}.png")
     write(f"1-popover{suffix}.png", popover, LANDSCAPE, appearance)
@@ -63,4 +75,14 @@ for appearance, suffix in (("dark", ""), ("light", "-light")):
     write(f"1-popover-portrait-no-clock{suffix}.png", without_clock(popover), PORTRAIT, appearance, centre_x=middle)
     write(f"1-popover-centred{suffix}.png", popover, LANDSCAPE, appearance, centre_x=middle)
     write(f"1-popover-portrait-centred{suffix}.png", popover, PORTRAIT, appearance, centre_x=middle)
-print(f"Wrote 12 pictures to {os.path.relpath(out, os.getcwd())}")
+    count += 6
+    for taken, name, size in OVER_DESKTOP:
+        if not os.path.exists(os.path.join(desktops, taken.format(appearance))):
+            missing.append(name.format(suffix))
+            continue
+        # The points are whole, so the landscape one is a row of pixels taller than the Schedule's
+        srgb(taken.format(appearance), desktops).convert("RGB").crop((0, 0) + size).save(os.path.join(out, name.format(suffix)), optimize=True)
+        count += 1
+print(f"Wrote {count} pictures to {os.path.relpath(out, os.getcwd())}")
+if missing:
+    print(f"Left out {', '.join(missing)}: run scripts/screenshots.sh --desktop first")

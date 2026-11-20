@@ -46,6 +46,16 @@ typealias MenuBarImage = (image: CGImage, frame: CGRect)
 final class Screenshots: NSObject, NSApplicationDelegate {
     private let output = URL(fileURLWithPath: UserDefaults.standard.string(forKey: "output") ?? ".")
     private let appearance = UserDefaults.standard.string(forKey: "appearance") ?? "dark"
+    /// With `-desktop`, a wallpaper's file: the pictures are then of the popover and the Schedule window
+    /// over the top right corner of a desktop with that wallpaper, each `-canvases` size of it in turn
+    /// ("540x675,1128x678", in points), with the menu bar's items along its top, rather than of the
+    /// windows alone. `-desktopIndex` is which of the file's pictures, for one with a Dark picture too.
+    private let desktop = UserDefaults.standard.string(forKey: "desktop").map { URL(fileURLWithPath: $0) }
+    private let desktopIndex = UserDefaults.standard.integer(forKey: "desktopIndex")
+    private let canvases: [CGSize] = (UserDefaults.standard.string(forKey: "canvases") ?? "").split(separator: ",").compactMap {
+        let sides = $0.split(separator: "x").compactMap { Double($0) }
+        return sides.count == 2 ? CGSize(width: sides[0], height: sides[1]) : nil
+    }
     private let appDelegate = AppDelegate()
     /// The Retina display the windows are put on, so they're drawn at twice their size
     private let screen = NSScreen.screens.first { $0.backingScaleFactor >= 2 } ?? NSScreen.screens[0]
@@ -165,6 +175,10 @@ final class Screenshots: NSObject, NSApplicationDelegate {
     private func draw(menuBar: [MenuBarImage]) {
         let popover = appDelegate.popover
         let place = anchor.contentView!.subviews[0]
+        if desktop != nil {
+            guard !canvases.isEmpty else { fail("-desktop needs -canvases, like 540x675,1128x678") }
+            return drawOverDesktop(canvases, menuBar: menuBar)
+        }
         capture("popover-\(appearance)", overBackdrop: true, menuBar: menuBar, show: {
             // At its full size from the start: opened at the size it's made with, it grows upwards, over
             // the menu bar, once SwiftUI has laid it out
@@ -189,11 +203,79 @@ final class Screenshots: NSObject, NSApplicationDelegate {
         })
     }
 
+    /// The popover over each size of desktop in turn, the menu bar's items along its top and the popover
+    /// in the middle, as "popover-light-desktop-540x675", and then the Schedule window in the middle of
+    /// each it fits in with room to spare, without the menu bar's items. The popover stays open from
+    /// one size to the next: opened again after another window, it's drawn as it is when it isn't key.
+    private func drawOverDesktop(_ canvases: [CGSize], menuBar: [MenuBarImage], schedule: Bool = false) {
+        let popover = appDelegate.popover
+        let place = anchor.contentView!.subviews[0]
+        guard let canvas = canvases.first else {
+            if schedule { return finish() }
+            popover.close()
+            return drawOverDesktop(self.canvases, menuBar: menuBar, schedule: true)
+        }
+        let name = "\(appearance)-desktop-\(Int(canvas.width))x\(Int(canvas.height))"
+        let next = { self.drawOverDesktop(Array(canvases.dropFirst()), menuBar: menuBar, schedule: schedule) }
+        // Its top where the top of the screen would be, the anchor's menu bar being the screen's
+        let frame = NSRect(x: (anchor.frame.midX - canvas.width / 2).rounded(), y: anchor.frame.maxY - canvas.height, width: canvas.width, height: canvas.height)
+        backdrop.setFrame(frame, display: false)
+        backdrop.contentView?.wantsLayer = true
+        backdrop.contentView?.layer?.contents = desktopPicture(for: canvas)
+        backdrop.contentView?.layer?.contentsGravity = .resize
+        backdrop.display()
+        guard schedule else {
+            return capture("popover-\(name)", overDesktop: true, menuBar: menuBar, show: {
+                if !popover.isShown {
+                    if let view = popover.contentViewController?.view { popover.contentSize = view.fittingSize }
+                    popover.show(relativeTo: place.bounds, of: place, preferredEdge: .minY)
+                }
+                return popover.contentViewController?.view.window
+            }, then: next)
+        }
+        ScheduleWindow.shared.show()
+        guard let window = NSApp.windows.first(where: { $0.title == SystemStrings.schedule }) else { fail("Couldn't open the Schedule window") }
+        guard window.frame.width + 100 <= canvas.width, window.frame.height + 100 <= canvas.height else {
+            window.orderOut(nil)
+            return next()
+        }
+        capture("schedule-\(name)", overDesktop: true, show: {
+            ScheduleWindow.shared.show()
+            window.setFrameOrigin(NSPoint(x: (frame.midX - window.frame.width / 2).rounded(), y: (frame.midY - window.frame.height / 2).rounded()))
+            window.makeFirstResponder(nil) // no time field focused
+            return window
+        }, then: {
+            window.orderOut(nil)
+            next()
+        })
+    }
+
+    /// The top right corner of the desktop, `canvas` in size, on a display the size of the screen: the
+    /// wallpaper's picture filling it as macOS's Fill Screen does, scaled to cover it, in the middle
+    private func desktopPicture(for canvas: CGSize) -> CGImage {
+        guard let desktop, let source = CGImageSourceCreateWithURL(desktop as CFURL, nil),
+              let picture = CGImageSourceCreateImageAtIndex(source, desktopIndex, nil),
+              let colorSpace = CGColorSpace(name: CGColorSpace.displayP3),
+              let context = CGContext(data: nil, width: Int(canvas.width) * 2, height: Int(canvas.height) * 2, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: colorSpace, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
+            fail("Couldn't read picture \(desktopIndex) of the wallpaper \(self.desktop?.path ?? "")")
+        }
+        let (width, height) = (screen.frame.width * 2, screen.frame.height * 2)
+        let fill = max(width / CGFloat(picture.width), height / CGFloat(picture.height))
+        let size = CGSize(width: CGFloat(picture.width) * fill, height: CGFloat(picture.height) * fill)
+        context.interpolationQuality = .high
+        // The display's top right corner is the picture's: the context's origin is at its bottom left
+        context.draw(picture, in: CGRect(x: CGFloat(context.width) - width + (width - size.width) / 2,
+                                         y: CGFloat(context.height) - height + (height - size.height) / 2, width: size.width, height: size.height))
+        guard let image = context.makeImage() else { fail("Couldn't draw the desktop") }
+        return image
+    }
+
     /// Shows a window, and takes its picture once the app has been active for a moment, again if it
     /// stopped being active meanwhile. Only an active app's controls are drawn in the accent colour,
     /// and not straight away. macOS can take the activation back from an app that had nothing on screen
     /// as it opened, which closes the popover, and another app can take it, so it's shown again then.
-    private func capture(_ name: String, overBackdrop: Bool = false, menuBar: [MenuBarImage] = [], tries: Int = 10,
+    private func capture(_ name: String, overBackdrop: Bool = false, overDesktop: Bool = false, menuBar: [MenuBarImage] = [], tries: Int = 10,
                          show: @escaping () -> NSWindow?, then next: @escaping () -> Void) {
         let window = show()
         // In Display P3 rather than the display's own colours, which change when macOS rewrites its
@@ -204,11 +286,11 @@ final class Screenshots: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 let lastChange = self.lastActivationChange
                 if NSApp.isActive, ProcessInfo.processInfo.systemUptime - lastChange > 0.75, let window, window.isVisible {
-                    await self.snapshot(window, as: name, overBackdrop: overBackdrop, menuBar: menuBar)
+                    await self.snapshot(window, as: name, overBackdrop: overBackdrop, overDesktop: overDesktop, menuBar: menuBar)
                     if NSApp.isActive, self.lastActivationChange == lastChange { return next() }
                 }
                 guard tries > 1 else { self.fail("Safelight Screenshots couldn't stay the active app to draw \(name); run it again without clicking elsewhere") }
-                self.capture(name, overBackdrop: overBackdrop, menuBar: menuBar, tries: tries - 1, show: show, then: next)
+                self.capture(name, overBackdrop: overBackdrop, overDesktop: overDesktop, menuBar: menuBar, tries: tries - 1, show: show, then: next)
             }
         }
     }
@@ -216,13 +298,14 @@ final class Screenshots: NSObject, NSApplicationDelegate {
     /// Writes a window as it is on screen, with its shadow, in Display P3. A picture of a window by
     /// itself has its see-through parts over black, so with `overBackdrop` they're over the windows
     /// behind it (the backdrop) instead. The `menuBar` items are drawn above it, without the menu bar.
+    /// With `overDesktop`, the picture is the whole backdrop, the desktop, with the window over it.
     @MainActor
-    private func snapshot(_ window: NSWindow, as name: String, overBackdrop: Bool, menuBar: [MenuBarImage]) async {
+    private func snapshot(_ window: NSWindow, as name: String, overBackdrop: Bool, overDesktop: Bool = false, menuBar: [MenuBarImage]) async {
         // Taken with room for the shadow all round, and trimmed to it afterwards
         let margin: CGFloat = 100
         let frame = window.frame
-        let rect = menuBar.reduce(frame.insetBy(dx: -margin, dy: -margin)) { $0.union($1.frame) }.integral
-        guard let image = Self.windowImage(window, in: rect),
+        let rect = overDesktop ? backdrop.frame : menuBar.reduce(frame.insetBy(dx: -margin, dy: -margin)) { $0.union($1.frame) }.integral
+        guard let image = Self.windowImage(window, in: rect, withWindowsBelow: overDesktop),
               let pixels = bitmap(of: image), let bytes = pixels.data?.assumingMemoryBound(to: UInt8.self) else {
             fail("Couldn't take a picture of \(name)")
         }
@@ -253,10 +336,12 @@ final class Screenshots: NSObject, NSApplicationDelegate {
         // far from grey, which a display may not be able to show, are from a picture of it in Display P3
         // instead; the rest, which any display can, as on screen, where its glass and edges are drawn
         // a little differently.
-        guard let own = await Self.p3Image(of: window, over: overBackdrop ? [backdrop] : []).flatMap(bitmap),
+        // Not over a desktop: its wallpaper gives the glass colours far from grey too, and the glass is
+        // the part to have as on screen.
+        guard let own = overDesktop ? pixels : await Self.p3Image(of: window, over: overBackdrop ? [backdrop] : []).flatMap(bitmap),
               let ownBytes = own.data?.assumingMemoryBound(to: UInt8.self),
-              own.width == Int(frame.width) * 2, own.height == Int(frame.height) * 2 else { fail("Couldn't take a picture of \(name) in Display P3") }
-        for row in 0..<own.height {
+              overDesktop || own.width == Int(frame.width) * 2 && own.height == Int(frame.height) * 2 else { fail("Couldn't take a picture of \(name) in Display P3") }
+        for row in 0..<(overDesktop ? 0 : own.height) {
             for column in 0..<own.width {
                 let color = row * own.bytesPerRow + column * 4
                 let pixel = (row + rowOffset) * pixels.bytesPerRow + (column + columnOffset) * 4
