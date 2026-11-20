@@ -34,6 +34,10 @@
 #                                               it after the frame is drawn. The filter is the demo
 #                                               videos' (scripts/demo/pipeline.py): macOS's own matrix,
 #                                               multiplying light. The brightness isn't applied.
+#   1-popover-desktop…-split-5x4.png            the landscape -split picture cut off 24 points right of the
+#                                               clock, 1647 × 1355 (about 5:4): the desktop left of the
+#                                               popover stays in it to show the filter, as Dome's rock
+#                                               does, and the popover is large enough to read on a phone
 #
 # Needs Pillow (pip install pillow), and for the -split pictures NumPy and PyObjC as well.
 import io, os, sys
@@ -52,6 +56,9 @@ CLOCK_LEFT, CLOCK_BOTTOM = 600, 48
 # Over a desktop 540 points wide the clock's last digit is 69 pixels from the right edge, and on a Mac's
 # screen 24 points, 48 pixels; taken off both sides, the popover stays in the middle
 TIGHTER = 21
+# Over a desktop 1128 points wide the clock's last digit ends at pixel 1599; the -5x4 pictures end 24
+# points right of it
+FIVE_FOUR = 1599 + 48
 # The color filter scripts/screenshots/main.swift sets for the popover: (hue, intensity)
 TINT = (0, 0.90)
 # How far the -split pictures' line leans: its top this many pixels right of the middle, its bottom left
@@ -128,6 +135,10 @@ for appearance, suffix in (("dark", ""), ("light", "-light")):
             if name.startswith("1-popover"):
                 split(taken.format(appearance), desktops).crop((0, 0) + size).save(os.path.join(out, name.replace(".png", "-split.png")), optimize=True)
                 count += 1
+                if size == LANDSCAPE:
+                    whole = Image.open(os.path.join(out, name.replace(".png", "-split.png")))
+                    whole.crop((0, 0, FIVE_FOUR, size[1])).save(os.path.join(out, name.replace(".png", "-split-5x4.png")), optimize=True)
+                    count += 1
             if size == PORTRAIT:
                 tight = name.replace("-desktop", "-desktop-tight")
                 Image.open(os.path.join(out, name)).crop((TIGHTER, 0, size[0] - TIGHTER, size[1])).save(os.path.join(out, tight), optimize=True)
