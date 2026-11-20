@@ -11,7 +11,8 @@ import Metal
 // gives the scene's time (Interposers.c), as AppKit's gestures, which move the knob's glass as it's
 // dragged, time the mouse events by it, and work the main thread puts on the main queue runs when the
 // scene's time reaches it, and SwiftUI's own time, which it draws a slider's knob by, is the same as every
-// shot begins (`SwiftUITime`). So the same scene gives the same frames byte for byte. When the scene changes
+// shot begins and moves on only by the frames' intervals (`SwiftUITime`). So the same scene gives the same
+// frames byte for byte. When the scene changes
 // the appearance, the app does it as on the Mac, and macOS's part is played as AppearanceTransition.swift
 // has it, which the log says frame by frame for scripts/demo/compose.py to draw. AppKit's switches, which
 // SwiftUI draws in hosting views of AppKit's own, are moved on a frame at a time as well
@@ -227,10 +228,9 @@ enum SwitchAnimations {
 /// 8.000 to 8.5, where no such time is passed during the drag, gave one and the same recording). So the
 /// popover settles until its time is `start` exactly, and every shot begins at the same time.
 enum SwiftUITime {
-    /// SwiftUI's time in the popover as a shot begins, in seconds: within what it used to be, so a shot
-    /// is recorded as it was (the frames of brightness, two-displays, opening, appearance and schedule are
-    /// what they were before, byte for byte). Another time moves the frame a held knob changes its ways
-    /// at: 6 seconds, 52 frames earlier in every scene.
+    /// SwiftUI's time in the popover as a shot begins, in seconds: within what it used to be. Another
+    /// time moves the frame a held knob changes its ways at, 2.875 seconds into every shot without a clock
+    /// (frame 173 at 60 a second): 6 seconds, 52 frames earlier.
     static let start = 5.125
 
     /// The time in a hosting view, in seconds: its `currentTimestamp`, which SwiftUI keeps to itself
@@ -249,7 +249,7 @@ enum SwiftUITime {
     /// `time` seconds exactly, with `alongside` after each for what else is drawn by the same interval.
     /// The last interval is less than half the time it leads to, so the sum is that time to the last digit.
     static func settle<Content: View>(_ host: NSHostingView<Content>, at time: Double, alongside: (Double) -> Void = { _ in }) {
-        host._renderForTest(interval: 0)
+        render(host, interval: 0)
         for _ in 0..<64 {
             guard let now = seconds(in: host) else { fail("Couldn't read SwiftUI's time in the popover (NSHostingView's currentTimestamp), which a shot has to begin at \(time) seconds of") }
             if now == time { return }
@@ -257,10 +257,57 @@ enum SwiftUITime {
                 fail("SwiftUI's time in the popover is \(now) seconds as it's settled, past the \(time) a shot begins at: did the popover take seconds to open, or does SwiftUI draw more than once for _renderForTest?")
             }
             let interval = min(1, time - now)
-            host._renderForTest(interval: interval)
+            render(host, interval: interval)
             alongside(interval)
         }
         fail("SwiftUI's time in the popover doesn't get to \(time) seconds")
+    }
+
+    /// Leaves SwiftUI's time in `host` to the recorder from now on. Otherwise the hosting view moves it on
+    /// itself as well, whenever it's laid out outside `_renderForTest` (`advanceTimeIfNeeded`, while its
+    /// `canAdvanceTimeAutomatically` is true), by what the clock says has passed since it last did, which
+    /// in a shot is the scene's time: on top of the frame's interval, so while something in the popover
+    /// changed, SwiftUI's time ran at twice the shot's, and after a still stretch it jumped on by all of
+    /// it (in color-filter, 15.25 seconds passed in a shot of 7.8). `_renderForTest` turns that off for
+    /// as long as it draws and back on after, so it's turned off again after each one (`render`). SwiftUI
+    /// has no setter for it, so it's found as the stored property it is.
+    static func leaveToRecorder(_ host: NSView) {
+        guard let ivar = class_getInstanceVariable(type(of: host), "canAdvanceTimeAutomatically"),
+              let now = Mirror.property("canAdvanceTimeAutomatically", of: host) as? Bool else {
+            fail("Couldn't find NSHostingView's canAdvanceTimeAutomatically, which has SwiftUI's time follow the clock as well as the recorder")
+        }
+        let stored = Unmanaged.passUnretained(host).toOpaque().advanced(by: ivar_getOffset(ivar)).assumingMemoryBound(to: Bool.self)
+        guard stored.pointee == now else { fail("NSHostingView's canAdvanceTimeAutomatically isn't stored where the runtime says") }
+        stored.pointee = false
+        guard Mirror.property("canAdvanceTimeAutomatically", of: host) as? Bool == false else { fail("Couldn't turn off NSHostingView's canAdvanceTimeAutomatically") }
+        advancesAutomatically = stored
+        expected = seconds(in: host)
+    }
+
+    /// Where the hosting view left to the recorder keeps whether it moves its time on itself
+    private static var advancesAutomatically: UnsafeMutablePointer<Bool>?
+
+    /// SwiftUI's time in the popover as the recorder has moved it on since `leaveToRecorder`
+    private(set) static var expected: Double?
+
+    /// Has SwiftUI draw `host` `interval` seconds later, as `_renderForTest` does, and keeps count. With
+    /// no interval SwiftUI's time still moves on, to the next number there is.
+    static func render<Content: View>(_ host: NSHostingView<Content>, interval: Double) {
+        host._renderForTest(interval: interval)
+        advancesAutomatically?.pointee = false
+        expected = expected.map { interval == 0 ? $0.nextUp : $0 + interval }
+    }
+}
+
+extension Mirror {
+    /// A stored property of `object` or of a class it inherits from, by its name
+    static func property(_ name: String, of object: Any) -> Any? {
+        var mirror: Mirror? = Mirror(reflecting: object)
+        while let level = mirror {
+            if let child = level.children.first(where: { $0.label == name }) { return child.value }
+            mirror = level.superclassMirror
+        }
+        return nil
     }
 }
 
@@ -911,6 +958,9 @@ final class Recorder: NSObject, NSApplicationDelegate {
             return captureWindowServer(window: window, frameLayer: frameLayer, renderer: renderer, canvas: canvasSize, windowFrame: windowFrame, backdrop: backdrop,
                                        desktopCanvas: desktopInfo?.canvas, into: URL(fileURLWithPath: folder))
         }
+        // From here on SwiftUI's time moves only as the recorder moves it
+        guard SwiftUITime.seconds(in: host) == SwiftUITime.start else { fail("SwiftUI's time in the popover moved on from the \(SwiftUITime.start) seconds it was settled at, before the shot began") }
+        SwiftUITime.leaveToRecorder(host)
         pointer = scene.pointer.map(resolve)
 
         // With a schedule, the Schedule switch is on as the shot begins, as it's been since some time before:
@@ -1006,7 +1056,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
                 scene_main_queue_run(nanoseconds)
                 if scene_main_queue_work_run() != ran { animatingUntil = max(animatingUntil, time + 1) }
                 scene_clock_set(nanoseconds)
-                host._renderForTest(interval: drawnOnce ? time - renderedAt : 0)
+                SwiftUITime.render(host, interval: drawnOnce ? time - renderedAt : 0)
                 switchFrames += SwitchAnimations.render(in: host, interval: drawnOnce ? time - renderedAt : 0)
                 renderedAt = time
                 drawnOnce = true
@@ -1110,7 +1160,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
             // queue is kept for the scene's clock instead (Interposers.c), and what's due by now runs first.
             scene_main_queue_run(scene_clock_now())
             if scene.clock == nil {
-                host._renderForTest(interval: frame == 0 ? 0 : 1 / Double(scene.fps))
+                SwiftUITime.render(host, interval: frame == 0 ? 0 : 1 / Double(scene.fps))
                 switchFrames += SwitchAnimations.render(in: host, interval: frame == 0 ? 0 : 1 / Double(scene.fps))
             } else {
                 advance(to: clock, drawing: true)
@@ -1122,6 +1172,12 @@ final class Recorder: NSObject, NSApplicationDelegate {
                 windowNow.size = window.frame.size
                 guard windowNow.maxX <= canvasSize.width, windowNow.maxY <= canvasSize.height else { fail("The popover's window grew past the canvas at frame \(frame)") }
                 renderer.moveWindow(to: windowNow)
+                // SwiftUI puts its content where it belongs in the window's new size as it's laid out, when
+                // its time is its own to move on; left to the recorder (`SwiftUITime.leaveToRecorder`), it
+                // would be drawn a frame late, the rows 22 points off for that frame, so it's drawn again now
+                SwiftUITime.render(host, interval: 0)
+                window.displayIfNeeded()
+                guard window.frame.size == windowNow.size else { fail("The popover's window changed its size twice at frame \(frame)") }
             }
             let animations = Self.coreAnimationAnimations(in: frameLayer)
             // The desktop behind the glass as it is now, in layers once it's changed
@@ -1238,9 +1294,15 @@ final class Recorder: NSObject, NSApplicationDelegate {
         print("Recorded \(count) frames of \(renderer.width)×\(renderer.height) to \(frames.path)")
         print("The main queue's work: \(mainQueueWork) ran on the scene's clock, \(mainQueueLeft) still due as it ended")
         print("AppKit's switches drawn on the scene's clock: \(switchFrames) times")
-        // But for when the popover had opened, the same from one recording of a scene to the next, or
-        // something reads the clock by the real time
-        print("The scene's clock: read \(clockReadings) times on the main thread during the shot; SwiftUI's time: \(timeOpened ?? -1) seconds once the popover had opened, \(timeEnded ?? -1) as the shot ended")
+        // SwiftUI's time is what the recorder made it, to the last digit, or something else moved it on
+        guard let timeEnded, timeEnded == SwiftUITime.expected else {
+            fail("SwiftUI's time in the popover is \(timeEnded ?? -1) seconds as the shot ends, not the \(SwiftUITime.expected ?? -1) the recorder moved it on to: something else moves it as well")
+        }
+        // The number of readings differs by a few from one recording of a scene to the next (30436 to
+        // 30439 over 28 of color-filter, 2026-11-19) with the same frames, byte for byte: not a sign of
+        // anything. When the popover had opened is by the real clock; when the shot ended is the same
+        // every time.
+        print("The scene's clock: read \(clockReadings) times on the main thread during the shot; SwiftUI's time: \(timeOpened ?? -1) seconds once the popover had opened, \(timeEnded) as the shot ended")
         removeSettings()
         exit(0)
     }

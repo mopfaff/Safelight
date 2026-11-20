@@ -46,12 +46,15 @@
 # the popover invisibly and draws it off screen, so nothing shows and it never becomes the active app;
 # it needs a Retina display, as the frames are drawn at its scale. Nothing in a frame depends on the
 # time it's recorded at: SwiftUI runs on its clock for tests, from the same time as every shot begins
-# (recorder/main.swift, SwiftUITime), and the main thread reads the scene's time from every clock
-# (recorder/Interposers.c), so the same scene on the same Mac gives the same frames, byte for byte,
-# with the Mac idle or with every core busy; --verify makes a shot twice to check. (Until 2026-11-19
-# SwiftUI's time began wherever the real clock had left it as the popover opened, and a slider's knob
-# was drawn a little differently from one recording to the next: intensity-drag's from frame 170 on,
-# color-filter's from frame 128.) Composing a recording gives the same videos every time. The displays
+# and by the frames' intervals alone (recorder/main.swift, SwiftUITime), and the main thread reads the
+# scene's time from every clock (recorder/Interposers.c), so the same scene on the same Mac gives the
+# same frames, byte for byte, with the Mac idle or with every core busy; --verify makes a shot twice to
+# check. (Until 2026-11-19 SwiftUI's time began wherever the real clock had left it as the popover
+# opened, and a slider's knob was drawn a little differently from one recording to the next:
+# intensity-drag's from frame 170 on, color-filter's from frame 128. Until 2026-11-20 SwiftUI's time
+# also ran ahead of the shot's whenever the popover was laid out between frames, so a pressed knob's
+# glass came up in one frame instead of seven, and the rows the Schedule's switch dims did so twice as
+# fast.) Composing a recording gives the same videos every time. The displays
 # in the Brightness section are this Mac's, and the scene's brightness is the one they start at. For a
 # scene with "otherDisplays": true, the Mac's other displays are drawn as well, each with its own
 # desktop, and compose.py puts them beside the popover's as they're arranged, each dimmed as it's dimmed.

@@ -14,10 +14,15 @@
 #                         pixels and by how many levels of 255 at most, on which frames the logged knob of a
 #                         slider differs and by how much, and which other parts of the log differ
 #
-# What the recorder prints as it ends says more when recordings differ: how often the main thread read the
-# scene's clock during the shot, and SwiftUI's time as the shot ended, are the same every time for a scene
-# (build/demo/recorder/<scene>.log). On 2026-11-19 recordings differed because SwiftUI's time began where
-# the real clock had left it (recorder/main.swift, SwiftUITime).
+# What the recorder prints as it ends says more when recordings differ (build/demo/recorder/<scene>.log):
+# SwiftUI's time as the shot ended is the same every time for a scene, and the recorder fails if it isn't
+# what its own frames add up to. How often the main thread read the scene's clock during the shot isn't:
+# it differs by a few from one recording to the next, with the same frames. On 2026-11-19 recordings
+# differed because SwiftUI's time began where the real clock had left it (recorder/main.swift, SwiftUITime).
+#
+# A log names the Mac's displays by their numbers, which change when the Mac restarts or a display is
+# plugged in again, so recordings from either side of that differ in the log's displays, system and calls
+# with the same frames.
 import argparse, json, os, shutil, subprocess, sys
 from pathlib import Path
 import numpy as np
