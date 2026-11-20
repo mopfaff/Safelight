@@ -6,6 +6,16 @@
 #
 #   scripts/make-reddit-pictures.py
 #
+# They go in folders by what they show, and the popover's by how it's shown as well:
+#
+#   1-popover/plain/                            on a ground of one colour
+#   1-popover/desktop/                          over a desktop
+#   1-popover/before-after/landscape|5x4|portrait/   the -split pictures, by shape
+#   2-day/                                      the desktop through a day
+#   3-schedule/                                 the Schedule window
+#
+# The names:
+#
 #   1-popover.png, 1-popover-light.png          the popover, 2256 × 1355 like the Schedule's
 #   3-schedule.png, 3-schedule-light.png        the Schedule window
 #   1-popover-portrait(-light).png              the popover on a 4:5 ground, 1080 × 1350
@@ -71,6 +81,18 @@ from PIL import Image, ImageCms, ImageDraw, ImageFilter, ImageFont
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 docs = os.path.join(root, "docs")
 out = os.path.join(root, "build", "reddit", "coolgithubprojects")
+
+def place(name):
+    """Where the picture `name` goes: the folder of what it shows, and the popover's by how it's shown"""
+    if name.startswith("1-popover"):
+        shape = "5x4" if "-5x4" in name else "portrait" if "-portrait" in name else "landscape"
+        kind = os.path.join("before-after", shape) if "-split" in name else "desktop" if "-desktop" in name else "plain"
+        folder = os.path.join(out, "1-popover", kind)
+    else:
+        folder = os.path.join(out, "-".join(name[:-len(".png")].split("-")[:2]))
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, name)
+
 # Where the pictures over a desktop are, by what their names here end in
 DESKTOPS = {"": os.path.join(root, "build", "screenshots", "out"), "-dome": os.path.join(root, "build", "screenshots", "out-dome")}
 LANDSCAPE, PORTRAIT = (2256, 1355), (1080, 1350)
@@ -230,14 +252,13 @@ def write(name, picture, size, appearance, centre_x=None):
     canvas = Image.new("RGBA", size, GROUND[appearance] + (255,))
     x = (size[0] - picture.width) // 2 if centre_x is None else round(size[0] / 2 - centre_x)
     canvas.alpha_composite(picture, (x, (size[1] - picture.height) // 2))
-    canvas.convert("RGB").save(os.path.join(out, name), optimize=True)
+    canvas.convert("RGB").save(place(name), optimize=True)
 
 # A picture taken over a desktop, already whole: (its name there, its name here, its size here)
 OVER_DESKTOP = [("popover-{}-desktop-1128x678.png", "1-popover-desktop{}.png", LANDSCAPE),
                 ("popover-{}-desktop-540x675.png", "1-popover-portrait-desktop{}.png", PORTRAIT),
                 ("schedule-{}-desktop-1128x678.png", "3-schedule-desktop{}.png", LANDSCAPE)]
 
-os.makedirs(out, exist_ok=True)
 count, missing = 0, []
 for appearance, suffix in (("dark", ""), ("light", "-light")):
     popover, schedule = srgb(f"popover-{appearance}.png"), srgb(f"schedule-{appearance}.png")
@@ -256,7 +277,7 @@ for appearance, suffix in (("dark", ""), ("light", "-light")):
                 missing.append(name)
                 continue
             # The points are whole, so the landscape one is a row of pixels taller than the Schedule's
-            srgb(taken.format(appearance), desktops).convert("RGB").crop((0, 0) + size).save(os.path.join(out, name), optimize=True)
+            srgb(taken.format(appearance), desktops).convert("RGB").crop((0, 0) + size).save(place(name), optimize=True)
             count += 1
             if name.startswith("1-popover"):
                 # The clock's last digit ends at pixel 1599 in the landscape one, 69 from the edge in the portrait
@@ -266,13 +287,13 @@ for appearance, suffix in (("dark", ""), ("light", "-light")):
                 if size == LANDSCAPE:
                     cuts["-split-5x4"] = uncut.crop((0, 0, FIVE_FOUR, size[1]))
                 for ending, cut in cuts.items():
-                    cut.save(os.path.join(out, name.replace(".png", ending + ".png")), optimize=True)
-                    labelled(cut, uncut.size, middle).save(os.path.join(out, name.replace(".png", ending + "-labelled.png")), optimize=True)
-                    labelled(cut, uncut.size, middle, QUIET).save(os.path.join(out, name.replace(".png", ending + "-labelled-quiet.png")), optimize=True)
+                    cut.save(place(name.replace(".png", ending + ".png")), optimize=True)
+                    labelled(cut, uncut.size, middle).save(place(name.replace(".png", ending + "-labelled.png")), optimize=True)
+                    labelled(cut, uncut.size, middle, QUIET).save(place(name.replace(".png", ending + "-labelled-quiet.png")), optimize=True)
                     count += 3
             if size == PORTRAIT:
                 tight = name.replace("-desktop", "-desktop-tight")
-                Image.open(os.path.join(out, name)).crop((TIGHTER, 0, size[0] - TIGHTER, size[1])).save(os.path.join(out, tight), optimize=True)
+                Image.open(place(name)).crop((TIGHTER, 0, size[0] - TIGHTER, size[1])).save(place(tight), optimize=True)
                 count += 1
 if all(os.path.exists(os.path.join(NIGHT, name)) for name in ("desktop-closed.png", "wallpaper-light.png")):
     desktops, items = day()
@@ -280,7 +301,7 @@ if all(os.path.exists(os.path.join(NIGHT, name)) for name in ("desktop-closed.pn
     cuts = {"": 0, "-5x4": desktops[0].width - round(desktops[0].height * FIVE_FOUR / LANDSCAPE[1])}
     for ending, left in cuts.items():
         for name, picture in zip(("", "-labelled"), through_day(desktops, items, left)):
-            picture.save(os.path.join(out, f"2-day-desktop-dome{ending}{name}.png"), optimize=True)
+            picture.save(place(f"2-day-desktop-dome{ending}{name}.png"), optimize=True)
         count += 2
 else:
     missing.append("2-day-desktop-dome.png (scripts/make-demo.sh --record night-desktop draws its desktop)")
