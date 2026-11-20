@@ -33,7 +33,10 @@
 #                                               it: no screenshot has the filter in it, as macOS applies
 #                                               it after the frame is drawn. The filter is the demo
 #                                               videos' (scripts/demo/pipeline.py): macOS's own matrix,
-#                                               multiplying light. The brightness isn't applied.
+#                                               multiplying light. The brightness isn't applied. The line
+#                                               is right of the Color filters switch and the Intensity
+#                                               slider's knob, so the side without the filter doesn't
+#                                               show a switch that says it is on.
 #   1-popover-desktop…-split-5x4.png            the landscape -split picture cut off 24 points right of the
 #                                               clock, 1647 × 1355 (about 5:4): the desktop left of the
 #                                               popover stays in it to show the filter, as Dome's rock
@@ -83,8 +86,11 @@ TIGHTER = 21
 FIVE_FOUR = 1599 + 48
 # The color filter scripts/screenshots/main.swift sets for the popover: (hue, intensity)
 TINT = (0, 0.90)
-# How far the -split pictures' line leans: its top this many pixels right of the middle, its bottom left
+# How far the -split pictures' line leans: its top this many pixels right of its middle, its bottom left
 LEAN = 150
+# The middle of the -split pictures' line, in pixels left of the end of the clock's last digit: there the
+# line passes right of the Color filters switch and the Intensity slider's knob, which are on
+SPLIT_LEFT_OF_CLOCK = 269
 # The -labelled pictures' words: in the menu bar's font, 17 points, their middle this far above the bottom
 # (halfway between the popover and the bottom edge), and each this far from the line
 LABELS, LABEL_FONT, LABEL_SIZE, LABEL_UP, LABEL_GAP = ("Filter on", "Filter off"), "/System/Library/Fonts/SFNS.ttf", 34, 66, 40
@@ -101,9 +107,9 @@ def srgb(name, folder=docs):  # the screenshots are in Display P3; Reddit's pict
     p3 = ImageCms.ImageCmsProfile(io.BytesIO(image.info["icc_profile"]))
     return ImageCms.profileToProfile(image, p3, ImageCms.createProfile("sRGB"), outputMode="RGBA")
 
-def split(taken, folder):
+def split(taken, folder, middle):
     """A picture taken over a desktop, in sRGB, with the color filter on to the left of a slanted line
-    through its middle."""
+    whose middle is at column `middle`."""
     import numpy as np
     sys.path.insert(0, os.path.join(root, "scripts", "demo"))
     import pipeline
@@ -114,7 +120,7 @@ def split(taken, folder):
     off = np.asarray(srgb(taken, folder).convert("RGB"))
     width, height = image.size
     mask = Image.new("L", (width * 4, height * 4), 0)  # drawn four times the size for a smooth edge
-    ImageDraw.Draw(mask).polygon([(0, 0), (width * 2 + LEAN * 4, 0), (width * 2 - LEAN * 4, height * 4), (0, height * 4)], fill=255)
+    ImageDraw.Draw(mask).polygon([(0, 0), ((middle + LEAN) * 4, 0), ((middle - LEAN) * 4, height * 4), (0, height * 4)], fill=255)
     mask = np.asarray(mask.resize((width, height), Image.LANCZOS), np.float64)[..., None] / 255
     return Image.fromarray(np.round(on * mask + off * (1 - mask)).astype(np.uint8))
 
@@ -133,11 +139,11 @@ def written(picture, labels, places, style=LOUD):
         ImageDraw.Draw(words).text(place, label, font=font, anchor=anchor, fill=round(255 * white))
     return Image.composite(Image.new("RGB", picture.size, (255, 255, 255)), picture, words)
 
-def labelled(picture, whole, style=LOUD):
+def labelled(picture, whole, middle, style=LOUD):
     """A -split picture, or a cut of one that has its left edge, with the halves' names written on either
-    side of the line. `whole` is the size of the picture the line was drawn through."""
+    side of the line. `whole` is the size of the picture the line was drawn through, at column `middle`."""
     y = picture.height - LABEL_UP
-    line = whole[0] / 2 + LEAN - 2 * LEAN * y / whole[1]
+    line = middle + LEAN - 2 * LEAN * y / whole[1]
     return written(picture, LABELS, (((line - LABEL_GAP, y), "rm"), ((line + LABEL_GAP, y), "lm")), style)
 
 def default_schedule():
@@ -253,14 +259,16 @@ for appearance, suffix in (("dark", ""), ("light", "-light")):
             srgb(taken.format(appearance), desktops).convert("RGB").crop((0, 0) + size).save(os.path.join(out, name), optimize=True)
             count += 1
             if name.startswith("1-popover"):
-                uncut = split(taken.format(appearance), desktops)
+                # The clock's last digit ends at pixel 1599 in the landscape one, 69 from the edge in the portrait
+                middle = (1599 if size == LANDSCAPE else size[0] - 69) - SPLIT_LEFT_OF_CLOCK
+                uncut = split(taken.format(appearance), desktops, middle)
                 cuts = {"-split": uncut.crop((0, 0) + size)}
                 if size == LANDSCAPE:
                     cuts["-split-5x4"] = uncut.crop((0, 0, FIVE_FOUR, size[1]))
                 for ending, cut in cuts.items():
                     cut.save(os.path.join(out, name.replace(".png", ending + ".png")), optimize=True)
-                    labelled(cut, uncut.size).save(os.path.join(out, name.replace(".png", ending + "-labelled.png")), optimize=True)
-                    labelled(cut, uncut.size, QUIET).save(os.path.join(out, name.replace(".png", ending + "-labelled-quiet.png")), optimize=True)
+                    labelled(cut, uncut.size, middle).save(os.path.join(out, name.replace(".png", ending + "-labelled.png")), optimize=True)
+                    labelled(cut, uncut.size, middle, QUIET).save(os.path.join(out, name.replace(".png", ending + "-labelled-quiet.png")), optimize=True)
                     count += 3
             if size == PORTRAIT:
                 tight = name.replace("-desktop", "-desktop-tight")
