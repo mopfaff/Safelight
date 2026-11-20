@@ -41,6 +41,9 @@
 #   …-split-labelled.png and                   the -split pictures with "Filter on" and "Filter off" written
 #   …-split-5x4-labelled.png                    below the popover, on either side of the line, so the
 #                                               halves are known for what they are at first sight
+#   …-labelled-quiet.png                        the same with the words as captions rather than a headline:
+#                                               13 points, regular and greyed like the popover's own
+#                                               "Light" and "Dark", so the eye goes to the popover first
 #
 # Needs Pillow (pip install pillow), and for the -split pictures NumPy and PyObjC as well.
 import io, os, sys
@@ -69,6 +72,8 @@ LEAN = 150
 # The -labelled pictures' words: in the menu bar's font, 17 points, their middle this far above the bottom
 # (halfway between the popover and the bottom edge), and each this far from the line
 LABELS, LABEL_FONT, LABEL_SIZE, LABEL_UP, LABEL_GAP = ("Filter on", "Filter off"), "/System/Library/Fonts/SFNS.ttf", 34, 66, 40
+# The -labelled-quiet pictures' words: (size, weight, how much of white they are, how dark their shadow)
+LOUD, QUIET = (LABEL_SIZE, "Semibold", 1.0, 150), (26, "Regular", 0.6, 90)
 
 def srgb(name, folder=docs):  # the screenshots are in Display P3; Reddit's pictures are drawn as sRGB
     image = Image.open(os.path.join(folder, name)).convert("RGBA")
@@ -92,22 +97,24 @@ def split(taken, folder):
     mask = np.asarray(mask.resize((width, height), Image.LANCZOS), np.float64)[..., None] / 255
     return Image.fromarray(np.round(on * mask + off * (1 - mask)).astype(np.uint8))
 
-def labelled(picture, whole):
+def labelled(picture, whole, style=LOUD):
     """A -split picture, or a cut of one that has its left edge, with the halves' names written on either
     side of the line. `whole` is the size of the picture the line was drawn through."""
-    font = ImageFont.truetype(LABEL_FONT, LABEL_SIZE)
-    font.set_variation_by_name("Semibold")
+    size, weight, white, dark = style
+    font = ImageFont.truetype(LABEL_FONT, size)
+    font.set_variation_by_name(weight)
     y = picture.height - LABEL_UP
     line = whole[0] / 2 + LEAN - 2 * LEAN * y / whole[1]
     places = (((line - LABEL_GAP, y), "rm"), ((line + LABEL_GAP, y), "lm"))
     # A soft shadow under the words, so they are as clear over Light's bright desktop as over Dark's
     shadow = Image.new("L", picture.size, 0)
     for label, (place, anchor) in zip(LABELS, places):
-        ImageDraw.Draw(shadow).text(place, label, font=font, anchor=anchor, fill=150)
+        ImageDraw.Draw(shadow).text(place, label, font=font, anchor=anchor, fill=dark)
     picture = Image.composite(Image.new("RGB", picture.size, (0, 0, 0)), picture, shadow.filter(ImageFilter.GaussianBlur(6)))
+    words = Image.new("L", picture.size, 0)
     for label, (place, anchor) in zip(LABELS, places):
-        ImageDraw.Draw(picture).text(place, label, font=font, anchor=anchor, fill=(255, 255, 255))
-    return picture
+        ImageDraw.Draw(words).text(place, label, font=font, anchor=anchor, fill=round(255 * white))
+    return Image.composite(Image.new("RGB", picture.size, (255, 255, 255)), picture, words)
 
 def without_clock(popover):
     """The popover's screenshot with the clock gone. The popover's shadow reaches up behind the clock,
@@ -163,7 +170,8 @@ for appearance, suffix in (("dark", ""), ("light", "-light")):
                 for ending, cut in cuts.items():
                     cut.save(os.path.join(out, name.replace(".png", ending + ".png")), optimize=True)
                     labelled(cut, uncut.size).save(os.path.join(out, name.replace(".png", ending + "-labelled.png")), optimize=True)
-                    count += 2
+                    labelled(cut, uncut.size, QUIET).save(os.path.join(out, name.replace(".png", ending + "-labelled-quiet.png")), optimize=True)
+                    count += 3
             if size == PORTRAIT:
                 tight = name.replace("-desktop", "-desktop-tight")
                 Image.open(os.path.join(out, name)).crop((TIGHTER, 0, size[0] - TIGHTER, size[1])).save(os.path.join(out, tight), optimize=True)
