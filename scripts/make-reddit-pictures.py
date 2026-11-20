@@ -23,6 +23,10 @@
 #                                               the portrait one with 21 pixels off each side, 1038 × 1350,
 #                                               so the clock is as far from the right edge as it is on a
 #                                               Mac's screen: its last digit 24 points from it
+#   …-desktop-dome(-light).png                  the same four with Dome as Dark's wallpaper, from the
+#                                               pictures `DARK_WALLPAPER=build/wallpapers/Dome.heic
+#                                               scripts/screenshots.sh --desktop` takes (in
+#                                               build/screenshots/out-dome/)
 #
 # Needs Pillow (pip install pillow).
 import io, os
@@ -31,7 +35,8 @@ from PIL import Image, ImageCms
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 docs = os.path.join(root, "docs")
 out = os.path.join(root, "build", "reddit", "coolgithubprojects")
-desktops = os.path.join(root, "build", "screenshots", "out")
+# Where the pictures over a desktop are, by what their names here end in
+DESKTOPS = {"": os.path.join(root, "build", "screenshots", "out"), "-dome": os.path.join(root, "build", "screenshots", "out-dome")}
 LANDSCAPE, PORTRAIT = (2256, 1355), (1080, 1350)
 GROUND = {"dark": (0, 0, 0), "light": (233, 233, 238)}
 # In docs/popover-*.png: the popover's sides, and where the clock is in the menu bar above it
@@ -83,17 +88,19 @@ for appearance, suffix in (("dark", ""), ("light", "-light")):
     write(f"1-popover-centred{suffix}.png", popover, LANDSCAPE, appearance, centre_x=middle)
     write(f"1-popover-portrait-centred{suffix}.png", popover, PORTRAIT, appearance, centre_x=middle)
     count += 6
-    for taken, name, size in OVER_DESKTOP:
-        if not os.path.exists(os.path.join(desktops, taken.format(appearance))):
-            missing.append(name.format(suffix))
-            continue
-        # The points are whole, so the landscape one is a row of pixels taller than the Schedule's
-        srgb(taken.format(appearance), desktops).convert("RGB").crop((0, 0) + size).save(os.path.join(out, name.format(suffix)), optimize=True)
-        count += 1
-        if size == PORTRAIT:
-            picture = Image.open(os.path.join(out, name.format(suffix)))
-            picture.crop((TIGHTER, 0, size[0] - TIGHTER, size[1])).save(os.path.join(out, name.format("-tight" + suffix)), optimize=True)
+    for wallpaper, desktops in DESKTOPS.items():
+        for taken, name, size in OVER_DESKTOP:
+            name = name.format(wallpaper + suffix)
+            if not os.path.exists(os.path.join(desktops, taken.format(appearance))):
+                missing.append(name)
+                continue
+            # The points are whole, so the landscape one is a row of pixels taller than the Schedule's
+            srgb(taken.format(appearance), desktops).convert("RGB").crop((0, 0) + size).save(os.path.join(out, name), optimize=True)
             count += 1
+            if size == PORTRAIT:
+                tight = name.replace("-desktop", "-desktop-tight")
+                Image.open(os.path.join(out, name)).crop((TIGHTER, 0, size[0] - TIGHTER, size[1])).save(os.path.join(out, tight), optimize=True)
+                count += 1
 print(f"Wrote {count} pictures to {os.path.relpath(out, os.getcwd())}")
 if missing:
-    print(f"Left out {', '.join(missing)}: run scripts/screenshots.sh --desktop first")
+    print(f"Left out {', '.join(missing)}: run scripts/screenshots.sh --desktop first (with DARK_WALLPAPER for Dome's)")

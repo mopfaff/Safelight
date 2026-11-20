@@ -14,6 +14,13 @@
 #                             shows too. The popover's glass is drawn over the wallpaper, as it can't
 #                             be by putting the README's screenshot on one.
 #                             scripts/make-reddit-pictures.py makes the Reddit gallery's from them.
+#                             With DARK_WALLPAPER=build/wallpapers/Dome.heic, that file's Dark picture
+#                             is Dark's wallpaper instead, and they're written to
+#                             build/screenshots/out-dome/, named for the file. (Dome is one of macOS's
+#                             wallpapers that it downloads when picked, so it isn't on a Mac that
+#                             hasn't had it: its catalogue,
+#                             /System/Library/AssetsV2/com_apple_MobileAsset_DesktopPicture/, says where
+#                             Apple keeps it.)
 #
 # It builds a copy of Safelight.swift into "Safelight Screenshots.app" with scripts/screenshots/,
 # whose NoSystemChanges.swift stands in for the functions that change the color filter, brightness and
@@ -30,6 +37,14 @@ BUILD_DIR="build/screenshots"
 NAME="Safelight Screenshots"
 APP="$BUILD_DIR/$NAME.app"
 OUT="$BUILD_DIR/out"
+DARK_WALLPAPER="${DARK_WALLPAPER:-/System/Library/Desktop Pictures/Sonoma.heic}"
+if [[ "${1:-}" == --desktop && "$DARK_WALLPAPER" != "/System/Library/Desktop Pictures/Sonoma.heic" ]]; then
+    if [[ ! -f "$DARK_WALLPAPER" ]]; then
+        echo "There's no wallpaper at $DARK_WALLPAPER" >&2
+        exit 2
+    fi
+    OUT="$BUILD_DIR/out-${(L)DARK_WALLPAPER:t:r}"
+fi
 SHOTS=(popover-dark popover-light schedule-dark schedule-light)
 
 rm -rf "$APP" "$OUT" "$BUILD_DIR/src"
@@ -95,7 +110,7 @@ if [[ "${1:-}" == --desktop ]]; then
         open -W -n --stdout "$LOG" --stderr "$LOG" "$APP" --args -appearance $appearance \
             -AppleLanguages '(en-US)' -AppleLocale en_GB -output "$PWD/$OUT" \
             -desktopLight "/System/Library/Desktop Pictures/.wallpapers/Sonoma Horizon/Sonoma Horizon.heic" \
-            -desktopDark "/System/Library/Desktop Pictures/Sonoma.heic" -canvases $CANVASES
+            -desktopDark "${DARK_WALLPAPER:A}" -canvases $CANVASES
         for shot in popover-$appearance-desktop-540x675 popover-$appearance-desktop-1128x678 schedule-$appearance-desktop-1128x678; do
             if [[ ! -f "$OUT/$shot.png" ]]; then
                 echo "Screenshots failed (full log: $LOG):" >&2
