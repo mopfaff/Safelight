@@ -1,0 +1,21 @@
+{
+  "about": "Not a shot of the demo's: the whole desktop at 21:00 on the default schedule (Dark, Dome's Dark picture as the wallpaper, as the screenshots over a desktop have it), for scripts/make-reddit-pictures.py's picture of the desktop through a day. It's only recorded (scripts/make-demo.sh --record night-desktop), for the desktop with the popover closed, desktop-closed.png, and Light's wallpaper filling the display, wallpaper-light.png; its few frames of the popover aren't used. Dome is one of the wallpapers macOS downloads when it's picked, so it's a file in build/ (scripts/screenshots.sh says where Apple keeps it)",
+  "fps": 60,
+  "duration": 0.1,
+  "appearance": "dark",
+  "accentColor": "blue",
+  "language": "en-US",
+  "locale": "en_GB",
+  "time": "21:00",
+  "desktop": true,
+  "settings": {
+    "colorFilter": true,
+    "tint": 0,
+    "intensity": 0.9,
+    "brightness": 0.68,
+    "wallpaper": {
+      "light": "/System/Library/Desktop Pictures/.wallpapers/Sonoma Horizon/Sonoma Horizon.heic",
+      "dark": "build/wallpapers/Dome.heic"
+    }
+  }
+}
