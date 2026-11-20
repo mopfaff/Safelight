@@ -21,3 +21,6 @@ DerivedData/
 
 # Python
 __pycache__/
+
+# Kept on this Mac only
+scripts/reddit-research.py
