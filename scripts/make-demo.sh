@@ -39,6 +39,13 @@
 #                                   build/demo/edits/<edit>/safelight-<edit>.mp4, with stills/ and sheet.png
 #                                   (scripts/demo/edit.py). --edit verify [<edit>...] decodes them as macOS's
 #                                   players do and compares them with the frames they were made from
+#   scripts/make-demo.sh --loop [<loop>...]
+#                                   cuts a picture that plays by itself, over and over, for the README, from
+#                                   a finished shot's master, as each scripts/demo/loops/<loop>.json has it
+#                                   (all of them if none is named): build/demo/loops/<loop>/<loop>.avif and
+#                                   .webp, with frames/ and preview.html (scripts/demo/loop.py), and checks
+#                                   them against the frames they were made from; --loop verify [<loop>...]
+#                                   only checks them
 #
 # It builds a copy of Safelight.swift into "Safelight Demo Recorder.app" with scripts/demo/recorder/,
 # whose RecordedSystem.swift stands in for the functions that change the color filter, brightness and
@@ -66,6 +73,12 @@
 
 set -eu
 cd "${0:A:h}/.."
+
+# A picture that plays by itself, cut from a finished shot: scripts/demo/loop.py
+if [[ "${1-}" == --loop ]]; then
+    shift
+    exec python3 scripts/demo/loop.py "$@"
+fi
 
 # The demo itself, cut from the finished shots: scripts/demo/edit.py, after Safelight's icon is drawn for
 # its end card, as macOS draws an app's, by an app with the icon (scripts/demo/EditIcon.swift)
