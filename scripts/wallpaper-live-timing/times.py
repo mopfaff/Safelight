@@ -22,6 +22,8 @@ for line in open(sys.argv[1]):
         picks.append((time, parts[2], parts[3]))
     elif kind == 'set':
         sets.append((time, parts[2], parts[3]))
+    elif kind == 'space':
+        sets.append((time, parts[2], 'a Space'))
     elif kind in ('Show on all Spaces on', 'end'):
         picks.append((time, kind, ''))
 
@@ -57,6 +59,9 @@ for index, (time, label, what) in enumerate(picks):
         print(f'  {s[0] - time:6.2f} s  asked for on {displays.get(s[1], s[1])}, the Space shown')
     if everywhere:
         print(f'  {everywhere[0][0] - time:6.2f} s  asked for on every Space of {len(everywhere)} display(s)')
+    spaces = [s for s in mine if s[2] == 'a Space']
+    if spaces:
+        print(f'  {spaces[0][0] - time:6.2f} s  to {spaces[-1][0] - time:.2f} s  asked for on {len(spaces)} other Spaces, one by one')
     for when, display in acquired:
         if time <= when < until:
             print(f'  {when - time:6.2f} s  the agent has its picture for {displays.get(display, display)}')

@@ -7682,42 +7682,118 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     }
 
     /// With Show on all Spaces on, the file each display's other Spaces are still to have, by the
-    /// display's UUID, once the Spaces shown have theirs
+    /// display's UUID, once the Spaces shown have theirs, until they all have it
     private var toPutOnOtherSpaces: [String: URL] = [:]
     private var otherSpacesTimer: Timer?
     /// How long after the Spaces shown are asked for the others are, so that the service has the
-    /// pictures of the Spaces shown first, and while one wallpaper after the other is tried, each is on
-    /// the desktop at once: the service takes a few seconds over the other Spaces, and a wallpaper asked
-    /// for meanwhile waits for them
+    /// pictures of the Spaces shown first, and has made its own picture of the new desktop
     private static let otherSpacesDelay: TimeInterval = 2
 
-    /// Puts the files the displays' other Spaces are still to have on every Space of each, `delay` from
-    /// now, in place of when they were to go there, or later still while another wallpaper is being
-    /// made, which they'd have next. Once the service has had time to, the wallpapers made before that
-    /// no Space has any more are taken away.
+    /// A Space still to be asked for: the file, for which Space, by its UUID, on which display, and the
+    /// request for it (`picture(with:onSpace:of:)`)
+    private struct SpaceToPut {
+        let file: URL
+        let space: String
+        let display: CGDirectDisplayID
+        let picture: NSDictionary
+    }
+    /// The Spaces still to be asked for, in turn (`putNextSpace`), and the one asked for last, until
+    /// the service names the file on it, or for a second and a half at most
+    private var spacesToPut: [SpaceToPut] = []
+    private var spaceBeingPut: (space: SpaceToPut, until: Date)?
+    private var spacesTimer: Timer?
+
+    /// Puts the files the displays' other Spaces are still to have on every other Space of each, `delay`
+    /// from now, in place of when they were to go there, or later still while another wallpaper is being
+    /// made, which they'd have next. With no delay, they're all asked for at once, as Safelight quits.
+    ///
+    /// Otherwise each Space is asked for by itself, once the service has taken up the one before
+    /// (`putNextSpace`), so a wallpaper picked meanwhile waits for one request at most, and not for all
+    /// of them: asked for at once, they kept the service busy for three seconds, and a wallpaper picked
+    /// in those was on one display, or on neither, that much later. Each display's own Spaces are asked
+    /// for, where AppKit, asked to put a picture on every Space, asks for every display's Spaces on each.
+    /// Where the Spaces can't be asked for one by one, it's left to AppKit, all at once.
     private func putOnOtherSpaces(after delay: TimeInterval) {
         otherSpacesTimer?.invalidate()
         otherSpacesTimer = nil
+        spacesTimer?.invalidate()
+        spacesTimer = nil
+        spacesToPut = []
+        spaceBeingPut = nil
         guard !toPutOnOtherSpaces.isEmpty else { return }
         guard delay <= 0 else {
             let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
                 guard let self else { return }
-                putOnOtherSpaces(after: isChanging || !waiting.isEmpty ? 0.5 : 0)
+                if isChanging || !waiting.isEmpty {
+                    putOnOtherSpaces(after: 0.5)
+                } else {
+                    askForOtherSpaces(oneByOne: true)
+                }
             }
             RunLoop.main.add(timer, forMode: .common)
             otherSpacesTimer = timer
             return
         }
-        let files = toPutOnOtherSpaces
-        toPutOnOtherSpaces = [:]
-        guard showsOnAllSpaces else { return }
-        var wallpaper: URL?
-        for screen in NSScreen.screens {
-            guard let display = Self.uuid(of: screen), let file = files[display] else { continue }
-            set(file, on: screen, onAllSpaces: true)
-            wallpaper = file
+        askForOtherSpaces(oneByOne: false)
+    }
+
+    /// Asks the service for every Space still to have its display's file, one by one or all at once
+    private func askForOtherSpaces(oneByOne: Bool) {
+        guard showsOnAllSpaces else {
+            toPutOnOtherSpaces = [:]
+            return
         }
-        guard let wallpaper else { return }
+        var left: [SpaceToPut] = []
+        for screen in NSScreen.screens {
+            guard let display = Self.uuid(of: screen), let file = toPutOnOtherSpaces[display] else { continue }
+            if let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID, let spaces = Self.spaces(of: display),
+               let picture = Self.picture(with: file, onSpace: spaces.shown, of: id) {
+                left += spaces.all.map { SpaceToPut(file: file, space: $0, display: id, picture: picture) }
+            } else {
+                set(file, on: screen, onAllSpaces: true)
+            }
+        }
+        // Those that have it already aren't asked for again, as the Spaces shown
+        left.removeAll { Self.file(on: $0) == $0.file.standardizedFileURL }
+        if oneByOne {
+            spacesToPut = left
+            putNextSpace()
+        } else {
+            left.forEach(Self.put)
+            otherSpacesAskedFor()
+        }
+    }
+
+    /// Asks for the next Space still to be asked for, once the service names the file on the one before,
+    /// which is when it has taken that one up. Called again and again by a timer until none is left.
+    private func putNextSpace() {
+        if let last = spaceBeingPut, Date() < last.until, Self.file(on: last.space) != last.space.file.standardizedFileURL {
+            return
+        }
+        spaceBeingPut = nil
+        guard !spacesToPut.isEmpty else {
+            spacesTimer?.invalidate()
+            spacesTimer = nil
+            otherSpacesAskedFor()
+            return
+        }
+        let next = spacesToPut.removeFirst()
+        Self.put(next)
+        spaceBeingPut = (next, Date().addingTimeInterval(1.5))
+        if spacesTimer == nil {
+            let timer = Timer(timeInterval: 0.03, repeats: true) { [weak self] _ in
+                self?.putNextSpace()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            spacesTimer = timer
+        }
+    }
+
+    /// Every Space has been asked for: once the service has had time to give the last ones their file,
+    /// the wallpapers made before that no Space has any more are taken away
+    private func otherSpacesAskedFor() {
+        guard let wallpaper = toPutOnOtherSpaces.values.first else { return }
+        toPutOnOtherSpaces = [:]
         // A Space switched to meanwhile may still have had the one before
         DispatchQueue.main.asyncAfter(deadline: .now() + 5.1) { [weak self] in
             self?.refresh()
@@ -7729,6 +7805,73 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         }
     }
 
+    /// macOS's wallpaper service's client for apps, which AppKit puts the desktop's picture on a
+    /// display's Space through, and can be asked for one Space of a display by itself. It's in a private
+    /// framework, which AppKit has loaded; nil should it not be there, or not as it was in macOS 27.
+    /// (A copy of Safelight made to test it, whose `dlopen` loads nothing, has none, and so leaves the
+    /// desktop as it is.)
+    private static let spacesClient: NSObject? = {
+        guard dlopen("/System/Library/PrivateFrameworks/WallpaperServices.framework/WallpaperServices", RTLD_LAZY) != nil,
+              let type = NSClassFromString("WPSWallpaperServicesClient") as? NSObject.Type else { return nil }
+        let client = type.init()
+        return [pictureSelector, setPictureSelector, imageURLSelector].allSatisfy(client.responds(to:)) ? client : nil
+    }()
+    private static let pictureSelector = NSSelectorFromString("legacyDesktopPictureForSpace:displayID:error:")
+    private static let setPictureSelector = NSSelectorFromString("setLegacyDesktopPicture:forSpace:displayID:error:")
+    private static let imageURLSelector = NSSelectorFromString("imageURLForSpace:displayID:error:")
+    private typealias Picture = @convention(c) (AnyObject, Selector, NSString, UInt32, UnsafeMutablePointer<Unmanaged<NSError>?>?) -> Unmanaged<AnyObject>?
+    private typealias SetPicture = @convention(c) (AnyObject, Selector, NSDictionary, NSString, UInt32, UnsafeMutablePointer<Unmanaged<NSError>?>?) -> Bool
+    private typealias ImageURL = @convention(c) (AnyObject, Selector, NSString, UInt32, UnsafeMutablePointer<Unmanaged<NSError>?>?) -> Unmanaged<AnyObject>?
+
+    /// The picture file the service names on a Space of a display, nil when it can't be asked, or names none
+    private static func file(on space: SpaceToPut) -> URL? {
+        guard let client = spacesClient, let method = client.method(for: imageURLSelector) else { return nil }
+        let url = unsafeBitCast(method, to: ImageURL.self)(client, imageURLSelector, space.space as NSString, space.display, nil)
+        return (url?.takeUnretainedValue() as? URL)?.standardizedFileURL
+    }
+
+    /// The request for a file on any Space of a display, filling it, as AppKit makes it, asked to put a
+    /// picture on every Space: the picture of the Space the display shows as the service describes it,
+    /// with the file, how it's placed, and never changed for another, in the folder it says (AppKit's
+    /// own requests for a display's Spaces came out the same as these, all 24 of them)
+    private static func picture(with file: URL, onSpace shown: String, of display: CGDirectDisplayID) -> NSDictionary? {
+        guard let client = spacesClient, let get = client.method(for: pictureSelector) else { return nil }
+        let current = unsafeBitCast(get, to: Picture.self)(client, pictureSelector, shown as NSString, display, nil)
+        let picture = NSMutableDictionary(dictionary: current?.takeUnretainedValue() as? [AnyHashable: Any] ?? [:])
+        picture["ImageFilePath"] = file.path
+        picture["NewImageFilePath"] = file.path
+        picture["Placement"] = "Crop"
+        picture["Change"] = "Never"
+        if let folder = picture["NewChangePath"] as? NSString {
+            picture["ChangePath"] = folder.expandingTildeInPath
+            picture["NewChangePath"] = folder.abbreviatingWithTildeInPath
+        }
+        return picture
+    }
+
+    /// Asks the service to put a file on a Space of a display
+    private static func put(_ space: SpaceToPut) {
+        guard let client = spacesClient, let set = client.method(for: setPictureSelector) else { return }
+        if !unsafeBitCast(set, to: SetPicture.self)(client, setPictureSelector, space.picture, space.space as NSString, space.display, nil) {
+            NSLog("Safelight: couldn't set the wallpaper of Space \(space.space) on display \(space.display)")
+        }
+    }
+
+    /// The Spaces a display has that have a desktop, and the one it shows, by their UUIDs, as the
+    /// service knows them, the first one's being empty: a display's own, or with Displays have separate
+    /// Spaces off, the ones they all share. Nil when WindowServer can't be asked, which only its private
+    /// functions can.
+    private static func spaces(of display: String) -> (shown: String, all: [String])? {
+        guard spacesClient != nil, let skyLight = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY),
+              let connection = dlsym(skyLight, "SLSMainConnectionID").map({ unsafeBitCast($0, to: (@convention(c) () -> Int32).self) }),
+              let copySpaces = dlsym(skyLight, "SLSCopyManagedDisplaySpaces").map({ unsafeBitCast($0, to: (@convention(c) (Int32) -> Unmanaged<CFArray>?).self) }),
+              let displays = copySpaces(connection())?.takeRetainedValue() as? [[String: Any]] else { return nil }
+        let own = displays.first { $0["Display Identifier"] as? String == display } ?? displays.first { $0["Display Identifier"] as? String == "Main" }
+        guard let spaces = own?["Spaces"] as? [[String: Any]], let shown = (own?["Current Space"] as? [String: Any])?["uuid"] as? String else { return nil }
+        // Not an app's full screen, which has no desktop
+        return (shown, spaces.filter { $0["type"] as? Int == 0 }.compactMap { $0["uuid"] as? String })
+    }
+
     /// Gives the Spaces the displays show now the files their other Spaces are still to have, as another
     /// Space has been switched to, which still has the wallpaper from before, and the others after
     /// them. Until macOS names the file on it, that one is taken for one from before (`read`).
@@ -7736,7 +7879,10 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         guard !toPutOnOtherSpaces.isEmpty else { return }
         for screen in NSScreen.screens {
             guard let display = Self.uuid(of: screen), let file = toPutOnOtherSpaces[display] else { continue }
-            let before = Set([lastRead[display], NSWorkspace.shared.desktopImageURL(for: screen)].compactMap { $0?.standardizedFileURL })
+            let shown = NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL
+            // It may have been given it already
+            guard shown != file.standardizedFileURL else { continue }
+            let before = Set([lastRead[display], shown].compactMap { $0 })
             justPut[display] = (file.standardizedFileURL, before.union(justPut[display]?.before ?? []), Date().addingTimeInterval(5))
             set(file, on: screen, onAllSpaces: false)
         }

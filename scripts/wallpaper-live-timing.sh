@@ -1,7 +1,8 @@
 #!/bin/zsh
-# Times how long a wallpaper picked in Safelight takes to reach the real desktop: picks seven, as the
-# Wallpaper window's tiles do, with Show on all Spaces on, three one at a time and three in a row, and
-# sets when each was picked against WallpaperAgent's own log of when it had its picture for each display.
+# Times how long a wallpaper picked in Safelight takes to reach the real desktop: picks ten, as the
+# Wallpaper window's tiles do, with Show on all Spaces on, two one at a time and seven in a row, from one
+# to four seconds apart, and sets when each was picked against WallpaperAgent's own log of when it had
+# its picture for each display.
 #
 #   scripts/wallpaper-live-timing.sh             times Safelight.swift as it is
 #   scripts/wallpaper-live-timing.sh <commit>    times it as it was at a commit
@@ -35,15 +36,21 @@ if [[ -n "${1:-}" ]]; then
     source="$DIR/Safelight-ref.swift"
 fi
 
-# The copy: its requests to macOS logged, and nothing read from other apps' containers, which macOS
-# would ask the user about
+# The copy: its requests to macOS logged, nothing read from other apps' containers, which macOS would
+# ask the user about, and the wallpaper service's client and the Spaces' list there for it though
+# NoSystemChanges.swift's dlopen loads nothing (AppKit has loaded both frameworks)
 rm -rf "$APP" "$DIR/src"
 mkdir -p "$APP/Contents/MacOS" "$DIR/src"
 sed -e '/^@main$/d' \
     -e 's|try NSWorkspace.shared.setDesktopImageURL(file, for: screen, options: options)|liveSet(file, screen, options); try NSWorkspace.shared.setDesktopImageURL(file, for: screen, options: options)|' \
     -e 's|        YourPhotos.shared.reloadAfterSettingWallpaper()|        _ = 0|' \
+    -e 's|guard dlopen("/System/Library/PrivateFrameworks/WallpaperServices.framework/WallpaperServices", RTLD_LAZY) != nil,|guard true,|' \
+    -e 's|let skyLight = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY),|let skyLight = UnsafeMutableRawPointer(bitPattern: -2),|' \
+    -e 's|        guard let client = spacesClient, let set = client.method(for: setPictureSelector) else { return }|        liveSpace(space.space, space.display); guard let client = spacesClient, let set = client.method(for: setPictureSelector) else { return }|' \
     "$source" >"$DIR/src/Safelight.swift"
-for replaced in 'liveSet(file, screen, options); try' '        _ = 0'; do
+# (A commit from before the Spaces were asked for one by one has none of the last three)
+for replaced in 'liveSet(file, screen, options); try' '        _ = 0' ${1:+SKIP} 'guard true,' 'bitPattern: -2),' 'liveSpace(space.space, space.display)'; do
+    [[ "$replaced" == SKIP ]] && break
     if ! grep -qF "$replaced" "$DIR/src/Safelight.swift"; then
         echo "Safelight.swift doesn't put wallpapers on the desktop as this script expects; update its seds" >&2
         exit 2

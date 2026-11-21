@@ -1,7 +1,7 @@
 import Cocoa
 
 // Picks wallpapers on the real desktop, as the Wallpaper window's tiles do, and logs when each was
-// picked and when macOS was asked to put it on each display, with the time of day to the millisecond,
+// picked and when macOS was asked to put it on each display, and on each of its other Spaces, with the time of day to the millisecond,
 // to set against WallpaperAgent's own log. scripts/wallpaper-live-timing.sh builds this together with
 // a copy of Safelight.swift that calls `liveSet` before each request, and
 // scripts/screenshots/NoSystemChanges.swift, runs it, and puts the desktop back.
@@ -18,6 +18,12 @@ func liveLog(_ what: String) {
 func liveSet(_ file: URL, _ screen: NSScreen, _ options: [NSWorkspace.DesktopImageOptionKey: Any]) {
     let onAllSpaces = options.first { $0.key.rawValue.contains("AllSpaces") }?.value as? Bool == true
     liveLog("set  \(WallpaperManager.uuid(of: screen)?.prefix(8) ?? "?")  \(onAllSpaces ? "all Spaces" : "shown Space")  \(file.deletingLastPathComponent().lastPathComponent.prefix(8))")
+}
+
+/// Called by the copy before each request for one Space of a display
+func liveSpace(_ space: String, _ display: CGDirectDisplayID) {
+    let screen = NSScreen.screens.first { $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID == display }
+    liveLog("space  \(screen.flatMap(WallpaperManager.uuid(of:))?.prefix(8) ?? "?")  \(space.isEmpty ? "(first)" : String(space.prefix(8)))")
 }
 
 let app = NSApplication.shared
@@ -63,12 +69,16 @@ at(4) {
 // One at a time, each with time for every Space to have it
 at(14) { pick("alone 1") }
 at(24) { pick("alone 2") }
-at(34) { pick("alone 3") }
-// One after the other, as when trying wallpapers
-at(44) { pick("in a row 1") }
-at(45.5) { pick("in a row 2") }
-at(47) { pick("in a row 3") }
-at(58) {
+// One after the other, as when trying wallpapers: while the other Spaces are being asked for, which
+// begins two seconds after a pick, and before they are
+at(34) { pick("in a row 1") }
+at(36.6) { pick("in a row, 2.6 s later") }
+at(39.6) { pick("in a row, 3 s later") }
+at(43.2) { pick("in a row, 3.6 s later") }
+at(47.4) { pick("in a row, 4.2 s later") }
+at(48.9) { pick("in a row, 1.5 s later") }
+at(49.9) { pick("in a row, 1 s later") }
+at(62) {
     liveLog("end")
     exit(0)
 }
