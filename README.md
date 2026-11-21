@@ -4,7 +4,7 @@
 
 # Safelight
 
-Like Night Shift, but all the way to red, and it dims every display as it goes.
+Like Night Shift, but all the way to red.
 
 <p align="center">
   <img src="docs/day.jpg" alt="A Mac's desktop at four times of day on Safelight's default schedule, side by side: at 12:00 in Light appearance with a daytime wallpaper and no color filter, at 17:30 in Dark appearance with a night wallpaper, at 19:00 with the screen turning red, and at 21:00 fully red, menu bar and all">
@@ -18,6 +18,8 @@ It lives in the menu bar.
     <img src="docs/popover-light.png" width="418" alt="Safelight's icon in the menu bar, beside Wi-Fi, Spotlight, Control Center and the clock, with its controls open below it: Schedule, Color filters, Intensity, Tint, Brightness, Adjust Independently, Appearance and Wallpaper">
   </picture>
 </p>
+
+It runs on your schedule.
 
 <p align="center">
   <picture>
