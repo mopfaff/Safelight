@@ -223,8 +223,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     WallpaperManager.shared.selectDisplay(WallpaperManager.uuid(of: screen))
                 }
                 WallpaperManager.shared.refresh()
-                popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                // Asked for before the popover is shown, not after. macOS refuses an app that hasn't been
+                // active since it was launched and has no window yet, as at login ("activation count being
+                // 0" in WindowServer's log), and AppKit asks again by itself once the popover's window is
+                // there, which is granted. Asked for afterwards, the one refusal stands, and the popover
+                // stays drawn as inactive until it's clicked.
                 NSApp.activate(ignoringOtherApps: true)
+                popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             }
         }
     }
