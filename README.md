@@ -1,8 +1,4 @@
-<p align="center">
-  <img src="docs/icon.png" width="128" alt="Safelight's icon: a 24-hour dial, white through the day and red through the night">
-</p>
-
-# Safelight
+# <img src="docs/icon.png" width="40" align="absmiddle" alt="Safelight's icon: a 24-hour dial, white through the day and red through the night"> Safelight
 
 Like Night Shift, but all the way to red.
 
