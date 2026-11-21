@@ -29,6 +29,13 @@
 #                             These go to folders of their own, named for the file, and docs/ is left
 #                             alone: build/screenshots/plain-my-schedule/ for the windows by themselves,
 #                             and out-my-schedule/ or out-dome-my-schedule/ over a desktop.
+#   CLOCK=22:47 scripts/screenshots.sh [--desktop [dark|light]]
+#                             draws the same at that time of day rather than 21:00: the menu bar's
+#                             clock says it, and the Schedule's line at the current time is there. The
+#                             popover's settings are the same, as the default schedule has them all
+#                             night. These go to folders of their own as well, named for the time:
+#                             build/screenshots/plain-2247/, and out-2247/ or out-dome-2247/ over a
+#                             desktop (after the schedule's name, with one).
 #
 # It builds a copy of Safelight.swift into "Safelight Screenshots.app" with scripts/screenshots/,
 # whose NoSystemChanges.swift stands in for the functions that change the color filter, brightness and
@@ -62,6 +69,16 @@ if [[ -n "$SCHEDULE" ]]; then
     fi
     if [[ "${1:-}" == --desktop ]]; then OUT="$OUT-${SCHEDULE:t:r}"; else OUT="$BUILD_DIR/plain-${SCHEDULE:t:r}"; fi
     SCHEDULE_ARGS=(-scheduleFile "${SCHEDULE:A}")
+fi
+CLOCK="${CLOCK:-}"
+CLOCK_ARGS=()
+if [[ -n "$CLOCK" ]]; then
+    if [[ "$CLOCK" != [0-2][0-9]:[0-5][0-9] ]]; then
+        echo "The time is like 22:47, not $CLOCK" >&2
+        exit 2
+    fi
+    if [[ "${1:-}" == --desktop || -n "$SCHEDULE" ]]; then OUT="$OUT-${CLOCK/:/}"; else OUT="$BUILD_DIR/plain-${CLOCK/:/}"; fi
+    CLOCK_ARGS=(-clock "$CLOCK")
 fi
 SHOTS=(popover-dark popover-light schedule-dark schedule-light)
 
@@ -128,7 +145,7 @@ if [[ "${1:-}" == --desktop ]]; then
         open -W -n --stdout "$LOG" --stderr "$LOG" "$APP" --args -appearance $appearance \
             -AppleLanguages '(en-US)' -AppleLocale en_GB -output "$PWD/$OUT" \
             -desktopLight "/System/Library/Desktop Pictures/.wallpapers/Sonoma Horizon/Sonoma Horizon.heic" \
-            -desktopDark "${DARK_WALLPAPER:A}" -canvases $CANVASES $SCHEDULE_ARGS
+            -desktopDark "${DARK_WALLPAPER:A}" -canvases $CANVASES $SCHEDULE_ARGS $CLOCK_ARGS
         for shot in popover-$appearance-desktop-540x675 popover-$appearance-desktop-1128x678 schedule-$appearance-desktop-1128x678; do
             if [[ ! -f "$OUT/$shot.png" ]]; then
                 echo "Screenshots failed (full log: $LOG):" >&2
@@ -144,7 +161,7 @@ for appearance in dark light; do
     LOG="$BUILD_DIR/screenshots-$appearance.log"
     rm -f "$LOG"
     open -W -n --stdout "$LOG" --stderr "$LOG" "$APP" --args -appearance $appearance \
-        -AppleLanguages '(en-US)' -AppleLocale en_GB -output "$PWD/$OUT" $SCHEDULE_ARGS
+        -AppleLanguages '(en-US)' -AppleLocale en_GB -output "$PWD/$OUT" $SCHEDULE_ARGS $CLOCK_ARGS
     for shot in popover-$appearance schedule-$appearance; do
         if [[ ! -f "$OUT/$shot.png" ]]; then
             echo "Screenshots failed (full log: $LOG):" >&2
@@ -153,9 +170,9 @@ for appearance in dark light; do
         fi
     done
 done
-if [[ -n "$SCHEDULE" ]]; then
-    # The README's are of the default schedule
-    echo "Wrote the screenshots with the schedule of $SCHEDULE to $OUT"
+if [[ -n "$SCHEDULE" || -n "$CLOCK" ]]; then
+    # The README's are of the default schedule, at 21:00
+    echo "Wrote the screenshots${SCHEDULE:+ with the schedule of $SCHEDULE}${CLOCK:+ at $CLOCK} to $OUT"
     exit 0
 fi
 changed=()

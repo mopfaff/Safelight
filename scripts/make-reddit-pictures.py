@@ -37,6 +37,15 @@
 #                                               pictures `DARK_WALLPAPER=build/wallpapers/Dome.heic
 #                                               scripts/screenshots.sh --desktop` takes (in
 #                                               build/screenshots/out-dome/)
+#   1-popover(-portrait)-desktop(-dome)-2247….png
+#                                               the popover's pictures over a desktop again, at another
+#                                               time of day than 21:00, which the name has after the
+#                                               wallpaper's: so the popover, whose Schedule is off, isn't
+#                                               at a time the desktop through a day shows as the
+#                                               schedule's doing. From the pictures `CLOCK=22:47
+#                                               scripts/screenshots.sh --desktop` takes (in
+#                                               build/screenshots/out-2247/ or out-dome-2247/), for the
+#                                               appearances taken, beside the ones at 21:00.
 #   1-popover(-portrait)-desktop…-split.png      the popover over a desktop, the left of a slanted line with
 #                                               the color filter the popover shows on (red, at 0.9) as
 #                                               the screen shows it, and the right as the screenshot has
@@ -91,7 +100,7 @@
 #                                               brightness the schedule has then, beside its brightest.
 #
 # Needs Pillow (pip install pillow), and for the -split and -day pictures NumPy and PyObjC as well.
-import io, json, os, re, sys
+import glob, io, json, os, re, sys
 from PIL import Image, ImageCms, ImageDraw, ImageFilter, ImageFont
 
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -111,6 +120,11 @@ def place(name):
 
 # Where the pictures over a desktop are, by what their names here end in
 DESKTOPS = {"": os.path.join(root, "build", "screenshots", "out"), "-dome": os.path.join(root, "build", "screenshots", "out-dome")}
+# And the ones taken at another time of day, whose folders end in it: only the popover's are made of those
+OTHER_TIMES = {}
+for wallpaper, folder in DESKTOPS.items():
+    for taken in sorted(glob.glob(folder + "-[0-2][0-9][0-5][0-9]")):
+        OTHER_TIMES[wallpaper + taken[len(folder):]] = taken
 LANDSCAPE, PORTRAIT = (2256, 1355), (1080, 1350)
 GROUND = {"dark": (0, 0, 0), "light": (233, 233, 238)}
 # In docs/popover-*.png: the popover's sides, and where the clock is in the menu bar above it
@@ -307,9 +321,11 @@ for appearance, suffix in (("dark", ""), ("light", "-light")):
     write(f"1-popover-centred{suffix}.png", popover, LANDSCAPE, appearance, centre_x=middle)
     write(f"1-popover-portrait-centred{suffix}.png", popover, PORTRAIT, appearance, centre_x=middle)
     count += 6
-    for wallpaper, desktops in DESKTOPS.items():
+    for wallpaper, desktops in {**DESKTOPS, **OTHER_TIMES}.items():
         for taken, name, size in OVER_DESKTOP:
             name = name.format(wallpaper + suffix)
+            if wallpaper in OTHER_TIMES and not (name.startswith("1-popover") and os.path.exists(os.path.join(desktops, taken.format(appearance)))):
+                continue
             if not os.path.exists(os.path.join(desktops, taken.format(appearance))):
                 missing.append(name)
                 continue

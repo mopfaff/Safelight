@@ -62,6 +62,9 @@ final class Screenshots: NSObject, NSApplicationDelegate {
     /// one, as the demo's scenes write a schedule (scripts/export-schedule.py writes the one Safelight
     /// has on this Mac). The popover then shows that schedule's settings at 21:00.
     private let scheduleFile = UserDefaults.standard.string(forKey: "scheduleFile").map { URL(fileURLWithPath: $0) }
+    /// With `-clock`, the time of day it is instead of 21:00, like "22:47": the menu bar's clock says it
+    /// and the Schedule's line at the current time is there. The popover's settings stay the evening's.
+    private let clock = UserDefaults.standard.string(forKey: "clock")
     private let appDelegate = AppDelegate()
     /// The Retina display the windows are put on, so they're drawn at twice their size
     private let screen = NSScreen.screens.first { $0.backingScaleFactor >= 2 } ?? NSScreen.screens[0]
@@ -87,6 +90,11 @@ final class Screenshots: NSObject, NSApplicationDelegate {
             fail("Safelight's copy reaches the system's settings; NoSystemChanges.swift isn't standing in for them")
         }
         guard screen.backingScaleFactor >= 2 else { fail("There's no Retina display to draw the screenshots at twice their size on") }
+        if let clock {
+            let time = clock.split(separator: ":").compactMap { Int($0) }
+            guard time.count == 2, (0..<24).contains(time[0]), (0..<60).contains(time[1]) else { fail("-clock needs a time like 22:47, not \(clock)") }
+            (FixedTime.hour, FixedTime.minute) = (time[0], time[1])
+        }
 
         // Timers aren't put off while it runs in the background, and its settings start out as the defaults
         activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical], reason: "Drawing screenshots")
@@ -217,9 +225,10 @@ final class Screenshots: NSObject, NSApplicationDelegate {
     }
 
     /// Wi-Fi, Spotlight, Control Center and the clock, as on a new Mac, from right to left. The clock
-    /// says 21:00, as FixedTime.swift does, on a day of its own, so the picture is the same every day.
+    /// says the time FixedTime.swift keeps it at, 21:00 unless `-clock` gives another, on a day of its
+    /// own, so the picture is the same every day.
     private static func makeSystemItems() -> [NSStatusItem] {
-        let date = DateComponents(calendar: .current, year: 2026, month: 12, day: 21, hour: 21).date ?? Date()
+        let date = DateComponents(calendar: .current, year: 2026, month: 12, day: 21, hour: FixedTime.hour, minute: FixedTime.minute).date ?? Date()
         let dayFormatter = DateFormatter(), timeFormatter = DateFormatter()
         dayFormatter.setLocalizedDateFormatFromTemplate("EEEdMMM")
         timeFormatter.setLocalizedDateFormatFromTemplate("jmm")
