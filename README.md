@@ -19,7 +19,7 @@ It lives in the menu bar.
   </picture>
 </p>
 
-It runs on your schedule.
+And follows your schedule.
 
 <p align="center">
   <picture>
