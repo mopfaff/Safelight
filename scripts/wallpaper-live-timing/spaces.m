@@ -1,4 +1,4 @@
-// spaces: what WallpaperAgent says each Space in the store shows on each display, through the legacy client AppKit uses
+// spaces: what WallpaperAgent says the Space shown and each Space in the store show on each display, through the legacy client AppKit uses
 #import <Foundation/Foundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <ColorSync/ColorSync.h>
@@ -18,6 +18,10 @@ int main() {
     for (uint32_t i = 0; i < n; i++) {
         CFUUIDRef u = CGDisplayCreateUUIDFromDisplayID(ids[i]);
         NSString *uuid = CFBridgingRelease(CFUUIDCreateString(NULL, u)); CFRelease(u);
+        // The Space the display is showing, which the store names no Space for while one wallpaper is on them all
+        NSError *shownError = nil;
+        NSURL *shown = [client imageURLForSpace:nil displayID:ids[i] error:&shownError];
+        printf("%s  space %-36s  %s\n", [[uuid substringToIndex:8] UTF8String], "(shown)", shown ? [[shown.path stringByReplacingOccurrencesOfString:[NSHomeDirectory() stringByAppendingString:@"/Library/Application Support/"] withString:@""] UTF8String] : [[shownError description] UTF8String]);
         for (NSString *space in spaces) {
             if (!store[@"Spaces"][space][@"Displays"][uuid]) continue;
             NSError *e = nil;

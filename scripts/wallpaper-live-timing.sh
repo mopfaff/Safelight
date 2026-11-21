@@ -90,7 +90,7 @@ restore() {
     killall -9 WallpaperAgent 2>/dev/null || true
     sleep 5
     "$DIR/spaces" >"$DIR/spaces-after.txt"
-    if cmp -s "$DIR/spaces-before.txt" "$DIR/spaces-after.txt"; then
+    if cmp -s "$DIR/spaces-before.txt" "$DIR/spaces-after.txt" && [[ -s "$DIR/spaces-after.txt" ]]; then
         echo "Put back: every Space shows what it showed before"
     else
         echo "NOT AS BEFORE: what the Spaces show differs (before, after):" >&2
@@ -106,6 +106,8 @@ restore() {
 
 defaults delete "$ID" >/dev/null 2>&1 || true
 rm -rf "$HOME/Library/Application Support/$ID"
+# `open` adds to the files it's given
+rm -f "$DIR/app.txt" "$DIR/app-errors.txt"
 start=$(date '+%Y-%m-%d %H:%M:%S')
 {
     open -W -n --stdout "$DIR/app.txt" --stderr "$DIR/app-errors.txt" "$APP"
