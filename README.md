@@ -6,18 +6,25 @@
 
 Like Night Shift, but all the way to red, and it dims every display as it goes.
 
-Safelight puts your Mac's color filter, brightness and Light/Dark appearance on one schedule. Choose how the screen should look at a few times of day, and Safelight fades from one to the next: untinted through the day, redder and dimmer through the evening, deep red at night, and back again in the morning.
-
 <p align="center">
   <img src="docs/day.jpg" alt="A Mac's desktop at four times of day on Safelight's default schedule, side by side: at 12:00 in Light appearance with a daytime wallpaper and no color filter, at 17:30 in Dark appearance with a night wallpaper, at 19:00 with the screen turning red, and at 21:00 fully red, menu bar and all">
 </p>
 
-It lives in the menu bar.
+It lives in the menu bar, with the color filter, brightness, Light/Dark and wallpaper in one place.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/popover-dark.png">
     <img src="docs/popover-light.png" width="418" alt="Safelight's icon in the menu bar, beside Wi-Fi, Spotlight, Control Center and the clock, with its controls open below it: Schedule, Color filters, Intensity, Tint, Brightness, Adjust Independently, Appearance and Wallpaper">
+  </picture>
+</p>
+
+Choose how the screen should look at a few times of day, and Safelight fades from one to the next.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/schedule-dark.png">
+    <img src="docs/schedule-light.png" width="800" alt="The Schedule window: a preview of the day above four times of day, each with its own color filter, intensity, tint, brightness and appearance">
   </picture>
 </p>
 
@@ -30,13 +37,6 @@ It lives in the menu bar.
 - **A wallpaper for each.** Choose a picture for Light and another for Dark, and the desktop fades over between them as the appearance switches, whatever switches it: Safelight, System Settings, Control Center or Auto. Pick from macOS's own wallpapers, in System Settings' sections (Dynamic Wallpapers, the aerials' Landscape, Cityscape, Underwater, Earth and Mac, Pictures and Colours), from Photos, or from a file, or shuffle them: System Settings' shuffles, or a set from its Add Photo… menu, a folder, or Favourites or an album in Photos. A dynamic wallpaper gives its Light or Dark picture, and an aerial the picture the desktop shows before it moves. Each has System Settings' options for it: which picture a dynamic wallpaper shows (Automatic, Light or Dark), Macintosh's colour, a colour's gradient, how often a shuffle changes, and how a picture fills the screen (Fill Screen, Fit to Screen, Stretch to Fill Screen or Centre, with a colour around it). Safelight makes them one wallpaper, the way macOS's own Light and Dark wallpapers are made, so macOS does the changing itself, on every Space and display, or with Show on all Spaces off, on the one you're on, where each display can have its own, chosen from a pop-up under the pictures as in System Settings (the popover shows the one whose menu bar you clicked). Aerials don't move, as macOS only lets System Settings set moving ones.
 - **One schedule for all of it.** Add as many times of day as you like. Each sets the color filter, intensity, tint, brightness and appearance, and the filter and brightness fade smoothly between them. The strip along the top previews the whole day. Set Schedule to Sunrise and Sunset and each time follows the sun instead: at sunrise or sunset, or so long before or after, by the sunrise and sunset Night Shift has for where you are, so the schedule moves with the seasons.
 - **Looks and speaks like macOS.** The controls are the ones System Settings uses, and every label comes from System Settings' own translations, so Safelight appears in your Mac's language.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/schedule-dark.png">
-    <img src="docs/schedule-light.png" width="800" alt="The Schedule window: a preview of the day above four times of day, each with its own color filter, intensity, tint, brightness and appearance">
-  </picture>
-</p>
 
 Click the menu bar icon for the controls, the gear next to Schedule to edit the schedule, and the Light or Dark wallpaper to choose its picture in the Wallpaper window. Right-click (or Control-click) the icon for Open at Login, Automatic Updates, Check for Updates… and Quit. Reset and Quit turn the color filter off and set brightness back to full. Reset turns the schedule off too, while a schedule that was on when Safelight quit, or when the Mac restarted, is on again when Safelight opens.
 
