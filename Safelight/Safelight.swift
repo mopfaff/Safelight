@@ -5285,11 +5285,10 @@ struct ColorKeyframe: Identifiable, Codable, Equatable {
     }
 
     static let defaultSchedule: [ColorKeyframe] = [
-        ColorKeyframe(minute: 5 * 60 + 30,  isColorFilterOn: true,  intensity: 0.90, tint: 0,   brightness: 0.82, isDarkAppearance: true),
-        ColorKeyframe(minute: 6 * 60,       isColorFilterOn: false, intensity: 0.25, tint: 180, brightness: 1.00, isDarkAppearance: false),
-        ColorKeyframe(minute: 18 * 60,      isColorFilterOn: false, intensity: 0.25, tint: 180, brightness: 1.00, isDarkAppearance: false),
-        ColorKeyframe(minute: 18 * 60 + 30, isColorFilterOn: true,  intensity: 0.80, tint: 0,   brightness: 0.92, isDarkAppearance: true),
-        ColorKeyframe(minute: 20 * 60 + 30, isColorFilterOn: true,  intensity: 0.90, tint: 0,   brightness: 0.68, isDarkAppearance: true)
+        ColorKeyframe(minute: 5 * 60 + 30,  isColorFilterOn: true,  intensity: 1.00, tint: 0,         brightness: 0.17887276, isDarkAppearance: true),
+        ColorKeyframe(minute: 6 * 60,       isColorFilterOn: false, intensity: 0.25, tint: 180,       brightness: 1.00,       isDarkAppearance: false),
+        ColorKeyframe(minute: 17 * 60 + 10, isColorFilterOn: false, intensity: 0.25, tint: 177.81563, brightness: 1.00,       isDarkAppearance: true),
+        ColorKeyframe(minute: 20 * 60 + 30, isColorFilterOn: true,  intensity: 1.00, tint: 0,         brightness: 0.31545368, isDarkAppearance: true)
     ]
 
     struct Settings {

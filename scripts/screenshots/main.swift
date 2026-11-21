@@ -128,25 +128,21 @@ final class Screenshots: NSObject, NSApplicationDelegate {
         backdrop.ignoresMouseEvents = true
         backdrop.orderFrontRegardless()
 
-        // The evening on the default schedule, with the Schedule off so every control is drawn at its brightest
+        // The evening on the default schedule, or on the one given, as it has them at the time FixedTime.swift
+        // keeps it at, with the Schedule off so every control is drawn at its brightest
         let controller = ColorController.shared
+        if let scheduleFile { controller.schedule = keyframes(in: scheduleFile) }
+        guard let evening = ColorKeyframe.settings(in: controller.schedule, at: Double(FixedTime.hour * 60 + FixedTime.minute)) else {
+            fail("\(scheduleFile?.path ?? "The default schedule") has no keyframes")
+        }
         controller.tint = 0
         controller.intensity = 0.90
-        controller.isColorFilterOn = true
-        controller.brightness = 0.68
-        if let scheduleFile {
-            // Or on the schedule given, as it has them at the time FixedTime.swift keeps it at
-            controller.schedule = keyframes(in: scheduleFile)
-            guard let evening = ColorKeyframe.settings(in: controller.schedule, at: Double(FixedTime.hour * 60 + FixedTime.minute)) else {
-                fail("\(scheduleFile.path) has no keyframes")
-            }
-            controller.isColorFilterOn = evening.isColorFilterOn
-            if evening.isColorFilterOn {
-                controller.tint = evening.tint
-                controller.intensity = evening.filterIntensity
-            }
-            controller.brightness = evening.brightness
+        controller.isColorFilterOn = evening.isColorFilterOn
+        if evening.isColorFilterOn {
+            controller.tint = evening.tint
+            controller.intensity = evening.filterIntensity
         }
+        controller.brightness = evening.brightness
         controller.chooseAppearance(isDark: isDark) // which only the Appearance picker shows
         // And macOS's own Light and Dark wallpaper, which only the Wallpaper picker shows: it's only
         // read, as the desktop isn't changed unless a picture is chosen

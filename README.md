@@ -28,7 +28,7 @@ It lives in the menu bar.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/schedule-dark.png">
-    <img src="docs/schedule-light.png" width="800" alt="The Schedule window: a preview of the day above five times of day, each with its own color filter, intensity, tint, brightness and appearance">
+    <img src="docs/schedule-light.png" width="800" alt="The Schedule window: a preview of the day above four times of day, each with its own color filter, intensity, tint, brightness and appearance">
   </picture>
 </p>
 

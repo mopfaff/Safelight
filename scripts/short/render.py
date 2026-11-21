@@ -85,13 +85,13 @@ def smooth(x):
     return x * x * (3 - 2 * x)
 
 
-# The default schedule: minute, filter on, intensity, brightness, Dark (all with tint 0, red)
+# The default schedule when the Short was made, which it still shows: minute, filter on, intensity, brightness, Dark (all with tint 0, red)
 SCHEDULE = [(330, True, 0.90, 0.82, True), (360, False, 0.25, 1.00, False), (1080, False, 0.25, 1.00, False),
             (1110, True, 0.80, 0.92, True), (1230, True, 0.90, 0.68, True)]
 
 
 def settings(minute):
-    """ColorKeyframe.settings(in:at:) for the default schedule: (intensity, brightness, isDark)."""
+    """ColorKeyframe.settings(in:at:) for that schedule: (intensity, brightness, isDark)."""
     before = [i for i, k in enumerate(SCHEDULE) if k[0] <= minute]
     i = before[-1] if before else -1
     start, end = SCHEDULE[i], SCHEDULE[(i + 1) % len(SCHEDULE)]
