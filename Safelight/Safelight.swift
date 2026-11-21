@@ -6658,6 +6658,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         showsOnAllSpaces = defaults.object(forKey: Self.showsOnAllSpacesKey) as? Bool ?? true
         // Another Space can have another wallpaper, and the shuffles run on the Space whose wallpaper has them
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.putOnSpacesSwitchedTo()
             self?.refresh()
             WallpaperShuffler.shared.schedule()
         }
@@ -6866,7 +6867,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// Puts the wallpaper's own file back on each display in place of the one with Sequoia's looks
     /// through the day, as Safelight quits, so the desktop has its picture for Dark in Dark while it isn't
     /// running to put it on. In Light it has its own picture for Light, until Safelight puts the other on
-    /// again.
+    /// again. Whatever is still to go on the desktop goes there now (`putAllNow`).
     func putOwnFileBack() {
         for screen in NSScreen.screens {
             guard let file = NSWorkspace.shared.desktopImageURL(for: screen), isMadeHere(file), file.lastPathComponent == Self.sunFileName else { continue }
@@ -6875,6 +6876,7 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             }
             setDesktop(Self.ownFile(beside: file), isDark: true, on: [screen])
         }
+        putAllNow()
     }
 
     /// The wallpaper of System Settings' the desktop had when Show on all Spaces was last set as System
@@ -7615,13 +7617,9 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
         self.choices[Self.wallpaperFolder(of: wallpaper).lastPathComponent] = choices
         let screens = screens(for: place)
         putOnDesktop(wallpaper, on: screens)
-        // Only once every Space has the new one: another Space, or another display, may still show one
-        // from before
-        if place == nil && showsOnAllSpaces && Self.allSpacesOption != nil {
-            removeWallpapers(except: wallpaper)
-        } else {
-            removeWallpapers(except: wallpaper, keepingThoseShown: true)
-        }
+        // Another Space, or another display, may still show one from before: with Show on all Spaces on,
+        // until the other Spaces have the new one (`putOnOtherSpaces`)
+        removeWallpapers(except: wallpaper)
         earlierChoices = nil
         UserDefaults.standard.removeObject(forKey: Self.earlierChoicesKey)
         if let screen = screen(for: self.place(for: nil)), screens.contains(screen) {
@@ -7658,21 +7656,164 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
     /// Settings' wallpaper for every Space, which macOS's wallpaper service then gives each Space as its
     /// own, as System Settings does with its Show on all Spaces turned off. In Light, while it has
     /// Sequoia's looks through the day for Light, it's that file that's put on (`followAppearance`).
+    ///
+    /// It goes on the Space each display is showing first, and on the others afterwards (`putNext`).
+    /// System Settings changes every Space with one message to macOS's wallpaper service, which the
+    /// service only takes from Apple's own apps (it asks for the `com.apple.private.wallpaper`
+    /// entitlement). An app asks once for each Space of each display, and the service takes a good
+    /// tenth of a second over each, one after the other, and only draws a desktop once none is left:
+    /// asked for all 11 Spaces of two displays at once, the desktop changed three seconds later.
     private func setDesktop(_ wallpaper: URL, isDark: Bool? = nil, on screens: [NSScreen]) {
         let isDark = isDark ?? Self.isDark
-        for screen in screens {
-            var options = NSWorkspace.shared.desktopImageOptions(for: screen) ?? [:]
-            options[.imageScaling] = NSNumber(value: NSImageScaling.scaleProportionallyUpOrDown.rawValue)
-            options[.allowClipping] = NSNumber(value: true)
-            if let allSpacesOption = Self.allSpacesOption {
-                options[allSpacesOption] = showsOnAllSpaces
-            }
+        // The display chosen first, as the one looked at
+        for screen in screens.filter({ Self.uuid(of: $0) == selectedDisplay }) + screens.filter({ Self.uuid(of: $0) != selectedDisplay }) {
             let file = Self.shownFile(of: wallpaper, for: screen, isDark: isDark)
-            do {
-                try NSWorkspace.shared.setDesktopImageURL(file, for: screen, options: options)
-            } catch {
-                NSLog("Safelight: couldn't set the wallpaper of \(screen.localizedName): \(error)")
+            guard let display = Self.uuid(of: screen) else {
+                set(file, on: screen, onAllSpaces: showsOnAllSpaces)
+                continue
             }
+            // In place of one still to go on it
+            toPut.removeAll { $0.display == display }
+            toPut.append((display, file))
+            toPutOnOtherSpaces[display] = showsOnAllSpaces && Self.allSpacesOption != nil ? file : nil
+        }
+        otherSpacesTime = nil
+        putNext()
+    }
+
+    /// The files still to go on the Space a display is showing, by the display's UUID, in turn
+    private var toPut: [(display: String, file: URL)] = []
+    /// The file last put on the Space a display is showing, until macOS names it there, twice in a row,
+    /// or for two seconds at most
+    private var putting: (display: String, file: URL, isNamed: Bool, until: Date)?
+    /// With Show on all Spaces on, the file each display's other Spaces are still to have, by the
+    /// display's UUID, and from when, once the Spaces shown have theirs
+    private var toPutOnOtherSpaces: [String: URL] = [:]
+    private var otherSpacesTime: Date?
+    private var putTimer: Timer?
+    /// How long after the Spaces shown have a wallpaper the others are given it, so that while one
+    /// wallpaper after the other is tried, each is on the desktop at once: macOS's wallpaper service
+    /// takes a few seconds over the other Spaces, and a wallpaper asked for meanwhile waits for them
+    private static let otherSpacesDelay: TimeInterval = 2
+
+    /// Puts the next file on the desktop that's still to go there: on the Space each display is showing,
+    /// one display after the other, each once macOS names the file before on its display, as its
+    /// wallpaper service then has that one's picture to draw before anything asked for later. Then, with
+    /// Show on all Spaces on, once no other wallpaper has been asked for for a while
+    /// (`otherSpacesDelay`), on every other Space of each display. Called again and again by a timer
+    /// until nothing is left.
+    private func putNext() {
+        let now = Date()
+        if let last = putting {
+            let screen = NSScreen.screens.first { Self.uuid(of: $0) == last.display }
+            let isNamed = screen.map { screen in NSWorkspace.shared.desktopImageURL(for: screen)?.standardizedFileURL == last.file.standardizedFileURL } ?? false
+            // Twice, as the service asks for the picture a moment after it names the file
+            if screen == nil || now >= last.until || isNamed && last.isNamed {
+                putting = nil
+            } else {
+                putting?.isNamed = isNamed
+            }
+        }
+        while putting == nil, !toPut.isEmpty {
+            let next = toPut.removeFirst()
+            guard let screen = NSScreen.screens.first(where: { Self.uuid(of: $0) == next.display }) else {
+                toPutOnOtherSpaces[next.display] = nil
+                continue
+            }
+            set(next.file, on: screen, onAllSpaces: false)
+            putting = (next.display, next.file, false, now.addingTimeInterval(2))
+        }
+        if putting == nil, !toPutOnOtherSpaces.isEmpty {
+            let time = otherSpacesTime ?? now.addingTimeInterval(Self.otherSpacesDelay)
+            otherSpacesTime = time
+            // Not while another wallpaper is being made, which they'd have next
+            if now >= time, !isChanging, waiting.isEmpty {
+                putOnOtherSpaces()
+            }
+        }
+        if putting == nil, toPutOnOtherSpaces.isEmpty {
+            putTimer?.invalidate()
+            putTimer = nil
+        } else if putTimer == nil {
+            let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+                self?.putNext()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            putTimer = timer
+        }
+    }
+
+    /// Puts the files the displays' other Spaces are still to have on every Space of each, and once
+    /// macOS's wallpaper service has had time to, takes away the wallpapers made before that no Space
+    /// has any more
+    private func putOnOtherSpaces() {
+        let files = toPutOnOtherSpaces
+        toPutOnOtherSpaces = [:]
+        otherSpacesTime = nil
+        guard showsOnAllSpaces else { return }
+        var wallpaper: URL?
+        for screen in NSScreen.screens {
+            guard let display = Self.uuid(of: screen), let file = files[display] else { continue }
+            set(file, on: screen, onAllSpaces: true)
+            wallpaper = file
+        }
+        guard let wallpaper else { return }
+        // A Space switched to meanwhile may still have had the one before
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.1) { [weak self] in
+            self?.refresh()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            // Not one being made now, which no Space has yet
+            guard let self, !isChanging, isMadeHere(wallpaper), FileManager.default.fileExists(atPath: wallpaper.path) else { return }
+            removeWallpapers(except: wallpaper)
+        }
+    }
+
+    /// Gives the Spaces the displays show now the files their other Spaces are still to have, and then
+    /// the others without waiting, as another Space has been switched to, which still has the wallpaper
+    /// from before. Until macOS names the file on it, that one is taken for one from before (`read`).
+    private func putOnSpacesSwitchedTo() {
+        guard !toPutOnOtherSpaces.isEmpty else { return }
+        // The file last put on went on the Space shown before, so macOS won't name it on this one
+        putting = nil
+        for screen in NSScreen.screens {
+            guard let display = Self.uuid(of: screen), let file = toPutOnOtherSpaces[display], !toPut.contains(where: { $0.display == display }) else { continue }
+            let before = Set([lastRead[display], NSWorkspace.shared.desktopImageURL(for: screen)].compactMap { $0?.standardizedFileURL })
+            justPut[display] = (file.standardizedFileURL, before.union(justPut[display]?.before ?? []), Date().addingTimeInterval(5))
+            toPut.append((display, file))
+        }
+        otherSpacesTime = Date()
+        putNext()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.1) { [weak self] in
+            self?.refresh()
+        }
+    }
+
+    /// Puts everything still to go on the desktop there at once, as Safelight quits
+    private func putAllNow() {
+        putting = nil
+        for (display, file) in toPut {
+            guard let screen = NSScreen.screens.first(where: { Self.uuid(of: $0) == display }) else { continue }
+            set(file, on: screen, onAllSpaces: false)
+        }
+        toPut = []
+        putOnOtherSpaces()
+        putTimer?.invalidate()
+        putTimer = nil
+    }
+
+    /// Asks macOS to put a picture file on a display, on the Space it's showing or on every Space it has
+    private func set(_ file: URL, on screen: NSScreen, onAllSpaces: Bool) {
+        var options = NSWorkspace.shared.desktopImageOptions(for: screen) ?? [:]
+        options[.imageScaling] = NSNumber(value: NSImageScaling.scaleProportionallyUpOrDown.rawValue)
+        options[.allowClipping] = NSNumber(value: true)
+        if let allSpacesOption = Self.allSpacesOption {
+            options[allSpacesOption] = onAllSpaces
+        }
+        do {
+            try NSWorkspace.shared.setDesktopImageURL(file, for: screen, options: options)
+        } catch {
+            NSLog("Safelight: couldn't set the wallpaper of \(screen.localizedName): \(error)")
         }
     }
 
@@ -8218,19 +8359,18 @@ final class WallpaperManager: ObservableObject, @unchecked Sendable { // Its sta
             && dynamicMetadataPaths.allSatisfy { CGImageMetadataCopyTagWithPath(metadata, nil, $0) == nil }
     }
 
-    /// Takes away the wallpapers made before `wallpaper`, now it's on every desktop instead, or with
-    /// `keepingThoseShown`, those no display or Space has any more, as with Show on all Spaces off, the
-    /// others may still have one. Their choices go with them.
-    private func removeWallpapers(except wallpaper: URL, keepingThoseShown: Bool = false) {
+    /// Takes away the wallpapers made before `wallpaper` that no display or Space has any more: with Show
+    /// on all Spaces off, the others may still have one, and with it on, they do until they've been
+    /// given the new one, after the Spaces shown (`putNext`). Their choices go with them.
+    private func removeWallpapers(except wallpaper: URL) {
         guard let folder, let made = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return }
         var kept: Set<String> = [Self.wallpaperFolder(of: wallpaper).lastPathComponent]
-        if keepingThoseShown {
-            // When it can't be told which are, none is taken away. Those just put on another display may
-            // not be in the wallpaper service's store yet.
-            guard let shown = Self.filesShown() else { return }
-            let onDisplays = NSScreen.screens.compactMap(NSWorkspace.shared.desktopImageURL(for:)) + justPut.values.map(\.wallpaper)
-            kept.formUnion((shown + onDisplays).filter(isMadeHere).map { Self.wallpaperFolder(of: $0).lastPathComponent })
-        }
+        // When it can't be told which are shown, none is taken away. Those just put on a display, or
+        // still to go on one, may not be in the wallpaper service's store yet.
+        guard let shown = Self.filesShown() else { return }
+        let onDisplays = NSScreen.screens.compactMap(NSWorkspace.shared.desktopImageURL(for:)) + justPut.values.map(\.wallpaper)
+        let stillToPut = toPut.map(\.file) + Array(toPutOnOtherSpaces.values) + [putting?.file].compactMap { $0 }
+        kept.formUnion((shown + onDisplays + stillToPut).filter(isMadeHere).map { Self.wallpaperFolder(of: $0).lastPathComponent })
         for old in made where !kept.contains(old.lastPathComponent) {
             try? FileManager.default.removeItem(at: old)
         }
