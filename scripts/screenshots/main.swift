@@ -144,15 +144,17 @@ final class Screenshots: NSObject, NSApplicationDelegate {
         }
         controller.brightness = evening.brightness
         controller.chooseAppearance(isDark: isDark) // which only the Appearance picker shows
-        // And macOS's own Light and Dark wallpaper, which only the Wallpaper picker shows: it's only
-        // read, as the desktop isn't changed unless a picture is chosen
-        var wallpaper = URL(fileURLWithPath: "/System/Library/Desktop Pictures/Sonoma.heic")
-        if let desktopLight, let desktopDark {
-            // The desktop's own, in one wallpaper as Safelight makes it when a picture is chosen for each
-            wallpaper = FileManager.default.temporaryDirectory.appendingPathComponent("Safelight Screenshots wallpaper.heic")
-            guard WallpaperManager.makeWallpaper(at: wallpaper, light: (desktopLight, false), dark: (desktopDark, true)) else {
-                fail("Couldn't make a wallpaper of \(desktopLight.path) and \(desktopDark.path)")
-            }
+        // And the wallpaper, which only the Wallpaper picker shows: it's only read, as the desktop isn't
+        // changed unless a picture is chosen. Hello Metallic Silver for Light and Pro Black for Dark, from
+        // System Settings' thumbnails of them, which every Mac has (the pictures themselves are
+        // downloaded when picked), or over a desktop, the desktop's own. In one wallpaper, as Safelight
+        // makes it when a picture is chosen for each.
+        let thumbnails = URL(fileURLWithPath: "/System/Library/Desktop Pictures/.thumbnails")
+        let light = desktopLight ?? thumbnails.appendingPathComponent("Hello Metallic Silver.heic")
+        let dark = desktopDark ?? thumbnails.appendingPathComponent("Pro Black.heic")
+        let wallpaper = FileManager.default.temporaryDirectory.appendingPathComponent("Safelight Screenshots wallpaper.heic")
+        guard WallpaperManager.makeWallpaper(at: wallpaper, light: (light, false), dark: (dark, desktopDark != nil)) else {
+            fail("Couldn't make a wallpaper of \(light.path) and \(dark.path)")
         }
         WallpaperManager.shared.showPictures(of: wallpaper)
         drawOnceInMenuBar()
