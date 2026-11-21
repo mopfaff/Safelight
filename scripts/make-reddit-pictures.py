@@ -57,6 +57,8 @@
 #   …-labelled-quiet.png                        the same with the words as captions rather than a headline:
 #                                               13 points, regular and greyed like the popover's own
 #                                               "Light" and "Dark", so the eye goes to the popover first
+#   …-labelled-large.png and                   the two again with the words a quarter larger: 21 points
+#   …-labelled-quiet-large.png                  and 16
 #   2-day-desktop-dome.png                      the whole desktop through a day on the default schedule,
 #                                               2560 × 1440, in three parts between slanted lines: at
 #                                               12:00 (Light, Sonoma Horizon, no filter), at 18:15 (the
@@ -73,6 +75,8 @@
 #   2-day-desktop-dome(-5x4)-labelled.png       the two with each part's time of day written at its foot,
 #                                               as large for the picture's width as the -5x4 pictures'
 #                                               words are
+#   2-day-desktop-dome(-5x4)-labelled-large.png the same with the words a quarter larger, as the popover's
+#                                               -labelled-large pictures have them
 #   3-schedule…-my-schedule.png and             the Schedule's and the day's pictures again with the schedule
 #   2-day-desktop-dome…-my-schedule.png         of scripts/screenshots/my-schedule.json, the one Safelight
 #                                               has on this Mac (scripts/export-schedule.py writes it),
@@ -130,6 +134,11 @@ SPLIT_LEFT_OF_CLOCK = 269
 LABELS, LABEL_FONT, LABEL_SIZE, LABEL_UP, LABEL_GAP = ("Filter on", "Filter off"), "/System/Library/Fonts/SFNS.ttf", 34, 66, 40
 # The -labelled-quiet pictures' words: (size, weight, how much of white they are, how dark their shadow)
 LOUD, QUIET = (LABEL_SIZE, "Semibold", 1.0, 150), (26, "Regular", 0.6, 90)
+# The -large pictures' words are this many times the size, at the same place
+LARGE = 1.25
+
+def large(style):
+    return (round(style[0] * LARGE),) + style[1:]
 # The desktop through a day: the times of day its parts are at, the recording its desktop is from, and
 # the color filter's lowest intensity (ColorFilterManager.intensityRange's, which macOS has had at 0.25)
 DAY = ("12:00", "18:15", "21:00")
@@ -238,8 +247,9 @@ def day(schedule, dimmed=False):
 
 def through_day(desktops, items, left=0):
     """The desktops of day() from `left` to their right edge, each in its own third of that between lines
-    that slant as the -split pictures' does, with each part's time written at its foot or not: the words
-    as large for the picture's width as the -5x4 pictures' are for theirs. `items` is where the menu
+    that slant as the -split pictures' does, without words, with each part's time written at its foot,
+    and with it written larger: the words as large for the picture's width as the -5x4 pictures' are
+    for theirs. `items` is where the menu
     bar's begin, which only the last desktop has."""
     import numpy as np
     width, height = desktops[0].width - left, desktops[0].height
@@ -258,7 +268,8 @@ def through_day(desktops, items, left=0):
     y = height - LABEL_UP * larger
     edges = [0] + [line(part, y) for part in range(1, len(desktops))] + [width]
     places = [(((edges[part] + edges[part + 1]) / 2, y), "mm") for part in range(len(desktops))]
-    return picture, written(picture, DAY, places, (round(LOUD[0] * larger),) + LOUD[1:])
+    return (picture, written(picture, DAY, places, (round(LOUD[0] * larger),) + LOUD[1:]),
+            written(picture, DAY, places, (round(LOUD[0] * larger * LARGE),) + LOUD[1:]))
 
 def without_clock(popover):
     """The popover's screenshot with the clock gone. The popover's shadow reaches up behind the clock,
@@ -314,9 +325,9 @@ for appearance, suffix in (("dark", ""), ("light", "-light")):
                     cuts["-split-5x4"] = uncut.crop((0, 0, FIVE_FOUR, size[1]))
                 for ending, cut in cuts.items():
                     cut.save(place(name.replace(".png", ending + ".png")), optimize=True)
-                    labelled(cut, uncut.size, middle).save(place(name.replace(".png", ending + "-labelled.png")), optimize=True)
-                    labelled(cut, uncut.size, middle, QUIET).save(place(name.replace(".png", ending + "-labelled-quiet.png")), optimize=True)
-                    count += 3
+                    for words, style in (("-labelled", LOUD), ("-labelled-quiet", QUIET), ("-labelled-large", large(LOUD)), ("-labelled-quiet-large", large(QUIET))):
+                        labelled(cut, uncut.size, middle, style).save(place(name.replace(".png", ending + words + ".png")), optimize=True)
+                    count += 5
             if size == PORTRAIT:
                 tight = name.replace("-desktop", "-desktop-tight")
                 Image.open(place(name)).crop((TIGHTER, 0, size[0] - TIGHTER, size[1])).save(place(tight), optimize=True)
@@ -346,9 +357,9 @@ for own, (schedule, dimmed) in days.items():
     # The right of the desktop in the shape of the -5x4 pictures
     cuts = {"": 0, "-5x4": desktops[0].width - round(desktops[0].height * FIVE_FOUR / LANDSCAPE[1])}
     for ending, left in cuts.items():
-        for name, picture in zip(("", "-labelled"), through_day(desktops, items, left)):
+        for name, picture in zip(("", "-labelled", "-labelled-large"), through_day(desktops, items, left)):
             picture.save(place(f"2-day-desktop-dome{ending}{name}{own}.png"), optimize=True)
-        count += 2
+        count += 3
 print(f"Wrote {count} pictures to {os.path.relpath(out, os.getcwd())}")
 if missing:
     print(f"Left out {', '.join(missing)}: run scripts/screenshots.sh --desktop first (with DARK_WALLPAPER for Dome's, and with SCHEDULE for the{OWN} ones)")
