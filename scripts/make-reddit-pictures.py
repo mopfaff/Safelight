@@ -68,6 +68,10 @@
 #                                               "Light" and "Dark", so the eye goes to the popover first
 #   …-labelled-large.png and                   the two again with the words a quarter larger: 21 points
 #   …-labelled-quiet-large.png                  and 16
+#   3-schedule-desktop(-dome)(-light)-5x4.png   the Schedule window over a taller piece of desktop, 2256 × 1856,
+#                                               about 5:4 like the popover's and the day's -5x4 pictures, so
+#                                               the gallery has no bars above and below it. From the
+#                                               1128 × 928 pictures `scripts/screenshots.sh --desktop` takes
 #   2-day-desktop-dome.png                      the whole desktop through a day on the default schedule,
 #                                               2560 × 1440, in three parts between slanted lines: at
 #                                               12:00 (Light, Sonoma Horizon, no filter), at 18:15 (the
@@ -126,6 +130,8 @@ for wallpaper, folder in DESKTOPS.items():
     for taken in sorted(glob.glob(folder + "-[0-2][0-9][0-5][0-9]")):
         OTHER_TIMES[wallpaper + taken[len(folder):]] = taken
 LANDSCAPE, PORTRAIT = (2256, 1355), (1080, 1350)
+# The Schedule's -5x4 pictures: 1128 × 928 points, the shape of the popover's and the day's -5x4 ones
+SCHEDULE_FIVE_FOUR = (2256, 1856)
 GROUND = {"dark": (0, 0, 0), "light": (233, 233, 238)}
 # In docs/popover-*.png: the popover's sides, and where the clock is in the menu bar above it
 POPOVER_LEFT, POPOVER_RIGHT = 46, 681
@@ -308,7 +314,8 @@ def write(name, picture, size, appearance, centre_x=None):
 # A picture taken over a desktop, already whole: (its name there, its name here, its size here)
 OVER_DESKTOP = [("popover-{}-desktop-1128x678.png", "1-popover-desktop{}.png", LANDSCAPE),
                 ("popover-{}-desktop-540x675.png", "1-popover-portrait-desktop{}.png", PORTRAIT),
-                ("schedule-{}-desktop-1128x678.png", "3-schedule-desktop{}.png", LANDSCAPE)]
+                ("schedule-{}-desktop-1128x678.png", "3-schedule-desktop{}.png", LANDSCAPE),
+                ("schedule-{}-desktop-1128x928.png", "3-schedule-desktop{}-5x4.png", SCHEDULE_FIVE_FOUR)]
 
 count, missing = 0, []
 for appearance, suffix in (("dark", ""), ("light", "-light")):
@@ -356,11 +363,13 @@ if os.path.exists(MINE):
         taken = {f"3-schedule{suffix}{OWN}.png": (os.path.join(root, "build", "screenshots", "plain" + OWN), f"schedule-{appearance}.png")}
         for wallpaper, desktops in DESKTOPS.items():
             taken[f"3-schedule-desktop{wallpaper}{suffix}{OWN}.png"] = (desktops + OWN, f"schedule-{appearance}-desktop-1128x678.png")
+            taken[f"3-schedule-desktop{wallpaper}{suffix}-5x4{OWN}.png"] = (desktops + OWN, f"schedule-{appearance}-desktop-1128x928.png")
         for name, (folder, file) in taken.items():
             if not os.path.exists(os.path.join(folder, file)):
                 missing.append(name)
             elif "-desktop" in name:
-                srgb(file, folder).convert("RGB").crop((0, 0) + LANDSCAPE).save(place(name), optimize=True)
+                size = SCHEDULE_FIVE_FOUR if "-5x4" in name else LANDSCAPE
+                srgb(file, folder).convert("RGB").crop((0, 0) + size).save(place(name), optimize=True)
                 count += 1
             else:
                 write(name, srgb(file, folder), LANDSCAPE, appearance)
