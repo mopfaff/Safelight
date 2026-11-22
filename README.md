@@ -110,4 +110,4 @@ Free and open source. If it's useful to you: [GitHub Sponsors](https://github.co
 
 ## License
 
-Copyright © 2025–2026 mopfaff. Safelight is licensed under the [GNU General Public License v3.0](LICENSE).
+[GPL-3.0](LICENSE). © 2025–2026 mopfaff.
