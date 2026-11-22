@@ -6,7 +6,8 @@
 # multiplying light. The settings are the ones Safelight's own code gives ColorKeyframe.defaultSchedule
 # at those times (scripts/demo/compose.py works them out as the app does).
 #
-#   scripts/make-day-picture.py [--dimmed] [--times 12:00,17:30,19:00,21:00] [--out <file>]
+#   scripts/make-day-picture.py [--dimmed] [--times 12:00,17:30,19:00,21:00]
+#                               [--light <file>] [--dark <file>] [--out <file>]
 #
 # The desktop is the demo recorder's, drawn off screen with the popover closed: Sonoma Horizon in Light
 # and Dome in Dark, the menu bar's items at 21:00 in the last part, which is why the last time is 21:00
@@ -78,14 +79,64 @@ def looks(schedule, times, dimmed):
     return found
 
 
-def desktops(looks):
+def draw_wallpaper(path, width, height):
+    """A wallpaper file filling `width` by `height` pixels in Display P3, as Desktop.swift draws it."""
+    raw = os.fsencode(os.path.abspath(path))
+    url = pipeline.Quartz.CFURLCreateFromFileSystemRepresentation(None, raw, len(raw), False)
+    source = pipeline.Quartz.CGImageSourceCreateWithURL(url, None)
+    picture = pipeline.Quartz.CGImageSourceCreateImageAtIndex(source, 0, None) if source else None
+    if picture is None:
+        sys.exit(f"Couldn't read the wallpaper {path}")
+    space = pipeline.Quartz.CGColorSpaceCreateWithName(pipeline.VIDEO_SPACES["display-p3"])
+    ctx = pipeline.Quartz.CGBitmapContextCreate(None, width, height, 8, width * 4, space, pipeline.Quartz.kCGImageAlphaNoneSkipLast)
+    fill = max(width / pipeline.Quartz.CGImageGetWidth(picture), height / pipeline.Quartz.CGImageGetHeight(picture))
+    sw, sh = pipeline.Quartz.CGImageGetWidth(picture) * fill, pipeline.Quartz.CGImageGetHeight(picture) * fill
+    pipeline.Quartz.CGContextSetInterpolationQuality(ctx, pipeline.Quartz.kCGInterpolationHigh)
+    pipeline.Quartz.CGContextDrawImage(ctx, (((width - sw) / 2, (height - sh) / 2), (sw, sh)), picture)
+    data = pipeline.Quartz.CGBitmapContextGetData(ctx).as_buffer(width * height * 4)
+    image = Image.fromarray(np.frombuffer(data, dtype=np.uint8).reshape(height, width, 4)[..., :3].copy(), "RGB")
+    image.info["icc_profile"] = bytes(pipeline.Quartz.CGColorSpaceCopyICCData(space))
+    return image
+
+
+def closed_menubar():
+    """The closed menu bar's items in Dark over nothing, recovered from night-desktop's menubar-dark.png
+    (without Safelight's open-popover capsule) and desktop-closed.png."""
+    mb = np.asarray(Image.open(os.path.join(NIGHT, "menubar-dark.png")), np.float64)
+    dc = np.asarray(Image.open(os.path.join(NIGHT, "desktop-closed.png")).convert("RGB"), np.float64)
+    wd = np.asarray(Image.open(os.path.join(NIGHT, "wallpaper-dark.png")).convert("RGB"), np.float64)
+    cap = np.nonzero(mb[6:15, :, 3] > 0)[1]
+    x0, x1 = max(0, int(cap.min()) - 10), min(mb.shape[1], int(cap.max()) + 11)
+    patch_dc, patch_wd = dc[:, x0:x1], wd[:, x0:x1]
+    a = np.clip((patch_dc - patch_wd) / np.maximum(255.0 - patch_wd, 1.0), 0.0, 1.0).mean(axis=2)
+    a[(patch_dc == patch_wd).all(axis=2)] = 0.0
+    closed = mb.copy()
+    closed[:, x0:x1, :3] = 255.0
+    closed[:, x0:x1, 3] = np.round(a * 255.0)
+    return closed
+
+
+def desktops(looks, light_path=None, dark_path=None):
     """The whole desktop with each look, as the screen shows it, in Display P3 at half its size, a point
     to the pixel: the last, the desktop the recorder drew, and the ones before it their appearance's
     wallpaper alone, as the menu bar's items are all at its right, in the last part. And where the
     leftmost of those items begins."""
+    ref = Image.open(os.path.join(NIGHT, "wallpaper-dark.png"))
+    width, height = ref.size
+    light_img = draw_wallpaper(light_path, width, height) if light_path else Image.open(os.path.join(NIGHT, "wallpaper-light.png"))
+    if dark_path:
+        dark_img = draw_wallpaper(dark_path, width, height)
+        mb = closed_menubar()
+        alpha = mb[..., 3:4] / 255.0
+        comp = np.round(mb[..., :3] * alpha + np.asarray(dark_img, np.float64) * (1.0 - alpha)).astype(np.uint8)
+        closed_img = Image.fromarray(comp, "RGB")
+        closed_img.info["icc_profile"] = dark_img.info["icc_profile"]
+    else:
+        dark_img = ref
+        closed_img = Image.open(os.path.join(NIGHT, "desktop-closed.png"))
     drawn = []
     for part, (dark, tint, backlight) in enumerate(looks):
-        image = Image.open(os.path.join(NIGHT, "desktop-closed.png" if part == len(looks) - 1 else "wallpaper-dark.png" if dark else "wallpaper-light.png"))
+        image = closed_img if part == len(looks) - 1 else dark_img if dark else light_img
         display = pipeline.Display("desktop", pipeline.BACKLIGHT, pipeline.Profile(image.info["icc_profile"]), LOWEST_LIGHT)
         frame = np.asarray(image.convert("RGB"), np.float64) / 255
         shown = Image.fromarray(pipeline.to_video(pipeline.shown(frame, display, tint=tint, brightness=backlight), display, "display-p3"))
@@ -129,12 +180,15 @@ def main():
     parser = argparse.ArgumentParser(description="Writes the README's picture of the desktop through a day.")
     parser.add_argument("--times", default=TIMES, help="the times of day, HH:MM with commas between; the last is the recorded desktop's")
     parser.add_argument("--dimmed", action="store_true", help="draw the schedule's brightness too, as a Studio Display's backlight")
+    parser.add_argument("--light", help="wallpaper file to use for Light instead of night-desktop's")
+    parser.add_argument("--dark", help="wallpaper file to use for Dark instead of night-desktop's")
     parser.add_argument("--out", default=os.path.join(root, "docs", "day.jpg"))
     args = parser.parse_args()
     times = args.times.split(",")
-    if not all(os.path.exists(os.path.join(NIGHT, name)) for name in ("desktop-closed.png", "wallpaper-light.png", "wallpaper-dark.png")):
+    needed = ("desktop-closed.png", "wallpaper-light.png", "wallpaper-dark.png") + (("menubar-dark.png",) if args.dark else ())
+    if not all(os.path.exists(os.path.join(NIGHT, name)) for name in needed):
         sys.exit("Run scripts/make-demo.sh --record night-desktop first: it draws the desktop")
-    drawn, items = desktops(looks(default_schedule(), times, args.dimmed))
+    drawn, items = desktops(looks(default_schedule(), times, args.dimmed), args.light, args.dark)
     picture = through_day(drawn, items, times)
     icc = bytes(pipeline.Quartz.CGColorSpaceCopyICCData(pipeline.Quartz.CGColorSpaceCreateWithName(pipeline.VIDEO_SPACES["display-p3"])))
     if args.out.endswith(".png"):
