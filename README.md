@@ -106,7 +106,7 @@ No overlay: Safelight changes the same settings System Settings does, through th
 
 ## Support
 
-Safelight is free and open source. If it's useful to you, you can support its development through [GitHub Sponsors](https://github.com/sponsors/mopfaff).
+Free and open source. If it's useful to you: [GitHub Sponsors](https://github.com/sponsors/mopfaff).
 
 ## License
 
