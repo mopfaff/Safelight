@@ -53,6 +53,8 @@ final class Screenshots: NSObject, NSApplicationDelegate {
     /// its top, rather than of the windows alone. The popover's Wallpaper picker shows the two.
     private let desktopLight = UserDefaults.standard.string(forKey: "desktopLight").map { URL(fileURLWithPath: $0) }
     private let desktopDark = UserDefaults.standard.string(forKey: "desktopDark").map { URL(fileURLWithPath: $0) }
+    private let wallpaperLight = UserDefaults.standard.string(forKey: "wallpaperLight").map { URL(fileURLWithPath: $0) }
+    private let wallpaperDark = UserDefaults.standard.string(forKey: "wallpaperDark").map { URL(fileURLWithPath: $0) }
     private var desktop: URL? { appearance == "dark" ? desktopDark : desktopLight }
     private let canvases: [CGSize] = (UserDefaults.standard.string(forKey: "canvases") ?? "").split(separator: ",").compactMap {
         let sides = $0.split(separator: "x").compactMap { Double($0) }
@@ -150,10 +152,10 @@ final class Screenshots: NSObject, NSApplicationDelegate {
         // downloaded when picked), or over a desktop, the desktop's own. In one wallpaper, as Safelight
         // makes it when a picture is chosen for each.
         let thumbnails = URL(fileURLWithPath: "/System/Library/Desktop Pictures/.thumbnails")
-        let light = desktopLight ?? thumbnails.appendingPathComponent("Hello Metallic Silver.heic")
-        let dark = desktopDark ?? thumbnails.appendingPathComponent("Pro Black.heic")
+        let light = desktopLight ?? wallpaperLight ?? thumbnails.appendingPathComponent("Hello Metallic Silver.heic")
+        let dark = desktopDark ?? wallpaperDark ?? thumbnails.appendingPathComponent("Pro Black.heic")
         let wallpaper = FileManager.default.temporaryDirectory.appendingPathComponent("Safelight Screenshots wallpaper.heic")
-        guard WallpaperManager.makeWallpaper(at: wallpaper, light: (light, false), dark: (dark, desktopDark != nil)) else {
+        guard WallpaperManager.makeWallpaper(at: wallpaper, light: (light, false), dark: (dark, desktopDark != nil || wallpaperDark != nil)) else {
             fail("Couldn't make a wallpaper of \(light.path) and \(dark.path)")
         }
         WallpaperManager.shared.showPictures(of: wallpaper)

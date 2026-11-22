@@ -57,13 +57,34 @@ BUILD_DIR="build/screenshots"
 NAME="Safelight Screenshots"
 APP="$BUILD_DIR/$NAME.app"
 OUT="$BUILD_DIR/out"
+LIGHT_WALLPAPER="${LIGHT_WALLPAPER:-}"
+DARK_WALLPAPER_SET="${DARK_WALLPAPER:-}"
 DARK_WALLPAPER="${DARK_WALLPAPER:-/System/Library/Desktop Pictures/Sonoma.heic}"
+WALLPAPER_ARGS=()
 if [[ "${1:-}" == --desktop && "$DARK_WALLPAPER" != "/System/Library/Desktop Pictures/Sonoma.heic" ]]; then
     if [[ ! -f "$DARK_WALLPAPER" ]]; then
         echo "There's no wallpaper at $DARK_WALLPAPER" >&2
         exit 2
     fi
     OUT="$BUILD_DIR/out-${(L)DARK_WALLPAPER:t:r}"
+elif [[ "${1:-}" != --desktop && ( -n "$LIGHT_WALLPAPER" || -n "$DARK_WALLPAPER_SET" ) ]]; then
+    OUT="$BUILD_DIR/plain"
+    if [[ -n "$LIGHT_WALLPAPER" ]]; then
+        if [[ ! -f "$LIGHT_WALLPAPER" ]]; then
+            echo "There's no wallpaper at $LIGHT_WALLPAPER" >&2
+            exit 2
+        fi
+        OUT="$OUT-${(L)LIGHT_WALLPAPER:t:r:gs/ /-}"
+        WALLPAPER_ARGS+=(-wallpaperLight "${LIGHT_WALLPAPER:A}")
+    fi
+    if [[ -n "$DARK_WALLPAPER_SET" ]]; then
+        if [[ ! -f "$DARK_WALLPAPER_SET" ]]; then
+            echo "There's no wallpaper at $DARK_WALLPAPER_SET" >&2
+            exit 2
+        fi
+        OUT="$OUT-${(L)DARK_WALLPAPER_SET:t:r:gs/ /-}"
+        WALLPAPER_ARGS+=(-wallpaperDark "${DARK_WALLPAPER_SET:A}")
+    fi
 fi
 SCHEDULE="${SCHEDULE:-}"
 SCHEDULE_ARGS=()
@@ -173,7 +194,7 @@ for appearance in dark light; do
     LOG="$BUILD_DIR/screenshots-$appearance.log"
     rm -f "$LOG"
     open -W -n --stdout "$LOG" --stderr "$LOG" "$APP" --args -appearance $appearance \
-        -AppleLanguages '(en-US)' -AppleLocale en_GB -output "$PWD/$OUT" $SCHEDULE_ARGS $CLOCK_ARGS
+        -AppleLanguages '(en-US)' -AppleLocale en_GB -output "$PWD/$OUT" $WALLPAPER_ARGS $SCHEDULE_ARGS $CLOCK_ARGS
     for shot in popover-$appearance schedule-$appearance wallpaper-$appearance; do
         if [[ ! -f "$OUT/$shot.png" ]]; then
             echo "Screenshots failed (full log: $LOG):" >&2
@@ -182,9 +203,9 @@ for appearance in dark light; do
         fi
     done
 done
-if [[ -n "$SCHEDULE" || -n "$CLOCK" ]]; then
+if [[ -n "$SCHEDULE" || -n "$CLOCK" || -n "$LIGHT_WALLPAPER" || -n "$DARK_WALLPAPER_SET" ]]; then
     # The README's are of the default schedule, at 21:00
-    echo "Wrote the screenshots${SCHEDULE:+ with the schedule of $SCHEDULE}${CLOCK:+ at $CLOCK} to $OUT"
+    echo "Wrote the screenshots${LIGHT_WALLPAPER:+ with Light wallpaper $LIGHT_WALLPAPER}${DARK_WALLPAPER_SET:+ with Dark wallpaper $DARK_WALLPAPER_SET}${SCHEDULE:+ with the schedule of $SCHEDULE}${CLOCK:+ at $CLOCK} to $OUT"
     exit 0
 fi
 changed=()
