@@ -32,8 +32,9 @@
 #          made than the AVIF (67% and 61% within 3 levels).
 #   GIF    256 colours a frame, which bands the fade, and larger again.
 #
-# The picture is the shot's panes alone, as its camera has them, cut out of the master where they are
-# and see-through everywhere else, so it sits on the page's own colour, light or dark. Nothing changes
+# The picture is the camera's whole video, or, for a camera with panes, the panes alone, cut out of the
+# master where they are and see-through everywhere else, so it sits on the page's own colour, light or
+# dark. Nothing changes
 # what a pane shows: the master's values (edit.py's Master, Display P3, every value as compose.py made
 # it) are made smaller by averaging each "scale" × "scale" pixels' light, as edit.py halves them, and
 # matched to sRGB's primaries, the deepest reds clipped, as the X and YouTube videos are: the pictures
@@ -86,7 +87,7 @@ class Loop:
         if scene["fps"] % self.fps or not 0 <= spec["from"] < spec["to"] <= scene["duration"]:
             raise SystemExit(f"{name}: {spec['shot']} is {scene['duration']} s at {scene['fps']} fps; can't cut {spec['from']}–{spec['to']} s at {self.fps} fps")
         # The panes, in the master's pixels, and the box round them all, which is the loop's picture
-        panes = [tuple(pane["rect"]) for pane in camera["panes"]]
+        panes = [tuple(pane["rect"]) for pane in camera["panes"]] if "panes" in camera else [(0, 0, *camera["size"])]
         x0, y0 = min(p[0] for p in panes), min(p[1] for p in panes)
         x1, y1 = max(p[0] + p[2] for p in panes), max(p[1] + p[3] for p in panes)
         self.box = (x0, y0, x1, y1)
@@ -130,7 +131,8 @@ class Loop:
             f'buttons.forEach(b=>b.onclick=()=>{{file=b.dataset.file||file;look=b.dataset.look||look;show()}});show()</script>')
 
     def picture(self, raw, towards=None, mix=0.0):
-        """A frame of the master as the loop's picture: RGBA, 8 bits, sRGB, see-through outside the panes"""
+        """A frame of the master as the loop's picture: 8 bits, sRGB, see-through outside the panes (RGBA),
+        or, when a pane is the whole of it, with nothing see-through (RGB)"""
         x0, y0, x1, y1 = self.box
 
         def values(raw):
@@ -144,6 +146,8 @@ class Loop:
         if towards is not None:
             v = v * (1 - mix) + values(towards) * mix
         w, h = self.size
+        if self.panes == [(0, 0, w * self.scale, h * self.scale)]:
+            return np.round(v * 255).astype(np.uint8)
         picture = np.zeros((h, w, 4), np.uint8)
         s = self.scale
         for x, y, pw, ph in self.panes:
@@ -279,7 +283,7 @@ def verify(name):
     for entry in listed:
         starts[length] = entry["frame"]
         length += entry["ms"]
-    made = lambda at: np.asarray(Image.open(loop.folder / "frames" / starts[at]))
+    made = lambda at: np.asarray(Image.open(loop.folder / "frames" / starts[at]).convert("RGBA"))
     shortest = min(entry["ms"] for entry in listed)
     right = True
     print(f"{name}: {loop.size[0]}×{loop.size[1]}, {len(listed)} frames made")

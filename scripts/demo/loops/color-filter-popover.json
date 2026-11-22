@@ -1,0 +1,17 @@
+{
+    "about": "The Color filter shot as a picture that plays by itself in the README, in one view: the top right corner of the screen, the popover at its real place under the menu bar and the desktop beside it, both taking the tint (the shot's 3:2 camera). Color filters clicked on, Intensity dragged from Low to High, Tint once round the colours, Color filters clicked off. The shot ends with Intensity at High and Tint's knob at the far end, so the loop dissolves back to its first frame",
+    "shot": "color-filter",
+    "camera": "3:2",
+    "from": 0,
+    "to": 7.8,
+    "fps": 30,
+    "scale": 1,
+    "hold": 0.5,
+    "dissolve": 0.4,
+    "avif": 60,
+    "keyframes": 15,
+    "yuv": 420,
+    "webp": 60,
+    "width": 800,
+    "caption": "It lives in the menu bar."
+}
