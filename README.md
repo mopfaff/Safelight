@@ -72,8 +72,6 @@ The controls are the ones System Settings uses, and every label is System Settin
 
 </details>
 
-Click the menu bar icon for the controls, the gear beside Schedule to edit the schedule, and the Light or Dark wallpaper to choose its picture in the Wallpaper window. Right-click (or Control-click) the icon for Open at Login, Automatic Updates, Check for Updates… and Quit. Reset and Quit both turn the color filter off and brightness back to full. Reset also turns the schedule off, while a schedule that was on when Safelight quit or the Mac restarted comes back on when Safelight opens.
-
 ## Install
 
 Needs macOS 15.5 or later, Apple silicon or Intel.
