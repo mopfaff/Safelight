@@ -36,13 +36,51 @@ With a wallpaper for Light and Dark.
 ## Features
 
 - **A red that goes all the way.** Safelight drives macOS's own Color Tint filter (System Settings › Accessibility › Display › Color Filters), so everything on screen can go fully red, which Night Shift can't do.
-- **Brightness for every display.** Set them all as one, or turn on Adjust Independently to give each its own, in the schedule too. Where it can, Safelight sets the backlight itself: on displays the Mac controls, and on Apple silicon on external monitors that take DDC/CI, the channel MonitorControl and Lunar use. With Adjust Independently on, such a monitor's slider follows the monitor's own buttons. These displays also go darker than their backlight allows: the top three quarters of the slider set the backlight, and below the dot a quarter of the way along it stays at its lowest while the picture dims. Other displays get a darkened picture only, and an iPad on Sidecar a dark layer over it.
-- **Brightness keys for every display.** With Adjust Independently on, the brightness keys set whichever display the pointer is on. That takes Accessibility permission, which macOS asks for when you turn it on.
-- **Light and Dark, with a wallpaper for each.** Each time of day can switch the system's appearance. Choose a picture for Light and another for Dark, and the desktop fades between them whenever the appearance switches, whether through Safelight, System Settings, Control Center or Auto. Pick from macOS's own wallpapers, from Photos or from a file, or shuffle a set, each with the options System Settings gives it. Aerials stay still, as macOS only lets System Settings set moving ones. Safelight makes the two one wallpaper, built like macOS's own Light and Dark wallpapers, so macOS does the switching itself on every Space and display, or, with Show on all Spaces off, on the Space you're on, where each display can have its own.
-- **One schedule for all of it.** Add as many times of day as you like. Each sets the color filter, intensity, tint, brightness and appearance, and the filter and brightness fade smoothly from one to the next. A strip along the top previews the whole day. With Schedule set to Sunrise and Sunset, each time follows the sun instead (at sunrise or sunset, or a set time before or after), by Night Shift's sunrise and sunset for where you are, so the schedule moves with the seasons.
+- **[Brightness for every display](#brightness)**, together or each on its own, and darker than the backlight goes.
+- **[Light and Dark, with a wallpaper for each](#appearance-and-wallpaper)**, and the desktop fades between them.
+- **[One schedule for all of it](#schedule)**, at times you set or by sunrise and sunset.
 - **Looks and speaks like macOS.** The controls are the ones System Settings uses, and every label is System Settings' own translation, so Safelight appears in your Mac's language.
 
-Click the menu bar icon for the controls, the gear beside Schedule to edit the schedule, and the Light or Dark wallpaper to choose its picture in the Wallpaper window. Right-click (or Control-click) the icon for Open at Login, Automatic Updates, Check for Updates… and Quit. Reset and Quit both turn the color filter off and brightness back to full. Reset also turns the schedule off, while a schedule that was on when Safelight quit or the Mac restarted comes back on when Safelight opens.
+### Brightness
+
+What Safelight sets depends on the display:
+
+| Display | What Safelight sets |
+| --- | --- |
+| One the Mac controls itself | Its backlight |
+| An external monitor that takes DDC/CI, on Apple silicon | Its backlight, over the channel MonitorControl and Lunar use |
+| Any other display | A darkened picture |
+| An iPad on Sidecar | A dark layer over it |
+
+- **Darker than the backlight goes.** Where Safelight sets the backlight, the top three quarters of the slider set it. Below the dot a quarter of the way along, the backlight stays at its lowest while the picture dims.
+- **Each display on its own.** Set them all as one, or turn on Adjust Independently to give each its own, in the schedule too. A DDC/CI monitor's slider then follows the monitor's own buttons.
+- **Brightness keys.** With Adjust Independently on, they set whichever display the pointer is on. That takes Accessibility permission, which macOS asks for when you turn it on.
+
+### Appearance and wallpaper
+
+- **Light and Dark.** Each time of day can switch the system's appearance.
+- **A picture for each.** Choose one for Light and another for Dark, and the desktop fades between them whenever the appearance switches, whether through Safelight, System Settings, Control Center or Auto.
+- **Where pictures come from.** macOS's own wallpapers, Photos, a file, or a shuffle of a set, each with the options System Settings gives it.
+- **Aerials stay still**, as macOS only lets System Settings set moving ones.
+- **Spaces and displays.** Safelight makes the two pictures one wallpaper, built like macOS's own Light and Dark wallpapers, so macOS does the switching itself on every Space and display. With Show on all Spaces off, it's on the Space you're on, where each display can have its own.
+
+### Schedule
+
+- **Times of day.** Add as many as you like. Each sets the color filter, intensity, tint, brightness and appearance.
+- **Smooth fades.** The filter and brightness fade from one time to the next.
+- **A preview of the day**, in a strip along the top.
+- **Sunrise and Sunset.** Set Schedule to it and each time follows the sun instead (at sunrise or sunset, or a set time before or after), by Night Shift's sunrise and sunset for where you are, so the schedule moves with the seasons.
+
+### Where things are
+
+| To | Do this |
+| --- | --- |
+| Open the controls | Click the menu bar icon |
+| Edit the schedule | Click the gear beside Schedule |
+| Choose a wallpaper | Click the Light or Dark wallpaper |
+| Find Open at Login, Automatic Updates, Check for Updates… and Quit | Right-click (or Control-click) the icon |
+
+Reset and Quit both turn the color filter off and brightness back to full. Reset also turns the schedule off, while a schedule that was on when Safelight quit or the Mac restarted comes back on when Safelight opens.
 
 ## Install
 
