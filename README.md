@@ -102,7 +102,7 @@ The app lands in `build/release`. It updates itself like a downloaded copy; turn
 
 ## How it works
 
-Safelight doesn't draw anything over your screen. It changes the same settings System Settings does, through the functions System Settings itself calls. Those functions aren't part of Apple's public developer APIs, which is also why Safelight isn't on the Mac App Store, and a macOS update could change them. If something stops working after an update, please [open an issue](https://github.com/mopfaff/Safelight/issues).
+No overlay: Safelight changes the same settings System Settings does, through the same private functions. So it isn't on the Mac App Store, and a macOS update could break it. If one does, [open an issue](https://github.com/mopfaff/Safelight/issues).
 
 ## Support
 
