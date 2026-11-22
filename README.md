@@ -38,37 +38,41 @@ With a wallpaper for Light and Dark.
 <details>
 <summary><b>A red that goes all the way</b></summary>
 
-Safelight drives macOS's own Color Tint filter (System Settings › Accessibility › Display › Color Filters), so everything on screen can go fully red, which Night Shift can't do.
+Drives macOS's own Color Tint filter (System Settings › Accessibility › Display › Color Filters), so the whole screen goes fully red—further than Night Shift can.
 
 </details>
 <details>
 <summary><b>Brightness for every display</b></summary>
 
-Set them all as one, or turn on Adjust Independently to give each its own, in the schedule too. Where it can, Safelight sets the backlight itself: on displays the Mac controls, and on Apple silicon on external monitors that take DDC/CI, the channel MonitorControl and Lunar use. With Adjust Independently on, such a monitor's slider follows the monitor's own buttons. These displays also go darker than their backlight allows: the top three quarters of the slider set the backlight, and below the dot a quarter of the way along it stays at its lowest while the picture dims. Other displays get a darkened picture only, and an iPad on Sidecar a dark layer over it.
+- **Hardware backlight:** Sets the backlight directly on displays the Mac controls and—on Apple silicon—external monitors with DDC/CI (like MonitorControl and Lunar). Other displays dim the picture; a Sidecar iPad gets a dark layer.
+- **Darker than minimum:** Below the dot a quarter of the way along, the backlight stays at its lowest while the picture dims further.
+- **Adjust Independently:** Gives each display its own slider (in the schedule too), and DDC sliders follow the monitor's own buttons.
 
 </details>
 <details>
 <summary><b>Brightness keys for every display</b></summary>
 
-With Adjust Independently on, the brightness keys set whichever display the pointer is on. That takes Accessibility permission, which macOS asks for when you turn it on.
+With Adjust Independently on, the brightness keys control whichever display the pointer is on. Needs Accessibility permission, requested when you turn it on.
 
 </details>
 <details>
 <summary><b>Light and Dark, with a wallpaper for each</b></summary>
 
-Each time of day can switch the system's appearance. Choose a picture for Light and another for Dark, and the desktop fades between them whenever the appearance switches, whether through Safelight, System Settings, Control Center or Auto. Pick from macOS's own wallpapers, from Photos or from a file, or shuffle a set, each with the options System Settings gives it. Aerials stay still, as macOS only lets System Settings set moving ones. Safelight makes the two one wallpaper, built like macOS's own Light and Dark wallpapers, so macOS does the switching itself on every Space and display, or, with Show on all Spaces off, on the Space you're on, where each display can have its own.
+- **Sources:** Pick from macOS's wallpapers, Photos, files, or a shuffle, with System Settings' options. Aerials stay still, as only System Settings can set moving ones.
+- **Native switching:** Each scheduled time can switch Light and Dark appearance. Safelight combines your two picks into one Light/Dark wallpaper, so macOS fades between them itself on any change—Safelight, System Settings, Control Center, or Auto.
+- **Spaces & displays:** Applies across all Spaces and displays, or turn off Show on all Spaces to set the current Space (with a separate pair per display).
 
 </details>
 <details>
 <summary><b>One schedule for all of it</b></summary>
 
-Add as many times of day as you like. Each sets the color filter, intensity, tint, brightness and appearance, and the filter and brightness fade smoothly from one to the next. A strip along the top previews the whole day. With Schedule set to Sunrise and Sunset, each time follows the sun instead (at sunrise or sunset, or a set time before or after), by Night Shift's sunrise and sunset for where you are, so the schedule moves with the seasons.
+Add as many times of day as you like, each with its own color filter, intensity, tint, brightness, and appearance. Filter and brightness fade smoothly between them, with a preview strip of the day along the top. Set Schedule to Sunrise and Sunset to anchor times to Night Shift's sunrise and sunset for your location (at, before, or after), so they shift with the seasons.
 
 </details>
 <details>
 <summary><b>Looks and speaks like macOS</b></summary>
 
-The controls are the ones System Settings uses, and every label is System Settings' own translation, so Safelight appears in your Mac's language.
+Uses System Settings' own controls and translations, so Safelight appears in your Mac's language.
 
 </details>
 
