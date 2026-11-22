@@ -66,7 +66,8 @@ With Adjust Independently on, the brightness keys control whichever display the 
 <details>
 <summary><b>One schedule for all of it</b></summary>
 
-Add as many times of day as you like, each with its own color filter, intensity, tint, brightness, and appearance. Filter and brightness fade smoothly between them, with a preview strip of the day along the top. Set Schedule to Sunrise and Sunset to anchor times to Night Shift's sunrise and sunset for your location (at, before, or after), so they shift with the seasons.
+- **Times & fades:** Add as many times of day as you like, each with its own color filter, intensity, tint, brightness, and appearance. Filter and brightness fade smoothly between them, with a preview strip of the day along the top.
+- **Sunrise & sunset:** Set Schedule to Sunrise and Sunset to anchor times to Night Shift's sunrise and sunset for your location (at, before, or after), so they shift with the seasons.
 
 </details>
 <details>
