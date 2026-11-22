@@ -90,7 +90,7 @@ Automatic, checked daily, installed while your Mac is locked or when Safelight q
 
 ## Build it yourself
 
-You need Xcode 26 or later.
+Needs Xcode 26 or later.
 
 ```bash
 git clone https://github.com/mopfaff/Safelight.git
@@ -98,7 +98,7 @@ cd Safelight
 scripts/release.sh
 ```
 
-Xcode fetches Sparkle the first time. The app ends up in `build/release`. A copy you build yourself opens without the warning above, and updates itself to each new release like a downloaded one; turn off Automatic Updates to keep your own build. You can also open `Safelight.xcodeproj` in Xcode, choose your own team (or Sign to Run Locally) under Signing & Capabilities, and run it from there.
+The app lands in `build/release`. It updates itself like a downloaded copy; turn off Automatic Updates to keep your build. Or open `Safelight.xcodeproj` in Xcode and run it with your own team.
 
 ## How it works
 
