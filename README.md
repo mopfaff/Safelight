@@ -98,7 +98,7 @@ cd Safelight
 scripts/release.sh
 ```
 
-The app lands in `build/release`. It updates itself like a downloaded copy; turn off Automatic Updates to keep your build. Or open `Safelight.xcodeproj` in Xcode and run it with your own team.
+The app lands in `build/release`. It updates itself like a downloaded copy; turn off Automatic Updates to keep your build. Or open `Safelight.xcodeproj` in Xcode and run it with your own team, or Sign to Run Locally.
 
 ## How it works
 
