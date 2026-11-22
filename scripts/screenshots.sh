@@ -1,10 +1,10 @@
 #!/bin/zsh
 # Draws the README's screenshots from the current code: the popover, open under its icon in the menu
-# bar, and the Schedule window, in Dark and in Light. scripts/release.sh runs it too, so each release's
+# bar, the Schedule window and the Wallpaper window, in Dark and in Light. scripts/release.sh runs it too, so each release's
 # screenshots match it.
 #
-#   scripts/screenshots.sh    writes docs/popover-dark.png, popover-light.png, schedule-dark.png and
-#                             schedule-light.png
+#   scripts/screenshots.sh    writes docs/popover-dark.png, popover-light.png, schedule-dark.png,
+#                             schedule-light.png, wallpaper-dark.png and wallpaper-light.png
 #   scripts/screenshots.sh --desktop [dark|light]
 #                             instead writes, for both appearances or the one given, to
 #                             build/screenshots/out/, the popover and the Schedule window over a
@@ -43,7 +43,10 @@
 # whose NoSystemChanges.swift stands in for the functions that change the color filter, brightness and
 # appearance, so the Mac is left as it was. The copy has settings of its own, so the Schedule shows the
 # default schedule rather than yours, and FixedTime.swift keeps it at 21:00. Beside its icon, the menu
-# bar has stand-ins for Wi-Fi, Spotlight, Control Center and the clock rather than your own items. A
+# bar has stand-ins for Wi-Fi, Spotlight, Control Center and the clock rather than your own items. The
+# Wallpaper window has the popover's two pictures rather than your desktop's, and no photos of yours:
+# Your Photos is empty, and the Photos library isn't asked for. Its Show on all Spaces is as System
+# Settings has it on this Mac, though, and with it off, its pop-up names this Mac's main display. A
 # screenshot that looks the same as the one in docs/ leaves it be, so they only change when the app
 # does. Its windows are on screen for a few seconds, on a Retina display: leave them be until it's done.
 
@@ -82,7 +85,7 @@ if [[ -n "$CLOCK" ]]; then
     if [[ "${1:-}" == --desktop || -n "$SCHEDULE" ]]; then OUT="$OUT-${CLOCK/:/}"; else OUT="$BUILD_DIR/plain-${CLOCK/:/}"; fi
     CLOCK_ARGS=(-clock "$CLOCK")
 fi
-SHOTS=(popover-dark popover-light schedule-dark schedule-light)
+SHOTS=(popover-dark popover-light schedule-dark schedule-light wallpaper-dark wallpaper-light)
 
 rm -rf "$APP" "$OUT" "$BUILD_DIR/src"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$OUT" "$BUILD_DIR/src"
@@ -100,7 +103,14 @@ if [[ $(grep -cxF "$INDEX" Safelight/Safelight.swift) != 1 || $(grep -cxF "$MAKE
     echo "Couldn't find WallpaperManager's index(in:isDark:) and makeWallpaper(at:light:dark:) for the desktop to use" >&2
     exit 2
 fi
-sed -e '/^@main$/d' -e "s/^$INDEX\$/${INDEX/private /}/" -e "s/^$MAKE\$/${MAKE/private /}/" Safelight/Safelight.swift >"$BUILD_DIR/src/Safelight.swift"
+# And leaves the Photos library alone: the Wallpaper window's Add Photo… tile asks to read it as soon as
+# it shows, which macOS would put to you each time, as the copy is another app to it
+PHOTOS='            await photoSets.load()'
+if [[ $(grep -cxF "$PHOTOS" Safelight/Safelight.swift) != 1 ]]; then
+    echo "Couldn't find where the Wallpaper window reads the Photos library's sets, to leave it out" >&2
+    exit 2
+fi
+sed -e '/^@main$/d' -e "s/^$INDEX\$/${INDEX/private /}/" -e "s/^$MAKE\$/${MAKE/private /}/" -e "/^$PHOTOS\$/d" Safelight/Safelight.swift >"$BUILD_DIR/src/Safelight.swift"
 
 cp scripts/screenshots/Info.plist "$APP/Contents/Info.plist"
 # The menu bar icon is a symbol in the asset catalog
@@ -164,7 +174,7 @@ for appearance in dark light; do
     rm -f "$LOG"
     open -W -n --stdout "$LOG" --stderr "$LOG" "$APP" --args -appearance $appearance \
         -AppleLanguages '(en-US)' -AppleLocale en_GB -output "$PWD/$OUT" $SCHEDULE_ARGS $CLOCK_ARGS
-    for shot in popover-$appearance schedule-$appearance; do
+    for shot in popover-$appearance schedule-$appearance wallpaper-$appearance; do
         if [[ ! -f "$OUT/$shot.png" ]]; then
             echo "Screenshots failed (full log: $LOG):" >&2
             cat "$LOG" >&2

@@ -2,8 +2,8 @@ import Cocoa
 import SwiftUI
 import ScreenCaptureKit
 
-// Draws the README's screenshots from Safelight's own views: the popover and the Schedule window, in
-// the `-appearance` given (dark or light), each written to `-output` as a PNG. scripts/screenshots.sh
+// Draws the README's screenshots from Safelight's own views: the popover, the Schedule window and the
+// Wallpaper window, in the `-appearance` given (dark or light), each written to `-output` as a PNG. scripts/screenshots.sh
 // builds this together with a copy of Safelight.swift, NoSystemChanges.swift and FixedTime.swift, and
 // runs it once for each appearance: switched while it runs, the popover keeps parts of the one it had.
 //
@@ -265,9 +265,38 @@ final class Screenshots: NSObject, NSApplicationDelegate {
                 }
                 return window
             }, then: {
-                self.finish()
+                NSApp.windows.first { $0.title == SystemStrings.schedule }?.orderOut(nil)
+                self.capture("wallpaper-\(self.appearance)", show: {
+                    self.showWallpaperWindow()
+                }, then: {
+                    self.finish()
+                })
             })
         })
+    }
+
+    private var wallpaperWindow: NSWindow?
+
+    /// The Wallpaper window, choosing the picture of the appearance it's drawn in, made as
+    /// `WallpaperWindow.show(isDark:)` makes it, but without reading System Settings' Your Photos or
+    /// which wallpapers macOS has downloaded: both are in other apps' containers, which macOS would ask
+    /// about, and the first are the user's own pictures. So Your Photos is empty and no wallpaper has
+    /// a download badge, whatever this Mac has.
+    private func showWallpaperWindow() -> NSWindow? {
+        if wallpaperWindow == nil {
+            WallpaperWindow.shared.isDark = appearance == "dark"
+            let hostingController = NSHostingController(rootView: WallpaperGallery())
+            hostingController.sizingOptions = [.minSize, .maxSize]
+            let window = NSWindow(contentViewController: hostingController)
+            window.styleMask.remove(.resizable)
+            window.title = SystemStrings.wallpaper
+            window.isReleasedWhenClosed = false
+            window.setContentSize(hostingController.sizeThatFits(in: window.contentMaxSize))
+            window.setFrameOrigin(NSPoint(x: screen.frame.midX - window.frame.width / 2, y: screen.visibleFrame.midY - window.frame.height / 2))
+            wallpaperWindow = window
+        }
+        wallpaperWindow?.makeKeyAndOrderFront(nil)
+        return wallpaperWindow
     }
 
     /// The popover over each size of desktop in turn, the menu bar's items along its top and the popover

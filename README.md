@@ -24,6 +24,15 @@ And follows your schedule.
   </picture>
 </p>
 
+With a wallpaper for Light and Dark.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/wallpaper-dark.png">
+    <img src="docs/wallpaper-light.png" width="620" alt="The Wallpaper window: the desktop's picture for Light and its picture for Dark, a pop-up for the display, Show on all Spaces, Screen Saver… and Clock Appearance…, above System Settings' wallpapers in their sections: Dynamic Wallpapers, Your Photos with Add Photo…, and Landscape">
+  </picture>
+</p>
+
 ## Features
 
 - **A red that goes all the way.** Safelight drives macOS's own Color Tint filter (System Settings › Accessibility › Display › Color Filters), so everything on screen can go fully red, which Night Shift can't do.
