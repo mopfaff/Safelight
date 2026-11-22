@@ -76,9 +76,10 @@ struct SliderGeometry {
         }
         walk(root)
         // A Brightness slider is drawn twice in the same place, a copy behind it for its shadow
-        // (`BrightnessSlider`): it's one slider here
+        // (`BrightnessSlider`): it's one slider here. Group sliders within the same row (~48 pt apart)
+        // before sorting left to right, since BrightnessSlider's tick shifts its layer a point or two.
         var sliders: [SliderGeometry] = []
-        for slider in found.sorted(by: { $0.frame.minY < $1.frame.minY }) {
+        for slider in found.sorted(by: { (Int(($0.frame.midY / 16).rounded()), $0.frame.minX) < (Int(($1.frame.midY / 16).rounded()), $1.frame.minX) }) {
             if let last = sliders.last, abs(last.frame.minX - slider.frame.minX) < 0.5, abs(last.frame.minY - slider.frame.minY) < 0.5, abs(last.frame.width - slider.frame.width) < 0.5 {
                 continue
             }
@@ -87,28 +88,40 @@ struct SliderGeometry {
         return sliders
     }
 
+    /// All AppKit sliders of class `type` in a hosting view, top to bottom and left to right, as their
+    /// cells draw them
+    static func allAppKit(_ type: NSSlider.Type, in host: NSView) -> [SliderGeometry] {
+        var found: [NSSlider] = []
+        func walk(_ view: NSView) {
+            if view.isMember(of: type), let slider = view as? NSSlider { found.append(slider) }
+            view.subviews.forEach(walk)
+        }
+        walk(host)
+        return found.compactMap { slider in
+            guard let cell = slider.cell as? NSSliderCell else { return nil }
+            let knob = cell.knobRect(flipped: slider.isFlipped)
+            let track = cell.trackRect
+            return SliderGeometry(frame: slider.convert(CGRect(x: track.minX, y: knob.minY, width: track.width, height: knob.height), to: host),
+                                  knobX: knob.minX - track.minX, knobWidth: knob.width)
+        }.sorted { (round($0.frame.minY), $0.frame.minX) < (round($1.frame.minY), $1.frame.minX) }
+    }
+
     /// The first AppKit slider of class `type` in a hosting view, as its cell draws it: its track, as
     /// high as its knob, and where its knob is along it
-    static func appKit(_ type: NSSlider.Type, in host: NSView) -> SliderGeometry? {
-        func find(_ view: NSView) -> NSSlider? {
-            view.isMember(of: type) ? view as? NSSlider : view.subviews.lazy.compactMap(find).first
-        }
-        guard let slider = find(host), let cell = slider.cell as? NSSliderCell else { return nil }
-        let knob = cell.knobRect(flipped: slider.isFlipped)
-        let track = cell.trackRect
-        return SliderGeometry(frame: slider.convert(CGRect(x: track.minX, y: knob.minY, width: track.width, height: knob.height), to: host),
-                              knobX: knob.minX - track.minX, knobWidth: knob.width)
+    static func appKit(_ type: NSSlider.Type, in host: NSView, index: Int = 0) -> SliderGeometry? {
+        let sliders = allAppKit(type, in: host)
+        return index < sliders.count ? sliders[index] : nil
     }
 }
 
-/// A slider a scene can name: which of the popover's sliders it is, the range of its values, and the
+/// A slider a scene can name: which of the window's sliders it is, the range of its values, and the
 /// value it's bound to
 struct Control {
-    /// One of the popover's SwiftUI sliders, by its place from the top, or an AppKit slider of its own
-    /// class, as Tint is (System Settings' hue slider)
+    /// One of the window's SwiftUI sliders, by its place from the top left, or an AppKit slider of its
+    /// own class, as Tint is (System Settings' hue slider)
     enum Kind {
         case swiftUI(index: Int)
-        case appKit(NSSlider.Type)
+        case appKit(NSSlider.Type, index: Int = 0)
     }
     let kind: Kind
     let range: () -> ClosedRange<Double>
@@ -136,14 +149,41 @@ struct Control {
         return all
     }
 
+    /// The sliders the Schedule window shows: for each row (1-based), "Row <n> Intensity", "Row <n> Tint"
+    /// and "Row <n> Brightness"
+    static var scheduleAll: [String: Control] {
+        let controller = ColorController.shared
+        let brightnessColumns = max(controller.independentDisplays.count, 1)
+        let swiftUIPerRow = 1 + brightnessColumns
+        var all: [String: Control] = [:]
+        for row in controller.schedule.indices {
+            let n = row + 1
+            all["Row \(n) Intensity"] = Control(kind: .swiftUI(index: row * swiftUIPerRow), range: {
+                let range = ColorFilterManager.shared.intensityRange
+                return Double(range.lowerBound)...Double(range.upperBound)
+            }, value: { Double(controller.schedule[row].intensity) })
+            all["Row \(n) Tint"] = Control(kind: .appKit(ColorScaleSlider.self, index: row), range: { 0...360 },
+                                           value: { Double(controller.schedule[row].tint) })
+            if controller.independentDisplays.isEmpty {
+                all["Row \(n) Brightness"] = Control(kind: .swiftUI(index: row * swiftUIPerRow + 1), range: { 0...1 },
+                                                     value: { Double(controller.schedule[row].brightness) })
+            }
+        }
+        return all
+    }
+
+    static func forWindow(isSchedule: Bool) -> [String: Control] {
+        isSchedule ? scheduleAll : all
+    }
+
     /// Where the slider is drawn, if it is
     func drawn(in host: NSView) -> SliderGeometry? {
         switch kind {
         case let .swiftUI(index):
             let sliders = SliderGeometry.all(in: host)
             return index < sliders.count ? sliders[index] : nil
-        case let .appKit(type):
-            return SliderGeometry.appKit(type, in: host)
+        case let .appKit(type, index):
+            return SliderGeometry.appKit(type, in: host, index: index)
         }
     }
 
@@ -191,6 +231,27 @@ func buttonFrame(named name: String, in host: NSView) -> CGRect? {
         .sorted { ($0.minY, $0.minX) < ($1.minY, $1.minX) }
     guard distinct.count >= 2, distinct[0].minY == distinct[1].minY else { return nil }
     return distinct[index]
+}
+
+/// The Schedule window's day strip (`HeldPointer.TrackingView`) in the hosting view (flipped)
+func dayStripView(in host: NSView) -> NSView? {
+    func find(_ view: NSView) -> NSView? {
+        NSStringFromClass(type(of: view)).contains("TrackingView") ? view : view.subviews.lazy.compactMap(find).first
+    }
+    return find(host)
+}
+
+func dayStripFrame(in host: NSView) -> CGRect? {
+    guard let strip = dayStripView(in: host) else { return nil }
+    return strip.convert(strip.bounds, to: host)
+}
+
+/// Makes `view`'s class accept a first mouse-down while its window isn't key (the recorder never
+/// activates the app, so `NSWindow.sendEvent` would otherwise swallow a click on a plain NSView).
+func acceptFirstMouse(on view: NSView) {
+    let selector = #selector(NSView.acceptsFirstMouse(for:))
+    let block: @convention(block) (AnyObject, NSEvent?) -> Bool = { _, _ in true }
+    class_replaceMethod(type(of: view), selector, imp_implementationWithBlock(block), "B@:@")
 }
 
 /// AppKit's switches (NSSwitch) are drawn by SwiftUI views of AppKit's own, each in a hosting view of
@@ -436,9 +497,10 @@ final class FrameRenderer {
         CATransaction.commit()
     }
 
-    /// The frame with `layer` (the window's) in it, drawn at `time`, its rows from the top down, premultiplied
-    func draw(_ layer: CALayer, at time: CFTimeInterval) -> [UInt8] {
-        guard let owner = layer.superlayer, let index = owner.sublayers?.firstIndex(of: layer) else { fail("The popover's layer isn't in its window") }
+    /// The frame with `layer` (the window's) in it, drawn at `time`, its rows from the top down, premultiplied.
+    /// With `sublayersOnly`, moves `layer`'s sublayers directly into `place` (NSThemeFrame's own backing
+    /// layer draws empty in CARenderer, while its sublayers draw the window frame, content and titlebar).
+    func draw(_ layer: CALayer, at time: CFTimeInterval, sublayersOnly: Bool = false) -> [UInt8] {
         func move(_ body: () -> Void) {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
@@ -446,8 +508,17 @@ final class FrameRenderer {
             CATransaction.commit()
             CATransaction.flush()
         }
-        move { place.addSublayer(layer) }
-        defer { move { owner.insertSublayer(layer, at: UInt32(index)) } }
+        let restore: () -> Void
+        if sublayersOnly {
+            let sublayers = layer.sublayers ?? []
+            move { sublayers.forEach { place.addSublayer($0) } }
+            restore = { move { sublayers.forEach { layer.addSublayer($0) } } }
+        } else {
+            guard let owner = layer.superlayer, let index = owner.sublayers?.firstIndex(of: layer) else { fail("The popover's layer isn't in its window") }
+            move { place.addSublayer(layer) }
+            restore = { move { owner.insertSublayer(layer, at: UInt32(index)) } }
+        }
+        defer { restore() }
 
         // Cleared first, as Core Animation only draws over it
         let pass = MTLRenderPassDescriptor()
@@ -667,6 +738,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
     /// Whether the desktop shows the wallpaper's picture for Dark as the scene opens
     private var wallpaperIsDark = true
     private var anchor: NSWindow!
+    private var scheduleWindow: NSWindow?
     private var activity: NSObjectProtocol?
     /// For a scene on the desktop, what draws it, and the desktop once drawn
     private var desktopMaker: DesktopMaker?
@@ -734,6 +806,9 @@ final class Recorder: NSObject, NSApplicationDelegate {
         appDelegate.applicationDidFinishLaunching(notification)
         appDelegate.popover.behavior = .applicationDefined
         appDelegate.popover.animates = false
+        if scene.isScheduleWindow, let keyframes = scene.schedule {
+            loadSchedule(keyframes)
+        }
         // The wallpaper's pictures, which are only read, as the desktop isn't changed unless one is chosen
         WallpaperManager.shared.showPictures(of: wallpaper)
         if let desktopMaker, let item = appDelegate.statusItem {
@@ -775,11 +850,51 @@ final class Recorder: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Loads `keyframes` into ColorController's schedule
+    private func loadSchedule(_ keyframes: [DemoScene.Keyframe]) {
+        let controller = ColorController.shared
+        controller.followsSun = false
+        do {
+            controller.schedule = try keyframes.enumerated().map { index, keyframe in
+                guard ["light", "dark"].contains(keyframe.appearance), let id = UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", index)) else {
+                    fail("A keyframe's appearance is light or dark, not \(keyframe.appearance)")
+                }
+                return ColorKeyframe(id: id, minute: try keyframe.minute(), isColorFilterOn: keyframe.colorFilter, intensity: Float(keyframe.intensity),
+                                     tint: Float(keyframe.tint), brightness: Float(keyframe.brightness), isDarkAppearance: keyframe.appearance == "dark")
+            }
+        } catch {
+            fail("The scene's schedule: \(error)")
+        }
+    }
+
     private func openOnceLoaded() {
         guard WallpaperManager.shared.thumbnails != nil else {
             return DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.openOnceLoaded() }
         }
         guard let screen else { return }
+        if scene.isScheduleWindow {
+            let hostingController = NSHostingController(rootView: ScheduleEditor())
+            hostingController.sizingOptions = [.minSize, .maxSize]
+            let window = NSWindow(contentViewController: hostingController)
+            window.styleMask.remove(.resizable)
+            window.title = SystemStrings.schedule
+            window.isReleasedWhenClosed = false
+            window.setContentSize(hostingController.sizeThatFits(in: window.contentMaxSize))
+            let size = window.frame.size
+            // Centred on the Retina display, matching Desktop.centered(size:)
+            let origin = NSPoint(x: (screen.frame.minX + (screen.frame.width - size.width) / 2).rounded(),
+                                 y: (screen.frame.maxY - ((screen.frame.height - size.height) / 2).rounded() - size.height))
+            window.setFrameOrigin(origin)
+            window.alphaValue = 0
+            window.ignoresMouseEvents = true
+            window.colorSpace = .displayP3
+            window.makeFirstResponder(nil)
+            window.orderFrontRegardless()
+            self.scheduleWindow = window
+            guard let host = hostingController.view as? NSHostingView<ScheduleEditor> else { fail("Couldn't open the Schedule window") }
+            recordOnceShown(window: window, host: host, arrowTipOnScreen: .zero)
+            return
+        }
         // Where Safelight's icon would be in the menu bar, invisible: the popover hangs from the height
         // of the old menu bar, which the menu bar centres in its own
         let thickness = NSStatusBar.system.thickness
@@ -808,25 +923,27 @@ final class Recorder: NSObject, NSApplicationDelegate {
         recordOnceShown(window: window, host: host, arrowTipOnScreen: anchor.convertPoint(toScreen: arrowTip))
     }
 
-    /// Records once AppKit has put the popover's window on screen and given its frame a layer, which
-    /// it does a moment after it's shown, and has drawn it as the active app's popover is: with its
+    /// Records once AppKit has put the window on screen and given its frame a layer, which
+    /// it does a moment after it's shown, and has drawn it as the active app's window is: with its
     /// controls in their colours rather than grey. AppKit does that for a window that becomes key
     /// (`acquireKeyAppearance`), and this has it do it without the window becoming key or the app
     /// active. Done any earlier, AppKit could take it back as it put the window on screen, and its
     /// controls only change over once the main queue has run.
-    private func recordOnceShown(window: NSWindow, host: NSHostingView<MenuView>, arrowTipOnScreen: NSPoint, tries: Int = 100) {
+    private func recordOnceShown<Content: View>(window: NSWindow, host: NSHostingView<Content>, arrowTipOnScreen: NSPoint, tries: Int = 100) {
         guard window.isVisible, window.contentView?.superview?.layer != nil else {
-            guard tries > 0 else { fail("The popover didn't open") }
+            guard tries > 0 else { fail("The window didn't open") }
             return DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 self.recordOnceShown(window: window, host: host, arrowTipOnScreen: arrowTipOnScreen, tries: tries - 1)
             }
         }
         let acquireKeyAppearance = NSSelectorFromString("acquireKeyAppearance")
-        guard window.responds(to: acquireKeyAppearance), window.backingScaleFactor == CGFloat(scale) else { fail("Couldn't draw the popover as it's drawn when it's open") }
+        guard window.responds(to: acquireKeyAppearance), window.backingScaleFactor == CGFloat(scale) else { fail("Couldn't draw the window as it's drawn when it's open") }
         window.perform(acquireKeyAppearance)
+        if scene.isScheduleWindow { window.makeFirstResponder(nil) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            if self.scene.isScheduleWindow { window.makeFirstResponder(nil) }
             // Kept from the window server (Interposers.c), or the user's own window would lose its key look
-            guard key_appearances_kept() > 0 else { fail("AppKit told the window server the popover looks key in a way Interposers.c doesn't stop") }
+            guard key_appearances_kept() > 0 else { fail("AppKit told the window server the window looks key in a way Interposers.c doesn't stop") }
             self.record(window: window, host: host, arrowTipOnScreen: arrowTipOnScreen)
         }
     }
@@ -840,7 +957,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
     private var running: [(action: DemoScene.Action, from: CGPoint, to: CGPoint)] = []
     private var started = 0
 
-    private func record(window: NSWindow, host: NSHostingView<MenuView>, arrowTipOnScreen: NSPoint) {
+    private func record<Content: View>(window: NSWindow, host: NSHostingView<Content>, arrowTipOnScreen: NSPoint) {
         guard let frameLayer = window.contentView?.superview?.layer else { fail("The popover has no layer to draw") }
         // With a clock or a time of its own, the wall clock reads that time of day at the first frame
         if let start = scene.startOfDay {
@@ -877,11 +994,13 @@ final class Recorder: NSObject, NSApplicationDelegate {
             guard let image = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil).flatMap({ CGImageSourceCreateImageAtIndex($0, 0, nil) }) else { fail("Couldn't read the backdrop \(path)") }
             backdrop = image
         }
-        // On the desktop, the canvas is the popover's surroundings there, under Safelight's icon
+        // On the desktop, the canvas is the window's surroundings there (under Safelight's icon for the
+        // popover, or centred on the desktop for the Schedule window)
         var desktopInfo: Log.DesktopInfo?
         if let desktop {
-            let popover = desktop.popover(size: windowSize, arrowTip: arrowTip)
-            let canvas = desktop.canvas(around: CGRect(origin: popover.origin, size: largest))
+            let popover = scene.isScheduleWindow ? desktop.centered(size: windowSize) : desktop.popover(size: windowSize, arrowTip: arrowTip)
+            let canvas = desktop.canvas(around: CGRect(origin: popover.origin, size: largest),
+                                        topMargin: scene.isScheduleWindow ? Desktop.canvasMargin : 0)
             (canvasSize, origin, backdrop) = (canvas.frame.size, canvas.popover, canvas.backdrop)
             desktopInfo = Log.DesktopInfo(image: "desktop.png", display: desktop.displayID, size: [desktop.size.width, desktop.size.height], scale: Int(desktop.scale),
                                           canvas: [canvas.frame.minX, canvas.frame.minY, canvas.frame.width, canvas.frame.height],
@@ -909,8 +1028,9 @@ final class Recorder: NSObject, NSApplicationDelegate {
         // grows or shrinks from its top
         func inWindow(_ point: CGPoint) -> NSPoint { NSPoint(x: point.x - origin.x, y: window.frame.height - (point.y - origin.y)) }
         func onCanvas(_ point: NSPoint) -> CGPoint { CGPoint(x: origin.x + point.x, y: origin.y + window.frame.height - point.y) }
+        let controls = { Control.forWindow(isSchedule: self.scene.isScheduleWindow) }
         func knob(_ control: String, at value: Double?) -> CGPoint {
-            guard let found = Control.all[control] else { fail("There's no control called \(control)") }
+            guard let found = controls()[control] else { fail("There's no control called \(control)") }
             let slider = found.geometry(in: host, named: control)
             let range = found.range()
             let fraction = value.map { ($0 - range.lowerBound) / (range.upperBound - range.lowerBound) } ?? slider.knobFraction
@@ -918,16 +1038,25 @@ final class Recorder: NSObject, NSApplicationDelegate {
         }
         /// A button's frame on the canvas
         func button(_ name: String) -> CGRect {
-            guard let frame = buttonFrame(named: name, in: host) else { fail("There's no button called \(name) in the popover") }
+            guard let frame = buttonFrame(named: name, in: host) else { fail("There's no button called \(name) in the window") }
             let inWindow = host.convert(frame, to: nil)
             let topLeft = onCanvas(NSPoint(x: inWindow.minX, y: inWindow.maxY))
             return CGRect(origin: topLeft, size: inWindow.size)
+        }
+        /// A time of day along the middle of the Schedule window's 36-pt day strip, on the canvas
+        func strip(_ time: String) -> CGPoint {
+            guard let frame = dayStripFrame(in: host), let seconds = try? DemoScene.ClockKey.secondsOfDay(time) else {
+                fail("There's no day strip in the window for \(time)")
+            }
+            let inHost = NSPoint(x: frame.minX + CGFloat(seconds / 86400) * frame.width, y: frame.minY + 18)
+            return onCanvas(host.convert(inHost, to: nil))
         }
         func resolve(_ place: DemoScene.Place) -> CGPoint {
             switch place {
             case let .point(x, y): CGPoint(x: x, y: y)
             case let .knob(control, value): knob(control, at: value)
             case let .button(name): CGPoint(x: button(name).midX, y: button(name).midY)
+            case let .strip(time): strip(time)
             }
         }
         // Mouse events as the window would be sent them, timed by the scene's clock, which every clock
@@ -961,6 +1090,9 @@ final class Recorder: NSObject, NSApplicationDelegate {
         // From here on SwiftUI's time moves only as the recorder moves it
         guard SwiftUITime.seconds(in: host) == SwiftUITime.start else { fail("SwiftUI's time in the popover moved on from the \(SwiftUITime.start) seconds it was settled at, before the shot began") }
         SwiftUITime.leaveToRecorder(host)
+        if scene.isScheduleWindow, let strip = dayStripView(in: host) {
+            acceptFirstMouse(on: strip)
+        }
         pointer = scene.pointer.map(resolve)
 
         // With a schedule, the Schedule switch is on as the shot begins, as it's been since some time before:
@@ -970,19 +1102,9 @@ final class Recorder: NSObject, NSApplicationDelegate {
         // pointer clicks the Schedule switch in the shot: then it's off as the shot begins, the keyframes
         // there for when it's clicked on, and the timer fires all the same, as it does with the Schedule off.
         var scheduleTimer: Timer?
-        if let keyframes = scene.schedule {
+        if let keyframes = scene.schedule, !scene.isScheduleWindow {
             let controller = ColorController.shared
-            do {
-                controller.schedule = try keyframes.enumerated().map { index, keyframe in
-                    guard ["light", "dark"].contains(keyframe.appearance), let id = UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", index)) else {
-                        fail("A keyframe's appearance is light or dark, not \(keyframe.appearance)")
-                    }
-                    return ColorKeyframe(id: id, minute: try keyframe.minute(), isColorFilterOn: keyframe.colorFilter, intensity: Float(keyframe.intensity),
-                                         tint: Float(keyframe.tint), brightness: Float(keyframe.brightness), isDarkAppearance: keyframe.appearance == "dark")
-                }
-            } catch {
-                fail("The scene's schedule: \(error)")
-            }
+            loadSchedule(keyframes)
             guard let timer = Mirror(reflecting: controller).children.first(where: { $0.label == "timer" })?.value as? Timer, timer.isValid, timer.timeInterval == 60 else {
                 fail("Couldn't find the Schedule's timer, which sets the Mac every minute")
             }
@@ -1031,7 +1153,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
         let inFlight = DispatchSemaphore(value: ProcessInfo.processInfo.activeProcessorCount)
 
         // Drawn once first, as Core Animation takes a while over its first frame, setting up its shaders
-        _ = renderer.draw(frameLayer, at: 0)
+        _ = renderer.draw(frameLayer, at: 0, sublayersOnly: scene.isScheduleWindow)
 
         let count = Int((scene.duration * Double(scene.fps)).rounded())
         let actions = scene.actions.sorted { $0.at < $1.at }
@@ -1092,13 +1214,28 @@ final class Recorder: NSObject, NSApplicationDelegate {
                 started += 1
                 guard let from = pointer else { fail("An action at \(action.at)s needs the pointer, but there's none") }
                 if let control = action.drag {
-                    guard let found = Control.all[control], let to = action.to else { fail("A drag at \(action.at)s needs a control and a value to drag it to") }
-                    let start = knob(control, at: nil)
-                    guard hypot(start.x - from.x, start.y - from.y) < 3 else { fail("The pointer isn't on \(control)'s knob at \(action.at)s") }
-                    if let expected = action.from, abs(found.value() - expected) > 1e-4 { fail("\(control) is at \(found.value()), not \(expected), at \(action.at)s") }
-                    running.append((action, from, knob(control, at: to)))
-                    isPressed = true
-                    send(.leftMouseDown, at: from, time: time)
+                    guard let found = controls()[control], let to = action.to else { fail("A drag at \(action.at)s needs a control and a value to drag it to") }
+                    if action.press {
+                        let start = knob(control, at: nil)
+                        guard hypot(start.x - from.x, start.y - from.y) < 3 else { fail("The pointer isn't on \(control)'s knob at \(action.at)s") }
+                        if let expected = action.from, abs(found.value() - expected) > 1e-4 { fail("\(control) is at \(found.value()), not \(expected), at \(action.at)s") }
+                        isPressed = true
+                        send(.leftMouseDown, at: from, time: time)
+                    } else {
+                        guard isPressed else { fail("A drag with press: false at \(action.at)s needs the button already pressed") }
+                    }
+                    let slider = found.drawn(in: host) ?? found.geometry(in: host, named: control)
+                    let range = found.range()
+                    let target = onCanvas(host.convert(slider.knobCentre(at: (to - range.lowerBound) / (range.upperBound - range.lowerBound)), to: nil))
+                    running.append((action, from, target))
+                } else if let place = action.dragTo {
+                    if action.press {
+                        isPressed = true
+                        send(.leftMouseDown, at: from, time: time)
+                    } else {
+                        guard isPressed else { fail("A dragTo with press: false at \(action.at)s needs the button already pressed") }
+                    }
+                    running.append((action, from, resolve(place)))
                 } else if let place = action.move {
                     running.append((action, from, resolve(place)))
                 } else if let place = action.click {
@@ -1123,7 +1260,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
                     send(isPressed ? .leftMouseDragged : .mouseMoved, at: point, time: time)
                 }
             }
-            for (action, _, _) in running where time >= action.end - 1e-9 && (action.drag != nil || action.click != nil) {
+            for (action, _, _) in running where time >= action.end - 1e-9 && (action.click != nil || ((action.drag != nil || action.dragTo != nil) && action.release)) {
                 isPressed = false
                 send(.leftMouseUp, at: pointer ?? .zero, time: time)
             }
@@ -1195,7 +1332,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
                 return opacity > 0 ? Log.ScreenPicture(frame: transition.snapshotFrame, opacity: opacity) : nil
             }
             let popoverAppearance = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? "dark" : "light"
-            var pixels = renderer.draw(frameLayer, at: clock)
+            var pixels = renderer.draw(frameLayer, at: clock, sublayersOnly: scene.isScheduleWindow)
             // On the desktop, scripts/demo/compose.py draws the pointer, over the window server's shadow,
             // and wherever it is on the desktop
             guard let image = Self.image(&pixels, width: renderer.width, height: renderer.height, pointer: scene.desktop ? nil : pointer, cursor: cursor,
@@ -1208,7 +1345,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
             }
 
             var sliders: [String: Log.Slider] = [:]
-            for (control, found) in Control.all {
+            for (control, found) in controls() {
                 guard let drawn = found.drawn(in: host) else { continue }
                 let range = found.range()
                 sliders[control] = Log.Slider(value: found.value(), knob: range.lowerBound + drawn.knobFraction * (range.upperBound - range.lowerBound))
@@ -1381,7 +1518,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
                 fail("The window server's picture is black; are the displays asleep?")
             }
 
-            var pixels = renderer.draw(frameLayer, at: 0)
+            var pixels = renderer.draw(frameLayer, at: 0, sublayersOnly: self.scene.isScheduleWindow)
             guard let drawn = Self.image(&pixels, width: renderer.width, height: renderer.height, pointer: nil, cursor: .arrow, scale: CGFloat(self.scale)) else {
                 fail("Couldn't draw the first frame")
             }
@@ -1453,7 +1590,7 @@ final class Recorder: NSObject, NSApplicationDelegate {
             print("The window server's shadow round the popover is already in \(place.path)")
             return overDesktop()
         }
-        let margin: CGFloat = 48
+        let margin: CGFloat = scene.isScheduleWindow ? 96 : 48
         let rect = window.frame.insetBy(dx: -margin, dy: -margin)
         window.alphaValue = 1
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {

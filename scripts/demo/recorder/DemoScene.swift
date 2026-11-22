@@ -41,13 +41,17 @@ struct DemoScene: Decodable {
     /// in the shot; left out, it runs as the shot does, from 21:16:40, or from the scene's `time`. The
     /// pointer's actions come only while it runs as the shot does, as a press lasts as long on both
     var clock: [ClockKey]?
+    /// Which Safelight window the shot records: "popover" (the menu bar popover, default) or "schedule"
+    /// (the Schedule window with its day strip and keyframe rows)
+    var window = "popover"
+    var isScheduleWindow: Bool { window == "schedule" }
     /// The time of day the shot begins at, a whole minute ("17:15"), for a scene without a clock of its
     /// own: the menu bar's clock says it all through the shot, which is shorter than a minute, and the
     /// wall clock runs from it as the shot does. Left out, the menu bar's clock says 21:00, as the
     /// screenshots' does.
     var time: String?
 
-    private enum Keys: String, CodingKey { case about, fps, duration, appearance, accentColor, language, locale, canvas, desktop, otherDisplays, settings, pointer, actions, schedule, clock, time }
+    private enum Keys: String, CodingKey { case about, fps, duration, appearance, accentColor, language, locale, canvas, desktop, otherDisplays, settings, pointer, actions, schedule, clock, time, window }
 
     init(from decoder: Decoder) throws {
         let keys = try decoder.container(keyedBy: Keys.self)
@@ -66,6 +70,10 @@ struct DemoScene: Decodable {
         actions = try keys.decodeIfPresent([Action].self, forKey: .actions) ?? actions
         schedule = try keys.decodeIfPresent([Keyframe].self, forKey: .schedule)
         clock = try keys.decodeIfPresent([ClockKey].self, forKey: .clock)
+        window = try keys.decodeIfPresent(String.self, forKey: .window) ?? window
+        guard ["popover", "schedule"].contains(window) else {
+            throw DecodingError.dataCorruptedError(forKey: .window, in: keys, debugDescription: "window must be \"popover\" or \"schedule\", not \(window)")
+        }
         if let clock {
             guard clock.first?.at == 0, let last = clock.last, last.at >= duration, zip(clock, clock.dropFirst()).allSatisfy({ $0.at < $1.at }) else {
                 throw DecodingError.dataCorruptedError(forKey: .clock, in: keys, debugDescription: "The clock's keys go from 0 to the shot's end, one after another")
@@ -78,7 +86,7 @@ struct DemoScene: Decodable {
             for action in actions where !clockKeepsTime(from: action.at, to: action.end) {
                 throw DecodingError.dataCorruptedError(forKey: .clock, in: keys, debugDescription: "The pointer's action at \(action.at) s comes while the clock runs faster or slower than the shot: give the clock keys as far apart in the time of day as in the shot round it, with no easing")
             }
-        } else if schedule != nil {
+        } else if schedule != nil && !isScheduleWindow {
             throw DecodingError.dataCorruptedError(forKey: .schedule, in: keys, debugDescription: "A shot with a schedule has a clock of its own, for the time of day the Schedule follows")
         }
         time = try keys.decodeIfPresent(String.self, forKey: .time)
@@ -257,14 +265,16 @@ struct DemoScene: Decodable {
     }
 
     /// A place for the pointer: a point on the canvas, a slider's knob, where it is or where it would
-    /// be at `value`, or the middle of a button, by its name as VoiceOver reads it (`{"button": "Dark"}`,
-    /// or a switch, `{"button": "Adjust independently"}`)
+    /// be at `value`, the middle of a button, by its name as VoiceOver reads it (`{"button": "Dark"}`,
+    /// or a switch, `{"button": "Adjust independently"}`), or a time of day along the Schedule's day
+    /// strip (`{"strip": "14:00"}`)
     enum Place: Decodable {
         case point(x: Double, y: Double)
         case knob(control: String, value: Double?)
         case button(name: String)
+        case strip(time: String)
 
-        private enum Keys: String, CodingKey { case control, value, button }
+        private enum Keys: String, CodingKey { case control, value, button, strip }
 
         init(from decoder: Decoder) throws {
             if var point = try? decoder.unkeyedContainer() {
@@ -273,6 +283,9 @@ struct DemoScene: Decodable {
                 let keys = try decoder.container(keyedBy: Keys.self)
                 if let button = try keys.decodeIfPresent(String.self, forKey: .button) {
                     self = .button(name: button)
+                } else if let strip = try keys.decodeIfPresent(String.self, forKey: .strip) {
+                    _ = try ClockKey.secondsOfDay(strip)
+                    self = .strip(time: strip)
                 } else {
                     self = .knob(control: try keys.decode(String.self, forKey: .control), value: try keys.decodeIfPresent(Double.self, forKey: .value))
                 }
@@ -282,8 +295,11 @@ struct DemoScene: Decodable {
 
     /// Something the pointer does, from `at` for `duration`, along the `easing` curve:
     /// - `move`: moves to that `Place`
-    /// - `drag`: presses where it is, which must be on that control's knob, moves the knob to the value
-    ///   `to`, and lets go. `from`, if given, is the value the control must have to begin with.
+    /// - `drag`: presses where it is, which must be on that control's knob (unless `press` is false,
+    ///   continuing a hold), moves the knob to the value `to`, and lets go (unless `release` is false).
+    ///   `from`, if given, is the value the control must have to begin with.
+    /// - `dragTo`: presses where it is (unless `press` is false), drags to that `Place`, and lets go
+    ///   (unless `release` is false). Useful for scrubbing the Schedule's day strip across several legs.
     /// - `click`: presses where it is, which must be on that `Place` (inside a button), and lets go
     ///   `duration` later, without moving
     struct Action: Decodable {
@@ -292,11 +308,14 @@ struct DemoScene: Decodable {
         var easing: Easing = .easeInOut
         var move: Place?
         var drag: String?
+        var dragTo: Place?
         var click: Place?
         var from: Double?
         var to: Double?
+        var press: Bool = true
+        var release: Bool = true
 
-        private enum Keys: String, CodingKey { case at, duration, easing, move, drag, click, from, to }
+        private enum Keys: String, CodingKey { case at, duration, easing, move, drag, dragTo, click, from, to, press, release }
 
         init(from decoder: Decoder) throws {
             let keys = try decoder.container(keyedBy: Keys.self)
@@ -305,9 +324,12 @@ struct DemoScene: Decodable {
             easing = try keys.decodeIfPresent(Easing.self, forKey: .easing) ?? easing
             move = try keys.decodeIfPresent(Place.self, forKey: .move)
             drag = try keys.decodeIfPresent(String.self, forKey: .drag)
+            dragTo = try keys.decodeIfPresent(Place.self, forKey: .dragTo)
             click = try keys.decodeIfPresent(Place.self, forKey: .click)
             from = try keys.decodeIfPresent(Double.self, forKey: .from)
             to = try keys.decodeIfPresent(Double.self, forKey: .to)
+            press = try keys.decodeIfPresent(Bool.self, forKey: .press) ?? press
+            release = try keys.decodeIfPresent(Bool.self, forKey: .release) ?? release
         }
 
         var end: Double { at + duration }

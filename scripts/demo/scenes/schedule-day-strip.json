@@ -1,0 +1,50 @@
+{
+  "about": "The Schedule window on the plain afternoon desktop (Light, Sonoma Horizon, 14:00): the pointer scrubs the 24-hour Canvas day strip from afternoon into deep red night and back to amber, live-previewing tint and brightness on screen while the indicator shifts from accent blue to white and the dragged timestamp fades out the 18 hour label underneath; then drags the 19:30 keyframe's Tint and Intensity sliders so the day strip repaints live before returning to the start for a seamless loop",
+  "window": "schedule",
+  "fps": 60,
+  "duration": 12.6,
+  "appearance": "light",
+  "accentColor": "blue",
+  "language": "en-US",
+  "locale": "en_GB",
+  "time": "14:00",
+  "desktop": true,
+  "settings": {
+    "colorFilter": false,
+    "tint": 0,
+    "intensity": 0.25,
+    "brightness": 1,
+    "wallpaper": {
+      "light": "/System/Library/Desktop Pictures/.wallpapers/Sonoma Horizon/Sonoma Horizon.heic",
+      "dark": "/System/Library/Desktop Pictures/Sonoma.heic"
+    }
+  },
+  "schedule": [
+    { "time": "06:00", "colorFilter": true, "intensity": 1.0, "tint": 0, "brightness": 0.45, "appearance": "dark" },
+    { "time": "06:30", "colorFilter": false, "intensity": 0.25, "tint": 0, "brightness": 1.0, "appearance": "light" },
+    { "time": "17:30", "colorFilter": false, "intensity": 0.25, "tint": 25, "brightness": 1.0, "appearance": "light" },
+    { "time": "19:30", "colorFilter": true, "intensity": 0.55, "tint": 25, "brightness": 0.80, "appearance": "light" },
+    { "time": "22:30", "colorFilter": true, "intensity": 1.0, "tint": 0, "brightness": 0.45, "appearance": "dark" }
+  ],
+  "pointer": { "strip": "14:00" },
+  "actions": [
+    { "at": 0.4, "dragTo": { "strip": "22:50" }, "duration": 3.0, "easing": "easeInOut", "press": true, "release": false },
+    { "at": 3.8, "dragTo": { "strip": "18:45" }, "duration": 1.4, "easing": "easeInOut", "press": false, "release": true },
+    { "at": 5.5, "move": { "control": "Row 4 Tint" }, "duration": 0.6, "easing": "easeInOut" },
+    { "at": 6.2, "drag": "Row 4 Tint", "from": 25, "to": 240, "duration": 1.5, "easing": "easeInOut", "press": true, "release": false },
+    { "at": 7.9, "drag": "Row 4 Tint", "to": 25, "duration": 1.4, "easing": "easeInOut", "press": false, "release": true },
+    { "at": 9.5, "move": { "control": "Row 4 Intensity" }, "duration": 0.5, "easing": "easeInOut" },
+    { "at": 10.1, "drag": "Row 4 Intensity", "from": 0.55, "to": 1.0, "duration": 0.8, "easing": "easeInOut", "press": true, "release": false },
+    { "at": 11.05, "drag": "Row 4 Intensity", "to": 0.55, "duration": 0.8, "easing": "easeInOut", "press": false, "release": true },
+    { "at": 12.0, "move": { "strip": "14:00" }, "duration": 0.5, "easing": "easeInOut" }
+  ],
+  "camera": {
+    "16:9": {
+      "size": [2560, 1440],
+      "keys": [
+        { "at": 0, "centre": [1280, 732], "height": 720 }
+      ]
+    }
+  },
+  "stills": [0, 140, 210, 310, 440, 640, 755]
+}

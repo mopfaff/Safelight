@@ -72,6 +72,7 @@
 # displays awake; after that, making a shot shows nothing.
 
 set -eu
+unset DYLD_LIBRARY_PATH
 cd "${0:A:h}/.."
 
 # A picture that plays by itself, cut from a finished shot: scripts/demo/loop.py

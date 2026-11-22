@@ -1,0 +1,12 @@
+{
+    "about": "The Schedule window day-strip shot on its own, silent, with no captions or end card, for looping playback in a web feed",
+    "platform": "web",
+    "camera": "16:9",
+    "size": [2560, 1440],
+    "fps": 60,
+    "words": {},
+    "clips": [
+        {"shot": "schedule-day-strip", "from": 0, "to": 12.6}
+    ],
+    "endCard": null
+}

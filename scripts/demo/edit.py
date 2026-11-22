@@ -80,6 +80,8 @@ PLATFORMS = {
                 "x264": "keyint={half}:min-keyint={half}:bframes=2:b-adapt=0:open-gop=0"},
     "x": {"space": "srgb", "primaries": "bt709", "transfer": "bt709", "audio": True, "crf": 16,
           "x264": "keyint={fps}:open-gop=0"},
+    "web": {"space": "srgb", "primaries": "bt709", "transfer": "bt709", "audio": False, "crf": 16,
+            "x264": "keyint={fps}:open-gop=0"},
     "github": {"space": "display-p3", "primaries": "smpte432", "transfer": "iec61966-2-1", "audio": False,
                "maxBytes": 9_500_000, "x264": "keyint={fps}:open-gop=0"},
 }

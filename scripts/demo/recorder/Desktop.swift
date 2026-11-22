@@ -104,11 +104,16 @@ struct Desktop {
         CGRect(x: (arrowTip.x - tip.x).rounded(), y: (arrowTip.y - tip.y).rounded(), width: window.width, height: window.height)
     }
 
-    /// The part of the desktop around the popover's window the recorder draws, its window's top left on
+    /// A window centred on the desktop, on whole points
+    func centered(size window: CGSize) -> CGRect {
+        CGRect(x: ((size.width - window.width) / 2).rounded(), y: ((size.height - window.height) / 2).rounded(), width: window.width, height: window.height)
+    }
+
+    /// The part of the desktop around the window the recorder draws, its window's top left on
     /// it, and the desktop there, for its glass to show
-    func canvas(around popover: CGRect) -> (frame: CGRect, popover: CGPoint, backdrop: CGImage) {
-        let frame = CGRect(x: popover.minX - Self.canvasMargin, y: popover.minY,
-                           width: popover.width + 2 * Self.canvasMargin, height: popover.height + Self.canvasMargin)
+    func canvas(around popover: CGRect, topMargin: CGFloat = 0) -> (frame: CGRect, popover: CGPoint, backdrop: CGImage) {
+        let frame = CGRect(x: popover.minX - Self.canvasMargin, y: popover.minY - topMargin,
+                           width: popover.width + 2 * Self.canvasMargin, height: popover.height + topMargin + Self.canvasMargin)
             .intersection(CGRect(origin: .zero, size: size))
         let pixels = CGRect(x: frame.minX * scale, y: frame.minY * scale, width: frame.width * scale, height: frame.height * scale)
         guard let backdrop = image.cropping(to: pixels) else { fail("Couldn't cut the popover's surroundings out of the desktop") }
