@@ -9,6 +9,8 @@
     "hold": 0.5,
     "dissolve": 0.4,
     "avif": 60,
+    "keyframes": 15,
+    "yuv": 420,
     "webp": 60,
     "width": 800,
     "caption": "It lives in the menu bar."

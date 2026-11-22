@@ -11,10 +11,18 @@
 #
 # Why two files, and no GIF, measured on the Color filter shot (1856×1020, 8.7 s at 30 fps) on 21 November
 # 2026. A screen that fades to red changes everywhere on every frame, a photograph under it:
-#   AVIF   3.5 MB at quality 60, 87% of its pixels within 3 levels of 255 of the frames made. It's AV1
-#          video in a picture's file, so a frame is stored as what changed since the one before. Chrome,
-#          Safari (16.4 on) and Firefox (113 on) play it in an <img>. Whether a README on GitHub does
-#          hadn't been tried when this was written.
+#   AVIF   AV1 video in a picture's file, so a frame can be stored as what changed since the one before.
+#          Chrome, Safari (16.4 on) and Firefox (113 on) play it in an <img>; whether a README on GitHub
+#          does hadn't been tried when this was written. Stored the smallest way, one whole frame and then
+#          changes only, in 4:4:4, it was 3.5 MB with 87% of its pixels within 3 levels of 255 of the frames
+#          made, and Safari stuttered through it with five cores busy: macOS's decoder (ImageIO, which
+#          hands AV1 to VideoToolbox) builds every frame it's asked for from the last whole one, so a frame
+#          took 0.3 s on average and the last 0.66 s, where it has 0.033; and VideoToolbox decodes 4:4:4 on
+#          the CPU. So the AVIF has a whole frame at least every "keyframes" frames and is 4:2:0, which
+#          Macs with an AV1 decoder (M3 on) decode in hardware: at 15, 4.3 MB, 84% within 3 levels (82% of
+#          a fully red frame, whose detail is mostly in the halved chroma; 94% in 4:4:4), a frame in 26 ms
+#          on an M4 Pro. In 4:4:4 it was 6.3 MB and 50 ms a frame, 8.9 MB and 41 ms with a whole frame
+#          every 8. How a Mac without the hardware decoder plays it wasn't tried.
 #   WebP   an animated WebP is reported to play in a README on GitHub (github.com/TomasHubelbauer/
 #          markdown-webp; not tried here). But libwebp leaves out any block of a frame within a few
 #          levels (4 at quality 80) of the frame before, and compares the frames it's given, not what it
@@ -40,13 +48,19 @@
 #   "dissolve"         seconds over which the last frame turns into the first, for a shot that doesn't end
 #                      as it began; 0 for one that does
 #   "avif", "webp"     each file's quality, 0...100
+#   "keyframes"        the most frames the AVIF goes without a whole one; "yuv" its chroma, 420 or 444
 #   "width"            how wide a README shows it, in points, for preview.html
 #   "caption"          the line a README has above it, for preview.html
 #
+# The check also times macOS's decoder on every frame of each file, as Safari asks for them, and says so
+# when a frame takes longer on average than it shows for.
+#
 # Needs what edit.py needs, and avifenc and avifdec (brew install libavif); Pillow writes the WebP.
-import argparse, json, multiprocessing, re, shutil, subprocess, sys, tempfile
+import argparse, json, multiprocessing, re, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 import numpy as np
+import Quartz
+from Foundation import NSURL
 from PIL import Image
 from compose import rgb_from_ycbcr
 from edit import BUILD, ROOT, SCENES, Master, in_space, smooth, to_light, to_values
@@ -99,16 +113,21 @@ class Loop:
         return [frame + (at[k + 1] - at[k],) for k, frame in enumerate(frames)]
 
     def preview(self):
-        """A page with both files as a README would show them, on GitHub's light and dark page colours"""
+        """A page with the loop as a README would show it, one file at a time (each one playing costs a
+        decoder), on GitHub's light or dark page colours"""
         width, caption = self.spec.get("width", self.size[0] // 2), self.spec.get("caption", "")
-        blocks = "".join(
-            f'<section style="background:{page};color:{ink}"><h2>{file.suffix[1:].upper()}, {file.stat().st_size / 1e6:.1f} MB, on a {look} page</h2>'
-            f'<p>{caption}</p><p align="center"><img src="{file.name}" width="{width}"></p></section>'
-            for file in (self.avif, self.webp) for look, page, ink in (("light", "#ffffff", "#1f2328"), ("dark", "#0d1117", "#f0f6fc")))
+        files = "".join(f'<button data-file="{file.name}">{file.suffix[1:].upper()}, {file.stat().st_size / 1e6:.1f} MB</button>' for file in (self.avif, self.webp))
         (self.folder / "preview.html").write_text(
-            f'<!doctype html><meta charset="utf-8"><title>{self.name}</title><style>body{{margin:0;font:16px -apple-system,sans-serif}}'
-            f'section{{padding:24px max(16px,calc(50% - 440px))}}h2{{font-size:13px;font-weight:400;opacity:.6;margin:0 0 16px}}'
-            f'img{{max-width:100%;height:auto}}</style>{blocks}')
+            f'<!doctype html><meta charset="utf-8"><title>{self.name}</title><style>body{{margin:0;font:16px -apple-system,sans-serif;min-height:100vh}}'
+            f'body.light{{background:#fff;color:#1f2328}}body.dark{{background:#0d1117;color:#f0f6fc}}'
+            f'main{{padding:24px max(16px,calc(50% - 440px))}}nav{{margin:0 0 24px;display:flex;gap:8px}}'
+            f'button{{font:13px -apple-system,sans-serif;padding:4px 10px;border-radius:6px;border:1px solid #8884;background:none;color:inherit}}'
+            f'button.on{{background:#8883}}img{{max-width:100%;height:auto}}</style>'
+            f'<body class="light"><main><nav>{files}<button data-look="light">Light page</button><button data-look="dark">Dark page</button></nav>'
+            f'<p>{caption}</p><p align="center"><img width="{width}"></p></main><script>'
+            f'const img=document.querySelector("img"),buttons=[...document.querySelectorAll("button")];let file="{self.avif.name}",look="light";'
+            f'function show(){{img.src=file;document.body.className=look;buttons.forEach(b=>b.classList.toggle("on",b.dataset.file===file||b.dataset.look===look))}}'
+            f'buttons.forEach(b=>b.onclick=()=>{{file=b.dataset.file||file;look=b.dataset.look||look;show()}});show()</script>')
 
     def picture(self, raw, towards=None, mix=0.0):
         """A frame of the master as the loop's picture: RGBA, 8 bits, sRGB, see-through outside the panes"""
@@ -205,7 +224,7 @@ def make(name, workers):
             path.unlink()
     (loop.folder / "frames.json").write_text(json.dumps([{"frame": path.name, "ms": ms} for path, ms in zip(frames, shown)], indent=1))
     command = ["avifenc", "--timescale", "1000", "--repetition-count", "infinite", "-q", str(loop.spec["avif"]),
-               "--qalpha", "100", "-s", "6", "-j", "4"]
+               "--qalpha", "100", "-s", "6", "-j", "4", "--yuv", str(loop.spec["yuv"]), "--keyframe", str(loop.spec["keyframes"])]
     for path, ms in zip(frames, shown):
         command += ["--duration", str(ms), str(path)]
     if subprocess.run(command + [str(loop.avif)], capture_output=True).returncode:
@@ -224,8 +243,27 @@ def closeness(decoded, made):
     return np.abs(decoded[..., :3].astype(np.int16) - made[..., :3].astype(np.int16)).max(axis=2)[made[..., 3] > 0]
 
 
-def said(path, frames, offs, length, made_length):
+def decoding(path):
+    """How long macOS's decoder takes over a frame of the file, in milliseconds: the average and the slowest,
+    each frame asked of ImageIO in turn and drawn, as Safari does to play it"""
+    source = Quartz.CGImageSourceCreateWithURL(NSURL.fileURLWithPath_(str(path)), None)
+    space = Quartz.CGColorSpaceCreateWithName(Quartz.kCGColorSpaceSRGB)
+    times = []
+    for k in range(Quartz.CGImageSourceGetCount(source)):
+        start = time.perf_counter()
+        image = Quartz.CGImageSourceCreateImageAtIndex(source, k, None)
+        width, height = Quartz.CGImageGetWidth(image), Quartz.CGImageGetHeight(image)
+        context = Quartz.CGBitmapContextCreate(None, width, height, 8, 0, space, Quartz.kCGImageAlphaPremultipliedLast)
+        Quartz.CGContextDrawImage(context, ((0, 0), (width, height)), image)
+        times.append(1000 * (time.perf_counter() - start))
+    return sum(times) / len(times), max(times)
+
+
+def said(path, frames, offs, length, made_length, shortest):
     off = np.concatenate(offs)
+    average, slowest = decoding(path)
+    print(f"  {path.name}: macOS decodes a frame in {average:.0f} ms on average, the slowest in {slowest:.0f}"
+          + (f": too slow for Safari to play it smoothly on this Mac, a frame lasting {shortest} ms" if average > shortest else f" (a frame lasts {shortest} ms)"))
     print(f"  {path.name}: {path.stat().st_size / 1e6:.2f} MB, {frames} frames; of the panes' pixels {100 * (off <= 3).mean():.1f}% within 3 levels "
           f"of 255 of the frames made, {100 * (off <= 6).mean():.1f}% within 6, the worst {off.max()} off; {length / 1000:.3f} s a round, "
           f"{'as made' if length == made_length else f'not the {made_length / 1000:.3f} made'}")
@@ -241,7 +279,8 @@ def verify(name):
     for entry in listed:
         starts[length] = entry["frame"]
         length += entry["ms"]
-    made = lambda time: np.asarray(Image.open(loop.folder / "frames" / starts[time]))
+    made = lambda at: np.asarray(Image.open(loop.folder / "frames" / starts[at]))
+    shortest = min(entry["ms"] for entry in listed)
     right = True
     print(f"{name}: {loop.size[0]}×{loop.size[1]}, {len(listed)} frames made")
 
@@ -251,31 +290,31 @@ def verify(name):
     right &= "Repeat Count   : Infinite" in info and times == [entry["ms"] for entry in listed]
     with tempfile.TemporaryDirectory() as folder:
         subprocess.run(["avifdec", "--index", "all", str(loop.avif), f"{folder}/f.png"], capture_output=True, check=True)
-        offs, time = [], 0
+        offs, at = [], 0
         for k, ms in enumerate(times):
             decoded = np.asarray(Image.open(f"{folder}/f-{k:010d}.png").convert("RGBA"))
-            right &= time in starts and np.array_equal(decoded[..., 3], made(time)[..., 3])
-            if time not in starts:
+            right &= at in starts and np.array_equal(decoded[..., 3], made(at)[..., 3])
+            if at not in starts:
                 break
-            offs.append(closeness(decoded, made(time)))
-            time += ms
-    said(loop.avif, len(times), offs, time, length)
+            offs.append(closeness(decoded, made(at)))
+            at += ms
+    said(loop.avif, len(times), offs, at, length, shortest)
 
     image = Image.open(loop.webp)
     right &= image.info.get("loop") == 0
-    offs, time = [], 0
+    offs, at = [], 0
     for k in range(image.n_frames):
         image.seek(k)
         image.load()
-        if time not in starts:
+        if at not in starts:
             right = False
             break
         decoded = np.asarray(image.convert("RGBA"))
-        right &= np.array_equal(decoded[..., 3], made(time)[..., 3])
-        offs.append(closeness(decoded, made(time)))
-        time += image.info["duration"]
-    said(loop.webp, image.n_frames, offs, time, length)
-    right &= time == length
+        right &= np.array_equal(decoded[..., 3], made(at)[..., 3])
+        offs.append(closeness(decoded, made(at)))
+        at += image.info["duration"]
+    said(loop.webp, image.n_frames, offs, at, length, shortest)
+    right &= at == length
     if not right:
         print("  not as made: a frame at a time none was made for, see-through in other places, or not going round for ever in the time made")
     return bool(right)
