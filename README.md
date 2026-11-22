@@ -76,13 +76,13 @@ Click the menu bar icon for the controls, the gear beside Schedule to edit the s
 
 ## Install
 
-Safelight needs macOS 15.5 or later, on Apple silicon or Intel.
+Needs macOS 15.5 or later, Apple silicon or Intel.
 
-1. Download the Safelight disk image (`.dmg`) from the [latest release](https://github.com/mopfaff/Safelight/releases/latest), open it, and drag Safelight onto the Applications folder beside it.
-2. Open Safelight. It isn't notarized by Apple, so macOS says it can't check it for malware. Click **Done**.
-3. Open **System Settings › Privacy & Security**, scroll down, and click **Open Anyway** next to the message about Safelight. Confirm with your password.
+1. Download the `.dmg` from the [latest release](https://github.com/mopfaff/Safelight/releases/latest), open it, and drag Safelight to Applications.
+2. Open Safelight. It isn't notarized, so macOS says it can't check it for malware. Click **Done**.
+3. In **System Settings › Privacy & Security**, click **Open Anyway** and enter your password.
 
-You only need to do this once. If you'd rather read the code first, all of Safelight's own code is in [`Safelight/Safelight.swift`](Safelight/Safelight.swift), and you can build it yourself.
+Once only. To read the code first: all of it is in [`Safelight/Safelight.swift`](Safelight/Safelight.swift), and you can build it yourself.
 
 ### Updates
 
