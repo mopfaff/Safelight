@@ -147,15 +147,15 @@ final class Screenshots: NSObject, NSApplicationDelegate {
         controller.brightness = evening.brightness
         controller.chooseAppearance(isDark: isDark) // which only the Appearance picker shows
         // And the wallpaper, which only the Wallpaper picker shows: it's only read, as the desktop isn't
-        // changed unless a picture is chosen. Hello Metallic Silver for Light and Pro Black for Dark, from
-        // System Settings' thumbnails of them, which every Mac has (the pictures themselves are
-        // downloaded when picked), or over a desktop, the desktop's own. In one wallpaper, as Safelight
-        // makes it when a picture is chosen for each.
-        let thumbnails = URL(fileURLWithPath: "/System/Library/Desktop Pictures/.thumbnails")
-        let light = desktopLight ?? wallpaperLight ?? thumbnails.appendingPathComponent("Hello Metallic Silver.heic")
-        let dark = desktopDark ?? wallpaperDark ?? thumbnails.appendingPathComponent("Pro Black.heic")
+        // changed unless a picture is chosen. Sonoma Horizon for Light and Dome (Dark) for Dark, matching
+        // docs/day.jpg, from files every Mac has (Dome's full picture is downloaded when picked, so its
+        // System Settings thumbnail is used), or over a desktop, the desktop's own. In one wallpaper, as
+        // Safelight makes it when a picture is chosen for each.
+        let pictures = URL(fileURLWithPath: "/System/Library/Desktop Pictures")
+        let light = desktopLight ?? wallpaperLight ?? pictures.appendingPathComponent(".wallpapers/Sonoma Horizon/Sonoma Horizon.heic")
+        let dark = desktopDark ?? wallpaperDark ?? pictures.appendingPathComponent(".thumbnails/Dome Dark.heic")
         let wallpaper = FileManager.default.temporaryDirectory.appendingPathComponent("Safelight Screenshots wallpaper.heic")
-        guard WallpaperManager.makeWallpaper(at: wallpaper, light: (light, false), dark: (dark, desktopDark != nil || wallpaperDark != nil)) else {
+        guard WallpaperManager.makeWallpaper(at: wallpaper, light: (light, false), dark: (dark, true)) else {
             fail("Couldn't make a wallpaper of \(light.path) and \(dark.path)")
         }
         WallpaperManager.shared.showPictures(of: wallpaper)
