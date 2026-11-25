@@ -81,9 +81,16 @@ Uses System Settings' own controls and translations, so Safelight appears in you
 
 Needs macOS 15.5 or later, Apple silicon or Intel.
 
-1. Download the `.dmg` from the [latest release](https://github.com/mopfaff/Safelight/releases/latest), open it, and drag Safelight to Applications.
-2. Open Safelight. It isn't notarized, so macOS says it can't check it for malware. Click **Done**.
-3. In **System Settings › Privacy & Security**, click **Open Anyway** and enter your password.
+```bash
+brew install --cask mopfaff/tap/safelight
+```
+
+Or download the `.dmg` from the [latest release](https://github.com/mopfaff/Safelight/releases/latest), open it, and drag Safelight to Applications.
+
+On first launch (Safelight isn't notarized):
+
+1. Open Safelight. macOS says it can't check it for malware. Click **Done**.
+2. In **System Settings › Privacy & Security**, click **Open Anyway** and enter your password.
 
 Once only. To read the code first: all of it is in [`Safelight/Safelight.swift`](Safelight/Safelight.swift), and you can build it yourself.
 

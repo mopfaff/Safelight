@@ -97,7 +97,7 @@ if [[ -f "$KEY" ]] && SIGNATURE=$("$SPARKLE/sign_update" --ed-key-file "$KEY" "$
 EOF
     # Signed as well (SURequireSignedFeed), so no one else can change what it says about the update
     "$SPARKLE/sign_update" --ed-key-file "$KEY" "$APPCAST" >/dev/null
-    echo "Update feed for $VERSION: $APPCAST (attach it to the v$VERSION release with the disk image)"
+    echo "Update feed for $VERSION: $APPCAST (attach it to the v$VERSION release with the disk image, then run scripts/update-tap.sh)"
 else
     echo "No update feed: couldn't sign the disk image with Sparkle's private key ($KEY)" >&2
 fi
