@@ -2,8 +2,8 @@
 
 <div>
 <h3>Safelight</h3>
-<p>Like Night Shift, but all the way to red.<br>
-Color filter, display brightness, and Light/Dark wallpapers on one schedule.</p>
+<p>Schedules your Mac's color filter all the way to red, display brightness, and Light/Dark wallpapers.<br>
+Controls built-in and external (DDC/CI) monitors, dims below minimum, and follows sunrise and sunset.</p>
 <p><a href="https://github.com/mopfaff/Safelight/releases/latest/download/Safelight-1.0.dmg"><img src="docs/download-macos.png" width="152" alt="Download for macOS"></a></p>
 <p><sub>macOS 15.5+ · Free &amp; open source · <a href="#install">First-launch &amp; Homebrew</a> · <a href="https://mopfaff.github.io/Safelight/">Website</a></sub></p>
 </div>
