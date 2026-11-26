@@ -3,7 +3,7 @@
 <p>Schedules macOS's color filter to full red, brightness, and Light/Dark wallpapers.
 Built-in and external (DDC/CI) displays, dimming below minimum, and sunrise/sunset.</p>
 
-<a href="https://github.com/mopfaff/Safelight/releases/latest/download/Safelight-1.0.dmg"><img src="docs/download-macos.png" width="152" alt="Download for macOS"></a>
+<a href="https://github.com/mopfaff/Safelight/releases/latest/download/Safelight-1.0.dmg"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/download-macos-dark.png"><img src="docs/download-macos-light.png" width="152" alt="Download app for macOS"></picture></a>
 
 <br clear="left">
 

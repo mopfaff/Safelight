@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Writes docs/download-macos.png, the 3x "Download for macOS" badge at the top of README.md.
+# Writes docs/download-macos-dark.png and docs/download-macos-light.png,
+# the 3x "Download app for macOS" badges at the top of README.md.
 #
 #   scripts/make-download-badge.py
 #
@@ -8,52 +9,90 @@ import os
 from PIL import Image, ImageDraw, ImageFont
 
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-out_path = os.path.join(root, "docs", "download-macos.png")
-FONT = "/System/Library/Fonts/SFNS.ttf"
+SF_COMPACT = "/System/Library/Fonts/SFCompact.ttf"
+SF_NS = "/System/Library/Fonts/SFNS.ttf"
 
-
-def font(size, weight):
-    f = ImageFont.truetype(FONT, size)
-    f.set_variation_by_name(weight)
-    return f
-
-
-# Draw at 6x and downsample to 3x for crisp antialiasing
+# Reference proportions are in 386 x 129 units; draw at 6x and downsample to 3x.
+REF_W, REF_H = 386.0, 129.0
+W, H = 152, 51
 S = 6
-W, H = 152, 52
-img = Image.new("RGBA", (W * S, H * S), (0, 0, 0, 0))
-d = ImageDraw.Draw(img)
 
-pad = round(0.75 * S)
-d.rounded_rectangle(
-    (pad, pad, W * S - pad - 1, H * S - pad - 1),
-    radius=10 * S,
-    fill=(14, 15, 18, 255),
-    outline=(158, 160, 168, 220),
-    width=round(1.15 * S),
-)
+THEMES = {
+    "dark": {
+        "bg": (0, 0, 0, 255),
+        "fg": (255, 255, 255, 255),
+        "border": (182, 182, 182, 255),
+    },
+    "light": {
+        "bg": (255, 255, 255, 255),
+        "fg": (0, 0, 0, 255),
+        "border": (166, 166, 166, 255),
+    },
+}
 
-# Download icon (filled circle with downward arrow cut out)
-cx, cy = 29 * S, (H / 2) * S
-r = 13 * S
-d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(255, 255, 255, 255))
 
-ink = (14, 15, 18, 255)
-sw = round(2.4 * S)
-cap = sw / 2
-d.line([(cx, cy - 6.4 * S), (cx, cy + 5.0 * S)], fill=ink, width=sw)
-d.ellipse((cx - cap, cy - 6.4 * S - cap, cx + cap, cy - 6.4 * S + cap), fill=ink)
-pts = [
-    (cx - 5.0 * S, cy + 0.8 * S),
-    (cx, cy + 5.8 * S),
-    (cx + 5.0 * S, cy + 0.8 * S),
-]
-d.line(pts, fill=ink, width=sw, joint="curve")
-for px, py in pts:
-    d.ellipse((px - cap, py - cap, px + cap, py + cap), fill=ink)
+def draw_tracked(draw, pos, text, font, fill, tracking):
+    x, y = pos
+    prev = ""
+    for ch in text:
+        if prev:
+            kern = font.getlength(prev + ch) - font.getlength(prev) - font.getlength(ch)
+            x += kern + tracking
+        draw.text((x, y), ch, font=font, fill=fill)
+        x += font.getlength(ch)
+        prev = ch
 
-tx = 53 * S
-d.text((tx, 8.5 * S), "Download for", font=font(11.5 * S, "Regular"), fill=(224, 226, 232, 255))
-d.text((tx - 0.5 * S, 20.5 * S), "macOS", font=font(22.5 * S, "Semibold"), fill=(255, 255, 255, 255))
 
-img.resize((W * 3, H * 3), Image.LANCZOS).save(out_path, optimize=True)
+def render(theme):
+    colors = THEMES[theme]
+    cw, ch = W * S, H * S
+    sx = cw / REF_W
+    sy = ch / REF_H
+    sc = (sx + sy) / 2.0
+
+    img = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+
+    d.rounded_rectangle(
+        (0, 0, cw - 1, ch - 1),
+        radius=19.8 * sc,
+        fill=colors["bg"],
+        outline=colors["border"],
+        width=max(1, round(2.6 * sc)),
+    )
+
+    f_apple = ImageFont.truetype(SF_NS, 94.0 * sc)
+    ab = f_apple.getbbox("\uf8ff")
+    d.text((27.25 * sx - ab[0], 27.25 * sy - ab[1]), "\uf8ff", font=f_apple, fill=colors["fg"])
+
+    f_sub = ImageFont.truetype(SF_COMPACT, 29.0 * sc)
+    f_sub.set_variation_by_axes([20, 400, 425])
+    db = f_sub.getbbox("D")
+    draw_tracked(
+        d,
+        (135.0 * sx - db[0], 26.25 * sy - db[1]),
+        "Download app for",
+        f_sub,
+        colors["fg"],
+        -0.58 * sx,
+    )
+
+    f_title = ImageFont.truetype(SF_COMPACT, 61.5 * sc)
+    f_title.set_variation_by_axes([20, 400, 555])
+    mb = f_title.getbbox("m")
+    ob = f_title.getbbox("O")
+    draw_tracked(
+        d,
+        (164.0 * sx - mb[0], 57.0 * sy - ob[1]),
+        "macOS",
+        f_title,
+        colors["fg"],
+        -1.2 * sx,
+    )
+
+    return img.resize((W * 3, H * 3), Image.LANCZOS)
+
+
+for name in THEMES:
+    out_path = os.path.join(root, "docs", f"download-macos-{name}.png")
+    render(name).save(out_path, optimize=True)
