@@ -1,6 +1,14 @@
-# <img src="docs/icon-title.png" width="40" align="absmiddle" alt="Safelight's icon: a 24-hour dial, white through the day and red through the night"> Safelight
+<img src="docs/icon.png" width="144" alt="Safelight's icon: a 24-hour dial, white through the day and red through the night" align="left">
 
-Like Night Shift, but all the way to red.
+<div>
+<h3>Safelight</h3>
+<p>Like Night Shift, but all the way to red.<br>
+Color filter, display brightness, and Light/Dark wallpapers on one schedule.</p>
+<p><a href="https://github.com/mopfaff/Safelight/releases/latest/download/Safelight-1.0.dmg"><img src="docs/download-macos.png" width="152" alt="Download for macOS"></a></p>
+<p><sub>macOS 15.5+ · Free &amp; open source · <a href="#install">First-launch &amp; Homebrew</a> · <a href="https://mopfaff.github.io/Safelight/">Website</a></sub></p>
+</div>
+
+<br clear="left">
 
 <p align="center">
   <img src="docs/day.jpg" alt="A Mac's desktop at four times of day on Safelight's default schedule, side by side: at 12:00 in Light appearance with a daytime wallpaper and no color filter, at 17:30 in Dark appearance with a night wallpaper, at 19:00 with the screen turning red, and at 21:00 fully red, menu bar and all">
