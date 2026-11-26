@@ -1,14 +1,17 @@
-<img src="docs/icon.png" width="144" alt="Safelight's icon: a 24-hour dial, white through the day and red through the night" align="left">
+<img src="docs/icon.png" width="200" alt="Safelight's icon: a 24-hour dial, white through the day and red through the night" align="left">
 
 <div>
 <h3>Safelight</h3>
-<p>Schedules macOS's color filter to full red, brightness, and Light/Dark wallpapers.<br>
+<p>Schedules macOS's color filter to full red, brightness, and Light/Dark wallpapers.
 Built-in and external (DDC/CI) displays, dimming below minimum, and sunrise/sunset.</p>
-<p><a href="https://github.com/mopfaff/Safelight/releases/latest/download/Safelight-1.0.dmg"><img src="docs/download-macos.png" width="152" alt="Download for macOS"></a></p>
-<p><sub>macOS 15.5+ · Free &amp; open source · <a href="#install">First-launch &amp; Homebrew</a> · <a href="https://mopfaff.github.io/Safelight/">Website</a></sub></p>
+<a href="https://github.com/mopfaff/Safelight/releases/latest/download/Safelight-1.0.dmg"><img src="docs/download-macos.png" width="175" alt="Download for macOS"></a>
 </div>
 
 <br clear="left">
+
+<p align="center">
+  <sub>macOS 15.5+ · Free &amp; open source · <a href="#install">First-launch &amp; Homebrew</a> · <a href="https://mopfaff.github.io/Safelight/">Website</a></sub>
+</p>
 
 <p align="center">
   <img src="docs/day.jpg" alt="A Mac's desktop at four times of day on Safelight's default schedule, side by side: at 12:00 in Light appearance with a daytime wallpaper and no color filter, at 17:30 in Dark appearance with a night wallpaper, at 19:00 with the screen turning red, and at 21:00 fully red, menu bar and all">
