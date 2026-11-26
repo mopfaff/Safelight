@@ -1,11 +1,9 @@
-<img src="docs/icon.png" width="200" alt="Safelight's icon: a 24-hour dial, white through the day and red through the night" align="left">
+<h3><img src="docs/icon.png" width="160" alt="Safelight's icon: a 24-hour dial, white through the day and red through the night" align="left">Safelight</h3>
 
-<div>
-<h3>Safelight</h3>
 <p>Schedules macOS's color filter to full red, brightness, and Light/Dark wallpapers.
 Built-in and external (DDC/CI) displays, dimming below minimum, and sunrise/sunset.</p>
-<a href="https://github.com/mopfaff/Safelight/releases/latest/download/Safelight-1.0.dmg"><img src="docs/download-macos.png" width="175" alt="Download for macOS"></a>
-</div>
+
+<a href="https://github.com/mopfaff/Safelight/releases/latest/download/Safelight-1.0.dmg"><img src="docs/download-macos.png" width="152" alt="Download for macOS"></a>
 
 <br clear="left">
 
